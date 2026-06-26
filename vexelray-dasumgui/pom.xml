@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>vexelray.core</groupId>
+        <artifactId>vexelray-parent</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-dasumgui</artifactId>
+
+    <dependencies>
+        <!-- DasumGUIshi: the GUI framework. core (API) + vis (SceneView / VexelRay SDF layer). -->
+        <dependency>
+            <groupId>sibarum.dasum.gui</groupId>
+            <artifactId>dasum-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>sibarum.dasum.gui</groupId>
+            <artifactId>dasum-vis</artifactId>
+        </dependency>
+        <!-- Native libraries are resource-only and NOT transitive — declared at runtime scope. -->
+        <dependency>
+            <groupId>sibarum.dasum.gui</groupId>
+            <artifactId>dasum-glfw</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>sibarum.dasum.gui</groupId>
+            <artifactId>dasum-nfd</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Build-time MSDF atlas generation (text + icons). -->
+            <plugin>
+                <groupId>sibarum.dasum.gui</groupId>
+                <artifactId>dasum-msdf-maven-plugin</artifactId>
+                <version>${dasum.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-atlases</id>
+                        <goals>
+                            <goal>generate-atlas</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <outputDir>${project.basedir}/src/main/resources/dasum/atlas</outputDir>
+                    <atlases>
+                        <!-- Primary text atlas. Noto Sans ("no tofu") for broad Unicode coverage:
+                             ASCII, Latin-1, Latin Extended-A, Greek, Cyrillic, plus common
+                             punctuation / currency / arrows / math the font provides. -->
+                        <atlas>
+                            <name>primary</name>
+                            <font>${project.basedir}/fonts/Noto_Sans/NotoSans-Regular.ttf</font>
+                            <!-- Noto Sans provides Latin / Greek / Cyrillic / currency / punctuation.
+                                 Arrows and math operators come from the merged extra fonts below
+                                 (Noto Sans lacks both). On collision the primary font wins. -->
+                            <charset>[0x20, 0x7E]
+[0xA0, 0xFF]
+[0x100, 0x17F]
+[0x370, 0x3FF]
+[0x400, 0x4FF]
+[0x2010, 0x2027]
+[0x2030, 0x205E]
+[0x20A0, 0x20BF]
+0xFFFD</charset>
+                            <atlasSize>2048</atlasSize>
+                            <fontSize>32</fontSize>
+                            <pxRange>4</pxRange>
+                            <extraFonts>
+                                <!-- Arrows (U+2190-21FF) + math operators (U+2200-22FF) from
+                                     Noto Sans Math, which covers the full arrows block (112/112)
+                                     as well as all operators. (Noto Sans Symbols 2 only had 13
+                                     arrows and none of the common ones, so it isn't used.) -->
+                                <extraFont>
+                                    <font>${project.basedir}/fonts/Noto_Sans_Math/NotoSansMath-Regular.ttf</font>
+                                    <charset>[0x2190, 0x22FF]</charset>
+                                </extraFont>
+                            </extraFonts>
+                        </atlas>
+
+                        <!-- Monospace text atlas — JetBrains Mono, for the editor/code surfaces.
+                             Registered at runtime as a separate font group from "primary". -->
+                        <atlas>
+                            <name>mono</name>
+                            <font>${project.basedir}/fonts/JetBrains_Mono/JetBrainsMono-Regular.ttf</font>
+                            <charset>[0x20, 0x7E]
+[0xA0, 0xFF]
+[0x100, 0x17F]
+[0x370, 0x3FF]
+[0x400, 0x4FF]
+0xFFFD</charset>
+                            <atlasSize>2048</atlasSize>
+                            <fontSize>32</fontSize>
+                            <pxRange>4</pxRange>
+                        </atlas>
+
+                        <!-- Icon atlas — Lucide subset. Generates vexelray.dasumgui.generated.Icons. -->
+                        <atlas>
+                            <name>icons</name>
+                            <font>${project.basedir}/fonts/lucide/lucide.ttf</font>
+                            <atlasSize>1024</atlasSize>
+                            <fontSize>40</fontSize>
+                            <pxRange>4</pxRange>
+                            <icons>
+                                <manifest>${project.basedir}/fonts/lucide/info.json</manifest>
+                                <manifestFormat>lucide</manifestFormat>
+                                <glyphList>
+                                    search, settings, home, trash-2, plus, minus,
+                                    x, check, chevron-down, chevron-up, chevron-left, chevron-right,
+                                    folder, file, save, copy, edit, eye, eye-off,
+                                    play, pause, square, circle, layers,
+                                    info, alert-triangle, help-circle,
+                                    arrow-up, arrow-down, arrow-left, arrow-right,
+                                    zoom-in, zoom-out, maximize-2, minimize-2,
+                                    box, sliders
+                                </glyphList>
+                                <generatedSourcesDir>${project.build.directory}/generated-sources/dasum-msdf</generatedSourcesDir>
+                                <packageName>vexelray.dasumgui.generated</packageName>
+                                <className>Icons</className>
+                            </icons>
+                        </atlas>
+                    </atlases>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- macOS / Linux: skip msdf-atlas-gen.exe, expect pre-generated atlases checked in. -->
+        <profile>
+            <id>msdf-prebuilt</id>
+            <properties>
+                <msdf.mode>prebuilt</msdf.mode>
+            </properties>
+        </profile>
+    </profiles>
+
+</project>
