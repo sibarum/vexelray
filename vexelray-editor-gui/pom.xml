@@ -12,4 +12,45 @@
 
     <artifactId>vexelray-editor-gui</artifactId>
 
+    <properties>
+        <main.class>vexelray.editor.gui.EditorApp</main.class>
+    </properties>
+
+    <dependencies>
+        <!-- The vexelray dasum integration layer: brings dasum-core + dasum-vis
+             (compile) and the glfw/nfd natives (runtime) transitively, plus the
+             generated MSDF atlas resources + Icons class and the Atlases bootstrap. -->
+        <dependency>
+            <groupId>vexelray.core</groupId>
+            <artifactId>vexelray-dasumgui</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- The SDF scene model + the supirvast shader-codegen seam. -->
+        <dependency>
+            <groupId>vexelray.core</groupId>
+            <artifactId>vexelray-supirvast</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <mainClass>${main.class}</mainClass>
+                    <executable>java</executable>
+                    <arguments>
+                        <argument>--enable-native-access=ALL-UNNAMED</argument>
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        <argument>${main.class}</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>

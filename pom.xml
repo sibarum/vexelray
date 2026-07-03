@@ -25,10 +25,19 @@
 
         <!-- DasumGUIshi (sibarum.dasum.gui) — installed in the local .m2 from ~/IdeaProjects/dasumGUIshi -->
         <dasum.version>1.0-SNAPSHOT</dasum.version>
+        <!-- Supir-Vast (dev.supirvast) — installed in the local .m2 from ~/IdeaProjects/supirvast -->
+        <supirvast.version>0.1.0-SNAPSHOT</supirvast.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- Supir-Vast: the `core`/vastir shader IR (pure Java; lowers to SPIR-V). -->
+            <dependency>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>vastir</artifactId>
+                <version>${supirvast.version}</version>
+            </dependency>
+
             <dependency>
                 <groupId>sibarum.dasum.gui</groupId>
                 <artifactId>dasum-core</artifactId>
