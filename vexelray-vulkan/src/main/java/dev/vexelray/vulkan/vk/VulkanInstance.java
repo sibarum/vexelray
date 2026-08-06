@@ -12,25 +12,29 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
+import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * A live {@code VkInstance}, created through the hand-rolled Vulkan loader ({@link VkLoader}). Owns the instance
- * handle and the instance-level commands VexelRay uses, and tears the instance down on {@link #close()}.
- *
- * <p>This is the first concrete Vulkan object in the engine — proof that the direct-Panama path reaches real
- * Vulkan. Device, queues, and swapchain build on top of it in subsequent steps.
+ * handle and the instance-level commands VexelRay uses — physical-device enumeration, queue-family and
+ * surface-support queries used to pick a device, and surface teardown — and destroys the instance on
+ * {@link #close()}.
  */
 public final class VulkanInstance implements AutoCloseable {
 
     private static final int VK_STRUCTURE_TYPE_APPLICATION_INFO = 0;
     private static final int VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1;
     private static final int VK_SUCCESS = 0;
+    private static final int VK_TRUE = 1;
     private static final int VK_API_VERSION_1_3 = (1 << 22) | (3 << 12);
     private static final int VK_MAX_PHYSICAL_DEVICE_NAME_SIZE = 256;
+    private static final int VK_QUEUE_GRAPHICS_BIT = 0x0001;
+    private static final int VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU = 2;
 
     private static final GroupLayout APPLICATION_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"),
@@ -70,8 +74,19 @@ public final class VulkanInstance implements AutoCloseable {
             MemoryLayout.paddingLayout(1024 - 20 - VK_MAX_PHYSICAL_DEVICE_NAME_SIZE)
     ).withName("VkPhysicalDeviceProperties");
 
+    /** VkQueueFamilyProperties — 24 bytes; only queueFlags is read here. */
+    private static final GroupLayout QUEUE_FAMILY_PROPERTIES = MemoryLayout.structLayout(
+            JAVA_INT.withName("queueFlags"),
+            JAVA_INT.withName("queueCount"),
+            JAVA_INT.withName("timestampValidBits"),
+            JAVA_INT.withName("granularity_width"),
+            JAVA_INT.withName("granularity_height"),
+            JAVA_INT.withName("granularity_depth")
+    ).withName("VkQueueFamilyProperties");
+
     private static final long DEVICE_NAME_OFFSET =
             PHYSICAL_DEVICE_PROPERTIES.byteOffset(MemoryLayout.PathElement.groupElement("deviceName"));
+    private static final long QFP_STRIDE = QUEUE_FAMILY_PROPERTIES.byteSize();
 
     private static final VarHandle AI_sType = Ffi.field(APPLICATION_INFO, "sType");
     private static final VarHandle AI_pApplicationName = Ffi.field(APPLICATION_INFO, "pApplicationName");
@@ -83,9 +98,19 @@ public final class VulkanInstance implements AutoCloseable {
     private static final VarHandle CI_enabledExtensionCount = Ffi.field(INSTANCE_CREATE_INFO, "enabledExtensionCount");
     private static final VarHandle CI_ppEnabledExtensionNames = Ffi.field(INSTANCE_CREATE_INFO, "ppEnabledExtensionNames");
 
+    private static final VarHandle PDP_deviceType = Ffi.field(PHYSICAL_DEVICE_PROPERTIES, "deviceType");
+    private static final VarHandle QFP_queueFlags = Ffi.field(QUEUE_FAMILY_PROPERTIES, "queueFlags");
+
+    /** A chosen physical device plus a queue family that supports both graphics and presentation to a surface. */
+    public record DeviceSelection(MemorySegment physicalDevice, int queueFamilyIndex, String deviceName) {
+    }
+
     private final MemorySegment handle;
     private final MethodHandle vkEnumeratePhysicalDevices;
     private final MethodHandle vkGetPhysicalDeviceProperties;
+    private final MethodHandle vkGetPhysicalDeviceQueueFamilyProperties;
+    private final MethodHandle vkGetPhysicalDeviceSurfaceSupportKHR;
+    private final MethodHandle vkDestroySurfaceKHR;
     private final MethodHandle vkDestroyInstance;
 
     public VulkanInstance(String applicationName, List<String> extensions) {
@@ -127,6 +152,13 @@ public final class VulkanInstance implements AutoCloseable {
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
         this.vkGetPhysicalDeviceProperties = VkLoader.instanceCommand(handle, "vkGetPhysicalDeviceProperties",
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+        this.vkGetPhysicalDeviceQueueFamilyProperties = VkLoader.instanceCommand(handle,
+                "vkGetPhysicalDeviceQueueFamilyProperties", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
+        this.vkGetPhysicalDeviceSurfaceSupportKHR = VkLoader.instanceCommand(handle,
+                "vkGetPhysicalDeviceSurfaceSupportKHR",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, ADDRESS));
+        this.vkDestroySurfaceKHR = VkLoader.instanceCommand(handle, "vkDestroySurfaceKHR",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS));
         this.vkDestroyInstance = VkLoader.instanceCommand(handle, "vkDestroyInstance",
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
     }
@@ -141,32 +173,124 @@ public final class VulkanInstance implements AutoCloseable {
         return handle.address();
     }
 
-    /** The reported name of every physical device visible to this instance. */
-    public List<String> physicalDeviceNames() {
-        List<String> names = new ArrayList<>();
+    /** Handles of every physical device visible to this instance. */
+    public List<MemorySegment> physicalDevices() {
+        List<MemorySegment> devices = new ArrayList<>();
         try (Arena temp = Arena.ofConfined()) {
             MemorySegment pCount = temp.allocate(JAVA_INT);
             check(enumerate(pCount, MemorySegment.NULL), "vkEnumeratePhysicalDevices(count)");
             int count = pCount.get(JAVA_INT, 0);
             if (count == 0) {
-                return names;
+                return devices;
             }
-
             MemorySegment pDevices = temp.allocate(ADDRESS, count);
             check(enumerate(pCount, pDevices), "vkEnumeratePhysicalDevices(list)");
-
-            MemorySegment props = temp.allocate(PHYSICAL_DEVICE_PROPERTIES);
             for (int i = 0; i < count; i++) {
-                MemorySegment device = pDevices.getAtIndex(ADDRESS, i);
-                try {
-                    vkGetPhysicalDeviceProperties.invokeExact(device, props);
-                } catch (Throwable t) {
-                    throw NativeException.rethrow("vkGetPhysicalDeviceProperties", t);
-                }
-                names.add(props.getString(DEVICE_NAME_OFFSET));
+                devices.add(pDevices.getAtIndex(ADDRESS, i));
             }
         }
+        return devices;
+    }
+
+    /** The reported name of every physical device (convenience over {@link #physicalDevices()}). */
+    public List<String> physicalDeviceNames() {
+        List<String> names = new ArrayList<>();
+        for (MemorySegment device : physicalDevices()) {
+            names.add(deviceName(device));
+        }
         return names;
+    }
+
+    /**
+     * Pick a device and a queue family that supports both graphics and presentation to {@code surface}. Prefers a
+     * discrete GPU when one qualifies; otherwise the first that does. Empty if none can present to the surface.
+     */
+    public Optional<DeviceSelection> selectGraphicsPresentDevice(long surface) {
+        DeviceSelection firstMatch = null;
+        for (MemorySegment device : physicalDevices()) {
+            int family = graphicsPresentQueueFamily(device, surface);
+            if (family < 0) {
+                continue;
+            }
+            DeviceSelection selection = new DeviceSelection(device, family, deviceName(device));
+            if (deviceType(device) == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+                return Optional.of(selection);
+            }
+            if (firstMatch == null) {
+                firstMatch = selection;
+            }
+        }
+        return Optional.ofNullable(firstMatch);
+    }
+
+    /** Destroy a surface created for this instance. */
+    public void destroySurface(long surface) {
+        try {
+            vkDestroySurfaceKHR.invokeExact(handle, surface, MemorySegment.NULL);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("vkDestroySurfaceKHR", t);
+        }
+    }
+
+    private int graphicsPresentQueueFamily(MemorySegment device, long surface) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment pCount = temp.allocate(JAVA_INT);
+            try {
+                vkGetPhysicalDeviceQueueFamilyProperties.invokeExact(device, pCount, MemorySegment.NULL);
+            } catch (Throwable t) {
+                throw NativeException.rethrow("vkGetPhysicalDeviceQueueFamilyProperties", t);
+            }
+            int count = pCount.get(JAVA_INT, 0);
+            MemorySegment props = temp.allocate(QUEUE_FAMILY_PROPERTIES, count);
+            try {
+                vkGetPhysicalDeviceQueueFamilyProperties.invokeExact(device, pCount, props);
+            } catch (Throwable t) {
+                throw NativeException.rethrow("vkGetPhysicalDeviceQueueFamilyProperties", t);
+            }
+            MemorySegment pSupported = temp.allocate(JAVA_INT);
+            for (int f = 0; f < count; f++) {
+                int flags = (int) QFP_queueFlags.get(props.asSlice(f * QFP_STRIDE, QFP_STRIDE));
+                boolean graphics = (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+                if (graphics && surfaceSupported(device, f, surface, pSupported)) {
+                    return f;
+                }
+            }
+            return -1;
+        }
+    }
+
+    private boolean surfaceSupported(MemorySegment device, int family, long surface, MemorySegment pSupported) {
+        try {
+            int r = (int) vkGetPhysicalDeviceSurfaceSupportKHR.invokeExact(device, family, surface, pSupported);
+            check(r, "vkGetPhysicalDeviceSurfaceSupportKHR");
+            return pSupported.get(JAVA_INT, 0) == VK_TRUE;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("vkGetPhysicalDeviceSurfaceSupportKHR", t);
+        }
+    }
+
+    private String deviceName(MemorySegment device) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment props = temp.allocate(PHYSICAL_DEVICE_PROPERTIES);
+            properties(device, props);
+            return props.getString(DEVICE_NAME_OFFSET);
+        }
+    }
+
+    private int deviceType(MemorySegment device) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment props = temp.allocate(PHYSICAL_DEVICE_PROPERTIES);
+            properties(device, props);
+            return (int) PDP_deviceType.get(props);
+        }
+    }
+
+    private void properties(MemorySegment device, MemorySegment props) {
+        try {
+            vkGetPhysicalDeviceProperties.invokeExact(device, props);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("vkGetPhysicalDeviceProperties", t);
+        }
     }
 
     private int enumerate(MemorySegment pCount, MemorySegment pDevices) {
