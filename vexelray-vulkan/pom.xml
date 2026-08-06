@@ -26,6 +26,24 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-os-api</artifactId>
         </dependency>
+
+        <!-- Test-only: compose real SPIR-V (SupirVast core IR -> lowering) to feed the graphics pipeline in the
+             offscreen render smoke. The runtime module itself consumes only SPIR-V byte[], never the composer. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <!--

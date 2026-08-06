@@ -63,5 +63,46 @@ public final class Vk {
 
     // Sentinels
     public static final int QUEUE_FAMILY_IGNORED = ~0;
+    public static final int SUBPASS_EXTERNAL = ~0;
     public static final long WHOLE_SIZE = ~0L;
+
+    // --- graphics-pipeline structure types ---
+    public static final int STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO = 15;
+    public static final int STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO = 16;
+    public static final int STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO = 18;
+    public static final int STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO = 19;
+    public static final int STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO = 20;
+    public static final int STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO = 22;
+    public static final int STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO = 23;
+    public static final int STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO = 24;
+    public static final int STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO = 26;
+    public static final int STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO = 28;
+    public static final int STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO = 30;
+    public static final int STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO = 37;
+    public static final int STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO = 38;
+    public static final int STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO = 43;
+
+    // Image view / attachments
+    public static final int IMAGE_VIEW_TYPE_2D = 1;
+    public static final int IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2;
+    public static final int ATTACHMENT_LOAD_OP_CLEAR = 1;
+    public static final int ATTACHMENT_STORE_OP_STORE = 0;
+    public static final int ATTACHMENT_LOAD_OP_DONT_CARE = 2;
+    public static final int ATTACHMENT_STORE_OP_DONT_CARE = 1;
+
+    // Pipeline
+    public static final int PIPELINE_BIND_POINT_GRAPHICS = 0;
+    public static final int SHADER_STAGE_VERTEX_BIT = 0x0001;
+    public static final int SHADER_STAGE_FRAGMENT_BIT = 0x0010;
+    public static final int PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 3;
+    public static final int POLYGON_MODE_FILL = 0;
+    public static final int CULL_MODE_NONE = 0;
+    public static final int FRONT_FACE_COUNTER_CLOCKWISE = 0;
+    public static final int COLOR_COMPONENT_RGBA =
+            0x1 | 0x2 | 0x4 | 0x8;
+    public static final int SUBPASS_CONTENTS_INLINE = 0;
+
+    // Stages / access for the color-attachment dependency
+    public static final int PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT = 0x0400;
+    public static final int ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x0100;
 }
