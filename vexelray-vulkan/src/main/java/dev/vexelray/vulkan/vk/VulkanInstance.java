@@ -223,12 +223,59 @@ public final class VulkanInstance implements AutoCloseable {
         return Optional.ofNullable(firstMatch);
     }
 
+    /**
+     * Pick a device and a graphics queue family, without requiring presentation — the headless/offscreen path
+     * (no window, no surface). Prefers a discrete GPU. Empty if none exposes a graphics queue.
+     */
+    public Optional<DeviceSelection> selectGraphicsDevice() {
+        DeviceSelection firstMatch = null;
+        for (MemorySegment device : physicalDevices()) {
+            int family = graphicsQueueFamily(device);
+            if (family < 0) {
+                continue;
+            }
+            DeviceSelection selection = new DeviceSelection(device, family, deviceName(device));
+            if (deviceType(device) == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+                return Optional.of(selection);
+            }
+            if (firstMatch == null) {
+                firstMatch = selection;
+            }
+        }
+        return Optional.ofNullable(firstMatch);
+    }
+
     /** Destroy a surface created for this instance. */
     public void destroySurface(long surface) {
         try {
             vkDestroySurfaceKHR.invokeExact(handle, surface, MemorySegment.NULL);
         } catch (Throwable t) {
             throw NativeException.rethrow("vkDestroySurfaceKHR", t);
+        }
+    }
+
+    private int graphicsQueueFamily(MemorySegment device) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment pCount = temp.allocate(JAVA_INT);
+            try {
+                vkGetPhysicalDeviceQueueFamilyProperties.invokeExact(device, pCount, MemorySegment.NULL);
+            } catch (Throwable t) {
+                throw NativeException.rethrow("vkGetPhysicalDeviceQueueFamilyProperties", t);
+            }
+            int count = pCount.get(JAVA_INT, 0);
+            MemorySegment props = temp.allocate(QUEUE_FAMILY_PROPERTIES, count);
+            try {
+                vkGetPhysicalDeviceQueueFamilyProperties.invokeExact(device, pCount, props);
+            } catch (Throwable t) {
+                throw NativeException.rethrow("vkGetPhysicalDeviceQueueFamilyProperties", t);
+            }
+            for (int f = 0; f < count; f++) {
+                int flags = (int) QFP_queueFlags.get(props.asSlice(f * QFP_STRIDE, QFP_STRIDE));
+                if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+                    return f;
+                }
+            }
+            return -1;
         }
     }
 

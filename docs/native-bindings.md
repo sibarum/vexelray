@@ -261,8 +261,10 @@ public final class User32 {
 1. **One library → one class**, named after the library, in `dev.vexelray.os.<platform>.sys`.
 2. **Every downcall handle is `private static final`** and named **exactly** like the C symbol
    (`CreateWindowExW`, not `createWindow`). The public wrapper is the camelCase Java version.
-3. **Struct fields are named layout elements.** Access is via a `VarHandle` derived from a
-   `PathElement.groupElement("field")` — **a literal byte offset in a binding is a bug.** Padding is explicit
+3. **Struct fields are named layout elements.** Access is via a `VarHandle` from
+   `PathElement.groupElement("field")` (`Ffi.field`), or — for write-heavy struct filling — via
+   `segment.set(VALUE_LAYOUT, layout.byteOffset(groupElement("field")), v)`. Either way **the offset comes from
+   the layout, never a literal** — a literal byte offset in a binding is a bug. Padding is explicit
    `paddingLayout`, matched to the C ABI.
 4. **Every wrapper is Java-typed** (no raw `MemorySegment` leakage where a real type exists) and does
    `invokeExact` inside `try { … } catch (Throwable t) { throw NativeException.rethrow(name, t); }`.
