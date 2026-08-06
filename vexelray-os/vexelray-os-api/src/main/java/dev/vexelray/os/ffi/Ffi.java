@@ -43,6 +43,17 @@ public final class Ffi {
     }
 
     /**
+     * A downcall handle for a raw function-pointer address — for entry points resolved at runtime rather than by
+     * symbol name, e.g. a Vulkan function returned by {@code vkGetInstanceProcAddr}. The address must be non-null.
+     */
+    public static MethodHandle downcall(MemorySegment functionAddress, FunctionDescriptor descriptor) {
+        if (functionAddress == null || functionAddress.equals(MemorySegment.NULL)) {
+            throw new NativeException("cannot bind a null function pointer");
+        }
+        return LINKER.downcallHandle(functionAddress, descriptor);
+    }
+
+    /**
      * An upcall stub — a Java callback the OS can invoke (e.g. a WndProc) — bound to {@code lifetime}. The
      * lifetime arena must outlive every native use of the stub; binding it to a confined arena closed early is a
      * use-after-free.
