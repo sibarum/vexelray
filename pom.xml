@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.vexelray</groupId>
+    <artifactId>vexelray</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>VexelRay</name>
+    <description>
+        A Vulkan graphics engine whose shaders are generated programmatically at runtime. A hybrid polygon
+        rasterizer and SDF ray-marcher with a build-your-own-pipeline configuration API, flexible buffer
+        management, and pluggable lighting models. VexelRay owns its Vulkan runtime and consumes SupirVast purely
+        as a shader-authoring/lowering library: engine-level descriptions compose into SupirVast `core` IR, which
+        lowers to validated SPIR-V.
+    </description>
+
+    <modules>
+        <!-- Binding-agnostic engine vocabulary: pipeline config, resources, lighting, runtime interfaces.
+             No SupirVast, no Vulkan. Everything else compiles against this. -->
+        <module>vexelray-core</module>
+        <!-- Runtime shader generation: engine descriptions -> SupirVast core IR -> SPIR-V. The SupirVast seam. -->
+        <module>vexelray-shader</module>
+        <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
+             An aggregator grouping (vexelray-os-api + vexelray-os-{windows,linux,macos}). -->
+        <module>vexelray-os</module>
+        <!-- vexelray-vulkan (the Panama runtime + resource implementation) is added with the binding decision.
+             It will also host the OS-activated selection profiles that pick the platform module. -->
+    </modules>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- SupirVast: shader IR, SPIR-V lowering, pipeline specs, Fullscreen primitive, model loaders.
+             Installed to the local .m2 by `mvn install` in the sibling supirvast repo. -->
+        <supirvast.version>0.1.0-SNAPSHOT</supirvast.version>
+        <!-- Pure-Java vector/matrix math for camera/MVP transforms (no natives). -->
+        <joml.version>1.10.7</joml.version>
+        <junit.version>5.11.4</junit.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Reactor-internal modules: children reference these without a version. -->
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-shader</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-os-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-os-windows</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-os-linux</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-os-macos</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- SupirVast (shader authoring + lowering). -->
+            <dependency>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>vastir</artifactId>
+                <version>${supirvast.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>vastir-tools</artifactId>
+                <version>${supirvast.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.joml</groupId>
+                <artifactId>joml</artifactId>
+                <version>${joml.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.2</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

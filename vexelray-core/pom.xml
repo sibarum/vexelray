@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-core</artifactId>
+
+    <description>
+        The binding-agnostic engine vocabulary: the build-your-own-pipeline configuration API (attachments,
+        passes, RenderPipeline, FrameGraph), flexible buffer-management interfaces, pluggable lighting models,
+        and the runtime-manager seam (RuntimeManager/ResourceManager interfaces + VexelEngine). Depends on no
+        shader compiler and no Vulkan binding, so a pipeline can be described, validated, and unit-tested with
+        neither a GPU nor SupirVast present.
+    </description>
+
+    <dependencies>
+        <!-- Pure-Java math for camera/MVP transforms once they land. -->
+        <dependency>
+            <groupId>org.joml</groupId>
+            <artifactId>joml</artifactId>
+        </dependency>
+    </dependencies>
+</project>

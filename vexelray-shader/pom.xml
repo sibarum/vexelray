@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-shader</artifactId>
+
+    <description>
+        Runtime shader generation — VexelRay's headline feature. Composers assemble SupirVast `core` IR from
+        engine-level descriptions (materials, SDF scenes, lighting models) and lower it to validated SPIR-V via
+        CoreToSpirv. This module isolates the SupirVast dependency behind the ComposedShader byte[] boundary.
+    </description>
+
+    <dependencies>
+        <!-- Engine vocabulary (LightingModel, ShaderStage boundary types folded into composition). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-core</artifactId>
+        </dependency>
+
+        <!-- SupirVast: the core IR + SPIR-V lowering, and the Fullscreen/GraphicsPipelineSpec primitives. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+        </dependency>
+    </dependencies>
+</project>
