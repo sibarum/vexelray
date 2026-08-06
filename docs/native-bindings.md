@@ -276,6 +276,25 @@ public final class User32 {
 8. **No `Linker`, `libraryLookup`, or `upcallStub` outside `Ffi`.** Bindings call the helper; the helper is the
    single audited surface.
 
+### 4.4 Loader-based libraries (Vulkan)
+
+Some libraries expose almost nothing by symbol name — you resolve one bootstrap symbol and load everything else
+through it. **Vulkan** is the case that matters here: `vulkan-1` exports `vkGetInstanceProcAddr`, and every other
+command is resolved through that (global commands with a `NULL` instance; instance/device commands with a live
+handle). This is a *variant* of §4.2, not an exception to it — the same rules hold, with two additions:
+
+1. **One loader class** (`VkLoader`) owns the bootstrap symbol and exposes typed resolvers —
+   `globalCommand(name, descriptor)` and `instanceCommand(instance, name, descriptor)` — each returning a
+   `MethodHandle` built from the resolved pointer via `Ffi.downcall(MemorySegment, …)`. Bindings never call
+   `vkGetInstanceProcAddr` themselves.
+2. **Command handles are resolved once and cached** (as `final` fields on the object that owns the scope — the
+   instance caches its instance-level commands, the device its device-level commands), not re-resolved per call.
+
+Everything else — named struct layouts, typed wrappers, `VkResult` checks turned into `NativeException`, arenas
+for ownership, registration for native-image — is exactly as §4.2/§4.3/§6. The loader library's name is itself
+platform-specific (`vulkan-1` on Windows, `libvulkan.so.1` on Linux, MoltenVK on macOS); source it from the
+active platform once multiple platforms are implemented.
+
 ---
 
 ## 5. The platform-agnostic API (`vexelray-os-api`)

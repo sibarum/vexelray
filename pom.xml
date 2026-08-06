@@ -27,8 +27,9 @@
         <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
              An aggregator grouping (vexelray-os-api + vexelray-os-{windows,linux,macos}). -->
         <module>vexelray-os</module>
-        <!-- vexelray-vulkan (the Panama runtime + resource implementation) is added with the binding decision.
-             It will also host the OS-activated selection profiles that pick the platform module. -->
+        <!-- The Panama Vulkan runtime + resource implementation. Hosts the OS-activated selection profiles that
+             add the matching platform module (so the platform dep never leaks into core/shader). -->
+        <module>vexelray-vulkan</module>
     </modules>
 
     <properties>
@@ -74,6 +75,11 @@
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-os-macos</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-vulkan</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

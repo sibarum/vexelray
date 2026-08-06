@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>vexelray-vulkan</artifactId>
+
+    <description>
+        The Panama Vulkan runtime: hand-rolled bindings to the Vulkan loader (vulkan-1) plus the concrete
+        RuntimeManager/ResourceManager that own VexelRay's device, swapchain, and frame loop. Depends on the
+        platform-agnostic OS API for windowing/surface, and on exactly one platform module chosen at build time
+        by the host OS (the selection profiles below). Follows docs/native-bindings.md.
+    </description>
+
+    <dependencies>
+        <!-- Always: the platform-agnostic native API (Ffi helper, NativePlatform, NativeWindow). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-os-api</artifactId>
+        </dependency>
+    </dependencies>
+
+    <!--
+      Build-time platform selection (docs/native-bindings.md §3.1). Exactly one profile activates, from the host
+      OS family, and adds that platform's provider module at runtime scope. This is the ONE place a concrete
+      platform module is depended on — keeping it out of core/shader. ServiceLoader then finds the single
+      NativePlatform provider at runtime.
+    -->
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation>
+                <os><family>unix</family><name>linux</name></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation>
+                <os><family>mac</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

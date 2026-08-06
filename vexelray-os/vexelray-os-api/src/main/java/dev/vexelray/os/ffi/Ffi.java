@@ -3,10 +3,13 @@ package dev.vexelray.os.ffi;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
+import java.lang.foreign.MemoryLayout;
+import java.lang.foreign.MemoryLayout.PathElement;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 
 /**
  * The one sanctioned entry to Panama. <strong>Every</strong> native binding routes through here — no binding
@@ -51,6 +54,16 @@ public final class Ffi {
             throw new NativeException("cannot bind a null function pointer");
         }
         return LINKER.downcallHandle(functionAddress, descriptor);
+    }
+
+    /**
+     * A {@link VarHandle} for a named struct field, with the layout's base-offset coordinate bound to 0 so
+     * callers use the simple {@code (MemorySegment, value)} form. Offsets come from the layout, never a literal —
+     * the foolproof way to read/write native structs (see {@code docs/native-bindings.md} §4.3).
+     */
+    public static VarHandle field(MemoryLayout layout, String name) {
+        VarHandle vh = layout.varHandle(PathElement.groupElement(name));
+        return MethodHandles.insertCoordinates(vh, 1, 0L).withInvokeExactBehavior();
     }
 
     /**
