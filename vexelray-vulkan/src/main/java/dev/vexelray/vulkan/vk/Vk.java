@@ -104,5 +104,26 @@ public final class Vk {
 
     // Stages / access for the color-attachment dependency
     public static final int PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT = 0x0400;
+    public static final int PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT = 0x2000;
     public static final int ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x0100;
+
+    // --- swapchain / presentation (VK_KHR_swapchain, VK_KHR_surface) ---
+    public static final int STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO = 9;
+    public static final int STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000;
+    public static final int STRUCTURE_TYPE_PRESENT_INFO_KHR = 1000001001;
+
+    public static final int FORMAT_B8G8R8A8_UNORM = 44;
+    public static final int FORMAT_B8G8R8A8_SRGB = 50;
+    public static final int COLOR_SPACE_SRGB_NONLINEAR_KHR = 0;
+    public static final int PRESENT_MODE_FIFO_KHR = 2;
+    public static final int COMPOSITE_ALPHA_OPAQUE_BIT_KHR = 0x0001;
+    public static final int IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002;
+
+    public static final int SUBOPTIMAL_KHR = 1000001003;
+    public static final int ERROR_OUT_OF_DATE_KHR = -1000001004;
+
+    // Command pool flags
+    public static final int COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x0002;
+    /** {@code 0xFFFFFFFF} — a surface {@code currentExtent} of this width means "the app chooses the size". */
+    public static final int EXTENT_UNDEFINED = 0xFFFFFFFF;
 }
