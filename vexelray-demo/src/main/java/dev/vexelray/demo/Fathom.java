@@ -12,6 +12,8 @@ import dev.supirvast.vastir.core.ShaderStage;
 import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.tools.Fullscreen;
 import dev.supirvast.vastir.type.Type;
+import dev.supirvast.vast.CoreToTruffle;
+import com.oracle.truffle.api.CallTarget;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
@@ -60,7 +62,10 @@ public final class Fathom {
 
         String capture = null;
         int maxFrames = 0;
-        if (args.length >= 2 && args[0].equals("--capture")) {
+        if (args.length >= 1 && args[0].equals("--verify")) {
+            verify();
+            return;
+        } else if (args.length >= 2 && args[0].equals("--capture")) {
             capture = args[1];
         } else if (args.length == 1) {
             maxFrames = Integer.parseInt(args[0]);
@@ -176,6 +181,49 @@ public final class Fathom {
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
         CoreModule module = new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
         return ComposedShader.lower(ShaderStage.FRAGMENT, module, "main").spirv();
+    }
+
+    /**
+     * Demonstrates render/sim unity: lower the SAME {@link #sceneSdf} to the CPU (SupirVast Truffle backend) and
+     * both probe it and sphere-trace it. The GPU raymarches this field to draw the world; here the CPU evaluates
+     * the identical IR — which is how collision, line-of-sight, and physics will query exactly what you see.
+     */
+    private static void verify() {
+        CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
+        System.out.println("CPU-evaluating the SAME sceneSdf IR the GPU renders (SupirVast Truffle backend):");
+        probe(cpu, 0.0f, 1.0f, 3.0f);    // sphere centre  -> ~ -1 (deep inside)
+        probe(cpu, 0.0f, 1.5f, 3.0f);    // upper sphere   -> ~ -0.5 (inside)
+        probe(cpu, 0.0f, 2.2f, 3.0f);    // just above it  -> ~ +0.2 (air)
+        probe(cpu, 5.0f, 0.0f, 3.0f);    // on the floor   -> ~ 0
+        probe(cpu, 0.0f, 4.0f, 3.0f);    // high air       -> ~ +2
+
+        // CPU sphere-trace of the centre ray — a physics-style raycast against the render field, in plain Java
+        // calling the shared IR each step. The GPU draws the sphere front near z=2; the CPU should find it there.
+        float ox = 0.0f, oy = 1.2f, oz = -3.0f;
+        float t = 0.0f;
+        for (int i = 0; i < 80; i++) {
+            t += cpuSdf(cpu, ox, oy, oz + t);
+        }
+        float residual = cpuSdf(cpu, ox, oy, oz + t);
+        System.out.printf("  centre-ray march: t=%.3f  hit=(%.2f, %.2f, %.2f)  residual=%.4f  %s%n",
+                t, ox, oy, oz + t, residual, residual < 0.01f ? "HIT" : "miss");
+        System.out.println("render == sim: one field, drawn on the GPU and queried on the CPU.");
+    }
+
+    private static void probe(CallTarget cpu, float x, float y, float z) {
+        float d = cpuSdf(cpu, x, y, z);
+        System.out.printf("  sdf(%5.1f,%4.1f,%4.1f) = %+.3f  (%s)%n",
+                x, y, z, d, d < 0 ? "inside geometry" : "empty space");
+    }
+
+    private static float cpuSdf(CallTarget cpu, float x, float y, float z) {
+        return (Float) cpu.call((Object) new float[] {x, y, z});
+    }
+
+    /** The scene SDF as a pure, CPU-lowerable {@code core} function {@code float sdf(vec3 p)} — same body as the shader. */
+    private static Function sdfFunction() {
+        return new Function("sdf", new Type.FunctionType(F32, List.of(V3)),
+                Region.of(new Statement.Return(sceneSdf(new Expr.Param(0, V3)))));
     }
 
     /** Signed distance to the v0 scene: {@code min(ground plane y=0, sphere at (0,1,3) r=1)}. Fresh IR per call. */

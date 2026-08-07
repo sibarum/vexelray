@@ -38,6 +38,11 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-shader</artifactId>
         </dependency>
+        <!-- SupirVast's CPU (Truffle) backend: run the SAME SDF core IR on the CPU for collision / world queries. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vast</artifactId>
+        </dependency>
     </dependencies>
 
     <profiles>

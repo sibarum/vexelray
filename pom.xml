@@ -96,6 +96,12 @@
                 <artifactId>vastir-tools</artifactId>
                 <version>${supirvast.version}</version>
             </dependency>
+            <!-- The Truffle CPU backend: runs the same core IR on the CPU (physics/collision to the GPU's render). -->
+            <dependency>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>vast</artifactId>
+                <version>${supirvast.version}</version>
+            </dependency>
 
             <dependency>
                 <groupId>org.joml</groupId>
