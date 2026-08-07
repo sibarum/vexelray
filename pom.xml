@@ -30,6 +30,8 @@
         <!-- The Panama Vulkan runtime + resource implementation. Hosts the OS-activated selection profiles that
              add the matching platform module (so the platform dep never leaks into core/shader). -->
         <module>vexelray-vulkan</module>
+        <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
+        <module>vexelray-demo</module>
     </modules>
 
     <properties>

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>vexelray-demo</artifactId>
+
+    <description>
+        Fathom — the VexelRay reference demo: a first-person, MS-DOS-flavoured explorer of a signed-distance
+        world (grows toward sprites-in-3D and a systemic sim). Also the canonical example of how a client app is
+        configured: it depends on core + vulkan + shader, selects its platform module at build time via the same
+        OS-activated profiles, and ships a `-Pnative` GraalVM profile that produces a single native executable.
+    </description>
+
+    <properties>
+        <fathom.mainClass>dev.vexelray.demo.Fathom</fathom.mainClass>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+        </dependency>
+        <!-- Runtime shader composition: brings vastir + vastir-tools transitively (Fullscreen, core IR, lowering). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <!-- Build-time platform selection: exactly one activates from the host OS, adding its provider module. -->
+        <profile>
+            <id>platform-windows</id>
+            <activation><os><family>windows</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation><os><family>unix</family><name>linux</name></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation><os><family>mac</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+
+        <!--
+          Single native executable via GraalVM native-image (`mvn -Pnative -DskipTests package`).
+          Requires a GraalVM JDK 25. Produces target/fathom(.exe) with no JVM and no runtime deps beyond the
+          graphics driver — the payoff of VexelRay's direct-Panama, no-bundled-natives design. FFM downcalls need
+          native-access enabled at run time; each platform module ships its own reachability metadata.
+        -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.3</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals><goal>compile-no-fork</goal></goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>fathom</imageName>
+                            <mainClass>${fathom.mainClass}</mainClass>
+                            <buildArgs>
+                                <buildArg>--enable-native-access=ALL-UNNAMED</buildArg>
+                                <buildArg>-O3</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
