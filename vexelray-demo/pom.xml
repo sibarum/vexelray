@@ -22,6 +22,9 @@
 
     <properties>
         <fathom.mainClass>dev.vexelray.demo.Fathom</fathom.mainClass>
+        <!-- Program arguments for exec:exec. Empty = run the game (auto-walk). Override with -Dfathom.args=VALUE
+             where VALUE is one token (a frame count, or the verify/demo/capture flags). -->
+        <fathom.args></fathom.args>
     </properties>
 
     <dependencies>
@@ -44,6 +47,32 @@
             <artifactId>vast</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Run Fathom in a fresh JVM: mvn -pl vexelray-demo -am compile exec:exec  (builds siblings, then runs).
+              exec:exec (not exec:java) runs a separate JVM so we can enable native access for the Panama FFM calls.
+              Program args come from the fathom.args property (one token; empty = the auto-walk game).
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <executable>${java.home}/bin/java</executable>
+                    <classpathScope>runtime</classpathScope>
+                    <arguments>
+                        <argument>--enable-native-access=ALL-UNNAMED</argument>
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        <argument>${fathom.mainClass}</argument>
+                        <argument>${fathom.args}</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 
     <profiles>
         <!-- Build-time platform selection: exactly one activates from the host OS, adding its provider module. -->

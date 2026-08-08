@@ -64,16 +64,19 @@ public final class Fathom {
 
         NativePlatform platform = NativePlatform.current();
 
+        // Drop blank args so `exec:exec` can pass a possibly-empty ${fathom.args} property harmlessly.
+        args = java.util.Arrays.stream(args).filter(s -> !s.isBlank()).toArray(String[]::new);
+
         String capture = null;
         int maxFrames = 0;
         if (args.length >= 1 && args[0].equals("--verify")) {
             verify();
             return;
-        } else if (args.length >= 2 && args[0].equals("--demo")) {
-            demoFilmstrip(platform, vertexSpirv, fragmentSpirv, args[1]);
+        } else if (args.length >= 1 && args[0].equals("--demo")) {
+            demoFilmstrip(platform, vertexSpirv, fragmentSpirv, args.length >= 2 ? args[1] : "fathom-walk.png");
             return;
-        } else if (args.length >= 2 && args[0].equals("--capture")) {
-            capture = args[1];
+        } else if (args.length >= 1 && args[0].equals("--capture")) {
+            capture = args.length >= 2 ? args[1] : "fathom.png";
         } else if (args.length == 1) {
             maxFrames = Integer.parseInt(args[0]);
         }
