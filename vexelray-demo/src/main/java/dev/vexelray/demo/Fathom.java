@@ -340,11 +340,44 @@ public final class Fathom {
                 Region.of(new Statement.Return(sceneSdf(new Expr.Param(0, V3)))));
     }
 
-    /** Signed distance to the v0 scene: {@code min(ground plane y=0, sphere at (0,1,3) r=1)}. Fresh IR per call. */
+    /**
+     * The scene SDF: ground plane + sphere + a round-extruded 2D "V" glyph — the SDF-native "sprite". Because
+     * the glyph is just another term in this one field, it renders (GPU), collides (CPU), and casts shadows from
+     * the same source — a flat shape given real thickness, that you can walk around. Fresh IR per call.
+     */
     private static Expr sceneSdf(Expr point) {
-        Expr ground = new Expr.VectorExtract(point, 1);                       // p.y
-        Expr sphere = sub(Expr.MathCall.length(sub(point, v3(0, 1, 3))), f(1.0));
-        return Expr.MathCall.min(ground, sphere);
+        Expr ground = y(point);
+        Expr sphere = sub(Expr.MathCall.length(sub(point, v3(0.0, 1.0, 3.0))), f(1.0));
+        Expr q = sub(point, v3(-1.2, 1.1, 1.5));                 // glyph local space (left of the sphere, facing us)
+        Expr glyph = extrudeRounded(q, glyphV(q), 0.06, 0.04);   // thin paper with rounded edges
+        return Expr.MathCall.min(Expr.MathCall.min(ground, sphere), glyph);
+    }
+
+    /** The 2D "V" field in the local xy-plane: two strokes (capsules) meeting at the bottom, given a half-width. */
+    private static Expr glyphV(Expr q) {
+        Expr q2 = new Expr.VectorConstruct(V2, List.of(x(q), y(q)));
+        Expr left = sdSegment2(q2, -0.35, 0.5, 0.0, -0.5);
+        Expr right = sdSegment2(q2, 0.35, 0.5, 0.0, -0.5);
+        return sub(Expr.MathCall.min(left, right), f(0.09));     // stroke half-width
+    }
+
+    /** Distance from a 2D point to the segment a→b (a capsule spine). Uses dot/clamp/length — CPU + GPU. */
+    private static Expr sdSegment2(Expr p, double ax, double ay, double bx, double by) {
+        Expr a = v2(ax, ay);
+        Expr b = v2(bx, by);
+        Expr pa = sub(p, a);
+        Expr ba = sub(b, a);
+        Expr h = Expr.MathCall.clamp(div(Expr.MathCall.dot(pa, ba), Expr.MathCall.dot(ba, ba)), f(0.0), f(1.0));
+        return Expr.MathCall.length(sub(pa, mulS2(ba, h)));
+    }
+
+    /** Round-extrude a 2D field {@code g} along local z with half-depth {@code h}, rounding edges by {@code r}. */
+    private static Expr extrudeRounded(Expr q, Expr g, double h, double r) {
+        Expr wy = sub(Expr.MathCall.abs(z(q)), f(h));            // |q.z| - h
+        Expr w = new Expr.VectorConstruct(V2, List.of(g, wy));
+        Expr outside = Expr.MathCall.length(Expr.MathCall.max(w, v2(0.0, 0.0)));
+        Expr inside = Expr.MathCall.min(Expr.MathCall.max(g, wy), f(0.0));
+        return sub(add(inside, outside), f(r));
     }
 
     // --- tiny IR-authoring helpers ---
@@ -354,6 +387,31 @@ public final class Fathom {
 
     private static Expr v3(double x, double y, double z) {
         return new Expr.VectorConstruct(V3, List.of(f(x), f(y), f(z)));
+    }
+
+    private static Expr v2(double a, double b) {
+        return new Expr.VectorConstruct(V2, List.of(f(a), f(b)));
+    }
+
+    private static Expr x(Expr v) {
+        return new Expr.VectorExtract(v, 0);
+    }
+
+    private static Expr y(Expr v) {
+        return new Expr.VectorExtract(v, 1);
+    }
+
+    private static Expr z(Expr v) {
+        return new Expr.VectorExtract(v, 2);
+    }
+
+    private static Expr div(Expr a, Expr b) {
+        return new Expr.Binary(BinaryOp.DIV, a, b);
+    }
+
+    /** vec2 * scalar via broadcast. */
+    private static Expr mulS2(Expr vec, Expr scalar) {
+        return mul(vec, new Expr.VectorConstruct(V2, List.of(scalar, scalar)));
     }
 
     private static Expr read(LocalVar v) {
