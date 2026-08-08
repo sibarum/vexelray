@@ -18,6 +18,7 @@ import com.oracle.truffle.api.CallTarget;
 
 import java.lang.foreign.MemorySegment;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
+import dev.vexelray.os.Key;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
@@ -100,12 +101,25 @@ public final class Fathom {
                          Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, swapchain.width(), swapchain.height(),
                          vertexSpirv, "main", fragmentSpirv, "main", 12);
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, pipeline, window)) {
-                // v2b: the camera auto-walks toward the sphere and collides against the SAME SDF on the CPU —
-                // render/sim unity, live. (Interactive WASD lands next; keyboard input is the follow-up.)
+                // v2c: WASD steers the camera; the CPU collides it against the SAME SDF the GPU renders —
+                // render/sim unity, driven by you. (Facing is fixed +z for now; turning/mouse-look is next.)
                 CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
-                float[] cam = {-0.6f, 1.2f, -3.0f};
+                float[] cam = {0.0f, 1.2f, -3.0f};
+                System.out.println("Click the window, then WASD to move. Walk into the sphere — you cannot enter it.");
                 presenter.run(maxFrames, 12, (dt, pc) -> {
-                    cam[2] += 1.2f * (float) dt;                 // stroll forward
+                    float step = 2.5f * (float) dt;
+                    if (window.isKeyDown(Key.W)) {
+                        cam[2] += step;
+                    }
+                    if (window.isKeyDown(Key.S)) {
+                        cam[2] -= step;
+                    }
+                    if (window.isKeyDown(Key.A)) {
+                        cam[0] -= step;
+                    }
+                    if (window.isKeyDown(Key.D)) {
+                        cam[0] += step;
+                    }
                     resolveCollision(cpu, cam, 0.35f);          // stopped/slid by the field it's looking at
                     pc.set(JAVA_FLOAT, 0, cam[0]);
                     pc.set(JAVA_FLOAT, 4, cam[1]);

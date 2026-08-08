@@ -17,6 +17,9 @@ public interface NativeWindow extends AutoCloseable {
     /** Pump the OS event queue once. Returns {@code false} once the window has been asked to close. */
     boolean pumpEvents();
 
+    /** Whether {@code key} is currently held down (updated by {@link #pumpEvents()}). */
+    boolean isKeyDown(Key key);
+
     /**
      * Create a {@code VkSurfaceKHR} for this window. The OS module owns the platform surface struct and its
      * {@code vkCreate*SurfaceKHR} entry point; the Vulkan module stays platform-agnostic and only supplies the

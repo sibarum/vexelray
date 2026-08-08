@@ -46,6 +46,8 @@ public final class User32 {
     public static final int WM_SIZE    = 0x0005;
     public static final int WM_CLOSE   = 0x0010;
     public static final int WM_QUIT    = 0x0012;
+    public static final int WM_KEYDOWN = 0x0100;
+    public static final int WM_KEYUP   = 0x0101;
 
     /** {@code IDC_ARROW} — the standard arrow cursor, passed to LoadCursorW as a MAKEINTRESOURCE pseudo-pointer. */
     public static final int IDC_ARROW = 32512;

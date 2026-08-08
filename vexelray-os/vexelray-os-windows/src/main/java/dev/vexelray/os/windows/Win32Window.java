@@ -1,5 +1,6 @@
 package dev.vexelray.os.windows;
 
+import dev.vexelray.os.Key;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
 import dev.vexelray.os.ffi.Ffi;
@@ -78,6 +79,7 @@ public final class Win32Window implements NativeWindow {
     private int width;
     private int height;
     private volatile boolean shouldClose;
+    private final boolean[] keyDown = new boolean[256];   // indexed by Win32 virtual-key code
 
     public Win32Window(WindowConfig config) {
         this.hInstance = Kernel32.getModuleHandleW(MemorySegment.NULL);
@@ -123,6 +125,14 @@ public final class Win32Window implements NativeWindow {
                 }
                 case User32.WM_CLOSE, User32.WM_DESTROY -> {
                     window.shouldClose = true;
+                    return 0;
+                }
+                case User32.WM_KEYDOWN -> {
+                    window.keyDown[(int) (wParam & 0xFF)] = true;
+                    return 0;
+                }
+                case User32.WM_KEYUP -> {
+                    window.keyDown[(int) (wParam & 0xFF)] = false;
                     return 0;
                 }
                 default -> { /* fall through */ }
@@ -198,6 +208,29 @@ public final class Win32Window implements NativeWindow {
             }
             return pSurface.get(JAVA_LONG, 0);
         }
+    }
+
+    @Override
+    public boolean isKeyDown(Key key) {
+        return keyDown[virtualKey(key)];
+    }
+
+    private static int virtualKey(Key key) {
+        return switch (key) {
+            case W -> 0x57;
+            case A -> 0x41;
+            case S -> 0x53;
+            case D -> 0x44;
+            case Q -> 0x51;
+            case E -> 0x45;
+            case UP -> 0x26;
+            case DOWN -> 0x28;
+            case LEFT -> 0x25;
+            case RIGHT -> 0x27;
+            case SPACE -> 0x20;
+            case SHIFT -> 0x10;
+            case ESCAPE -> 0x1B;
+        };
     }
 
     @Override
