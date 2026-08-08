@@ -40,6 +40,12 @@ vexelray                 parent (pom)
 The `ComposedShader` `byte[]` SPIR-V boundary keeps SupirVast isolated to `vexelray-shader`; `vexelray-core`
 stays free of both the shader compiler and any Vulkan binding.
 
+### Where it's headed
+
+**[docs/architecture.md](docs/architecture.md)** is the living target-architecture doc — the thesis (pluggable
+render techniques composited into one frame), the module topology, the public pipeline-building API, and the
+capability roadmap. Read it for the big picture; this README covers what exists today.
+
 ### Native integration
 
 VexelRay talks to the OS directly through its own Panama (FFM) bindings — no LWJGL, GLFW, or SDL. Windowing and
