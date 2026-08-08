@@ -16,6 +16,7 @@ import dev.vexelray.os.WindowConfig;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.present.SwapchainFramebuffers;
+import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VkLoader;
@@ -106,13 +107,16 @@ public final class WindowedTriangleDemo {
             try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
                  VulkanSwapchain swapchain = new VulkanSwapchain(instance.handle(), device, surface,
                          window.width(), window.height());
-                 GraphicsPipeline pipeline = new GraphicsPipeline(device, swapchain.format(),
-                         Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, swapchain.width(), swapchain.height(),
+                 VulkanRenderPass renderPass = new VulkanRenderPass(device, swapchain.format(),
+                         Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                 GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(),
+                         swapchain.width(), swapchain.height(),
                          vertexSpirv, "main", fragmentSpirv, "main", 0);
                  Arena a = Arena.ofShared()) {
 
-                SwapchainFramebuffers framebuffers = new SwapchainFramebuffers(device, swapchain, pipeline.renderPass());
-                int presented = renderLoop(device, a, swapchain, pipeline, framebuffers, window, maxFrames);
+                SwapchainFramebuffers framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass.handle());
+                int presented = renderLoop(device, a, swapchain, renderPass.handle(), pipeline, framebuffers,
+                        window, maxFrames);
                 device.waitIdle();
                 framebuffers.close();
                 System.out.println("presented " + presented + " shaded frames");
@@ -122,8 +126,9 @@ public final class WindowedTriangleDemo {
         System.out.println("clean shutdown");
     }
 
-    private static int renderLoop(VulkanDevice device, Arena a, VulkanSwapchain swapchain, GraphicsPipeline pipeline,
-                                  SwapchainFramebuffers framebuffers, NativeWindow window, int maxFrames) {
+    private static int renderLoop(VulkanDevice device, Arena a, VulkanSwapchain swapchain, long renderPass,
+                                  GraphicsPipeline pipeline, SwapchainFramebuffers framebuffers,
+                                  NativeWindow window, int maxFrames) {
         MemorySegment dev = device.handle();
         MethodHandle createSem = device.command("vkCreateSemaphore", C4);
         MethodHandle createFence = device.command("vkCreateFence", C4);
@@ -186,7 +191,7 @@ public final class WindowedTriangleDemo {
         si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         MemorySegment rpBegin = a.allocate(RENDER_PASS_BEGIN);
         si(rpBegin, RENDER_PASS_BEGIN, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", pipeline.renderPass());
+        sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", renderPass);
         si(rpBegin, RENDER_PASS_BEGIN, "area_w", swapchain.width());
         si(rpBegin, RENDER_PASS_BEGIN, "area_h", swapchain.height());
         si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
@@ -197,7 +202,7 @@ public final class WindowedTriangleDemo {
             check(invoke(waitFences, dev, 1, pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
             int acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, pImageIndex);
             if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
-                framebuffers = recreate(device, swapchain, pipeline, framebuffers, window);
+                framebuffers = recreate(device, swapchain, renderPass, framebuffers, window);
                 continue;
             }
             check(invoke(resetFences, dev, 1, pFence), "vkResetFences");
@@ -215,7 +220,7 @@ public final class WindowedTriangleDemo {
             pSwapchains.set(JAVA_LONG, 0, swapchain.handle());
             int res = invoke(present, device.queue(), presentInfo);
             if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
-                framebuffers = recreate(device, swapchain, pipeline, framebuffers, window);
+                framebuffers = recreate(device, swapchain, renderPass, framebuffers, window);
             }
             frame++;
         }
@@ -229,12 +234,12 @@ public final class WindowedTriangleDemo {
     }
 
     private static SwapchainFramebuffers recreate(VulkanDevice device, VulkanSwapchain swapchain,
-                                                  GraphicsPipeline pipeline, SwapchainFramebuffers old,
+                                                  long renderPass, SwapchainFramebuffers old,
                                                   NativeWindow window) {
         device.waitIdle();
         old.close();
         swapchain.recreate(window.width(), window.height());
-        return new SwapchainFramebuffers(device, swapchain, pipeline.renderPass());
+        return new SwapchainFramebuffers(device, swapchain, renderPass);
     }
 
     private static byte[] uvGradientFragment() {

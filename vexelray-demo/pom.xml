@@ -54,12 +54,14 @@
               Run Fathom in a fresh JVM: mvn -pl vexelray-demo -am compile exec:exec  (builds siblings, then runs).
               exec:exec (not exec:java) runs a separate JVM so we can enable native access for the Panama FFM calls.
               Program args come from the fathom.args property (one token; empty = the auto-walk game).
+              Version + the default skip=true come from the root pluginManagement; this module un-skips it so the
+              goal runs here and nowhere else in the reactor (see the root pom comment).
             -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
-                <version>3.5.0</version>
                 <configuration>
+                    <skip>false</skip>
                     <executable>${java.home}/bin/java</executable>
                     <classpathScope>runtime</classpathScope>
                     <arguments>

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>vexelray-experimental</artifactId>
+
+    <description>
+        A research harness for building, running, and comparing shape-definition and rendering techniques —
+        value noise, gradient (Perlin) noise, control-point/spline surfaces, and whatever comes next. Each
+        technique is a ShapeField plugged into one shared ray-march, so the comparison isolates the technique
+        itself. The harness renders every candidate headlessly and reports performance (shader-compose time,
+        SPIR-V size, cold render time, CPU-eval cost — the render==sim side), fidelity (error vs a high-step
+        reference, plus a side-by-side montage), and general applicability notes. Not shipped; a lab bench.
+    </description>
+
+    <properties>
+        <exp.mainClass>dev.vexelray.experimental.Experiments</exp.mainClass>
+        <!-- Program arguments for exec:exec (one token). Empty = run the full comparison. -->
+        <exp.args></exp.args>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+        </dependency>
+        <!-- Runtime shader composition: brings vastir + vastir-tools transitively (Fullscreen, Noise, lowering). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+        </dependency>
+        <!-- SupirVast's CPU (Truffle) backend: evaluate the SAME field on the CPU, to measure the render==sim cost. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vast</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Run the harness: mvn -pl vexelray-experimental -am compile exec:exec  (separate JVM for native access).
+                 Version + default skip=true come from the root pluginManagement; un-skip it here (see root pom). -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <configuration>
+                    <skip>false</skip>
+                    <executable>${java.home}/bin/java</executable>
+                    <classpathScope>runtime</classpathScope>
+                    <arguments>
+                        <argument>--enable-native-access=ALL-UNNAMED</argument>
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        <argument>${exp.mainClass}</argument>
+                        <argument>${exp.args}</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Build-time platform selection (offscreen still needs the platform's Vulkan instance extensions). -->
+        <profile>
+            <id>platform-windows</id>
+            <activation><os><family>windows</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation><os><family>unix</family><name>linux</name></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation><os><family>mac</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

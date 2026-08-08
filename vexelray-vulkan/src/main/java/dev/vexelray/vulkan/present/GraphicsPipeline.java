@@ -24,42 +24,15 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
- * A reusable render pass + graphics pipeline for a single colour attachment, built from a vertex + fragment
- * SPIR-V pair. Parameterised by the colour {@code format} and the attachment's {@code finalLayout} so the same
- * class serves both present targets: {@code PRESENT_SRC_KHR} for the windowed swapchain, {@code TRANSFER_SRC_OPTIMAL}
- * for offscreen readback. Empty vertex input (the fullscreen triangle comes from {@code gl_VertexIndex}); static
- * viewport at the given extent. Owns its GPU objects; {@link #close()} destroys them.
+ * A graphics pipeline built against a <em>supplied</em> {@link VulkanRenderPass} — a pure {@code VkPipeline}
+ * (plus its layout and shader modules) from a vertex + fragment SPIR-V pair. It does <em>not</em> own the render
+ * pass: the render pass is created once by the runtime (or caller) and shared, so several pipelines — i.e.
+ * several {@link dev.vexelray.engine.RenderTechnique}s — can be built against the same pass and composite into one
+ * colour+depth target (see docs/refactor-decisions.md, Phase 1). Empty vertex input (the fullscreen triangle
+ * comes from {@code gl_VertexIndex}); static viewport at the given extent. {@link #close()} destroys the pipeline,
+ * its layout, and the shader modules — but never the render pass, which outlives it.
  */
 public final class GraphicsPipeline implements AutoCloseable {
-
-    private static final GroupLayout ATTACHMENT_DESCRIPTION = MemoryLayout.structLayout(
-            JAVA_INT.withName("flags"), JAVA_INT.withName("format"), JAVA_INT.withName("samples"),
-            JAVA_INT.withName("loadOp"), JAVA_INT.withName("storeOp"), JAVA_INT.withName("stencilLoadOp"),
-            JAVA_INT.withName("stencilStoreOp"), JAVA_INT.withName("initialLayout"), JAVA_INT.withName("finalLayout")
-    ).withName("VkAttachmentDescription");
-
-    private static final GroupLayout ATTACHMENT_REFERENCE = MemoryLayout.structLayout(
-            JAVA_INT.withName("attachment"), JAVA_INT.withName("layout")).withName("VkAttachmentReference");
-
-    private static final GroupLayout SUBPASS_DESCRIPTION = MemoryLayout.structLayout(
-            JAVA_INT.withName("flags"), JAVA_INT.withName("pipelineBindPoint"), JAVA_INT.withName("inputAttachmentCount"),
-            MemoryLayout.paddingLayout(4), ADDRESS.withName("pInputAttachments"),
-            JAVA_INT.withName("colorAttachmentCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pColorAttachments"), ADDRESS.withName("pResolveAttachments"),
-            ADDRESS.withName("pDepthStencilAttachment"), JAVA_INT.withName("preserveAttachmentCount"),
-            MemoryLayout.paddingLayout(4), ADDRESS.withName("pPreserveAttachments")).withName("VkSubpassDescription");
-
-    private static final GroupLayout SUBPASS_DEPENDENCY = MemoryLayout.structLayout(
-            JAVA_INT.withName("srcSubpass"), JAVA_INT.withName("dstSubpass"), JAVA_INT.withName("srcStageMask"),
-            JAVA_INT.withName("dstStageMask"), JAVA_INT.withName("srcAccessMask"), JAVA_INT.withName("dstAccessMask"),
-            JAVA_INT.withName("dependencyFlags")).withName("VkSubpassDependency");
-
-    private static final GroupLayout RENDER_PASS_CREATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), JAVA_INT.withName("attachmentCount"), ADDRESS.withName("pAttachments"),
-            JAVA_INT.withName("subpassCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pSubpasses"),
-            JAVA_INT.withName("dependencyCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pDependencies")
-    ).withName("VkRenderPassCreateInfo");
 
     private static final GroupLayout SHADER_MODULE_CREATE_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
@@ -150,85 +123,33 @@ public final class GraphicsPipeline implements AutoCloseable {
     ).withName("VkGraphicsPipelineCreateInfo");
 
     private final VulkanDevice device;
-    private final long renderPass;
     private final long pipelineLayout;
     private final long pipeline;
     private final long vertModule;
     private final long fragModule;
-    private final MethodHandle vkDestroyRenderPass;
     private final MethodHandle vkDestroyPipeline;
     private final MethodHandle vkDestroyPipelineLayout;
     private final MethodHandle vkDestroyShaderModule;
 
-    public GraphicsPipeline(VulkanDevice device, int format, int finalLayout, int width, int height,
+    /**
+     * Build a pipeline against the shared {@code renderPass}. The render pass is not owned here — the caller
+     * (runtime) creates and destroys it. {@code width}/{@code height} set the static viewport/scissor.
+     */
+    public GraphicsPipeline(VulkanDevice device, long renderPass, int width, int height,
                             byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry,
                             int pushConstantBytes) {
         this.device = device;
         MemorySegment dev = device.handle();
 
-        MethodHandle vkCreateRenderPass = device.command("vkCreateRenderPass", C4);
         MethodHandle vkCreateShaderModule = device.command("vkCreateShaderModule", C4);
         MethodHandle vkCreatePipelineLayout = device.command("vkCreatePipelineLayout", C4);
         MethodHandle vkCreateGraphicsPipelines = device.command("vkCreateGraphicsPipelines",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
-        this.vkDestroyRenderPass = device.command("vkDestroyRenderPass", D_LONG);
         this.vkDestroyShaderModule = device.command("vkDestroyShaderModule", D_LONG);
         this.vkDestroyPipelineLayout = device.command("vkDestroyPipelineLayout", D_LONG);
         this.vkDestroyPipeline = device.command("vkDestroyPipeline", D_LONG);
 
-        boolean present = finalLayout == Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment attachment = arena.allocate(ATTACHMENT_DESCRIPTION);
-            si(attachment, ATTACHMENT_DESCRIPTION, "format", format);
-            si(attachment, ATTACHMENT_DESCRIPTION, "samples", Vk.SAMPLE_COUNT_1_BIT);
-            si(attachment, ATTACHMENT_DESCRIPTION, "loadOp", Vk.ATTACHMENT_LOAD_OP_CLEAR);
-            si(attachment, ATTACHMENT_DESCRIPTION, "storeOp", Vk.ATTACHMENT_STORE_OP_STORE);
-            si(attachment, ATTACHMENT_DESCRIPTION, "stencilLoadOp", Vk.ATTACHMENT_LOAD_OP_DONT_CARE);
-            si(attachment, ATTACHMENT_DESCRIPTION, "stencilStoreOp", Vk.ATTACHMENT_STORE_OP_DONT_CARE);
-            si(attachment, ATTACHMENT_DESCRIPTION, "initialLayout", Vk.IMAGE_LAYOUT_UNDEFINED);
-            si(attachment, ATTACHMENT_DESCRIPTION, "finalLayout", finalLayout);
-
-            MemorySegment colorRef = arena.allocate(ATTACHMENT_REFERENCE);
-            si(colorRef, ATTACHMENT_REFERENCE, "layout", Vk.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-            MemorySegment subpass = arena.allocate(SUBPASS_DESCRIPTION);
-            si(subpass, SUBPASS_DESCRIPTION, "pipelineBindPoint", Vk.PIPELINE_BIND_POINT_GRAPHICS);
-            si(subpass, SUBPASS_DESCRIPTION, "colorAttachmentCount", 1);
-            sa(subpass, SUBPASS_DESCRIPTION, "pColorAttachments", colorRef);
-
-            // A start dependency in all cases; offscreen adds a second so a follow-up transfer sees the writes.
-            int depCount = present ? 1 : 2;
-            MemorySegment deps = arena.allocate(SUBPASS_DEPENDENCY, depCount);
-            MemorySegment dep0 = deps.asSlice(0, SUBPASS_DEPENDENCY.byteSize());
-            si(dep0, SUBPASS_DEPENDENCY, "srcSubpass", Vk.SUBPASS_EXTERNAL);
-            si(dep0, SUBPASS_DEPENDENCY, "dstSubpass", 0);
-            si(dep0, SUBPASS_DEPENDENCY, "srcStageMask", Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            si(dep0, SUBPASS_DEPENDENCY, "dstStageMask", Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            si(dep0, SUBPASS_DEPENDENCY, "srcAccessMask", 0);
-            si(dep0, SUBPASS_DEPENDENCY, "dstAccessMask", Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-            if (!present) {
-                MemorySegment dep1 = deps.asSlice(SUBPASS_DEPENDENCY.byteSize(), SUBPASS_DEPENDENCY.byteSize());
-                si(dep1, SUBPASS_DEPENDENCY, "srcSubpass", 0);
-                si(dep1, SUBPASS_DEPENDENCY, "dstSubpass", Vk.SUBPASS_EXTERNAL);
-                si(dep1, SUBPASS_DEPENDENCY, "srcStageMask", Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "dstStageMask", Vk.PIPELINE_STAGE_TRANSFER_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "srcAccessMask", Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "dstAccessMask", Vk.ACCESS_TRANSFER_READ_BIT);
-            }
-
-            MemorySegment rpInfo = arena.allocate(RENDER_PASS_CREATE_INFO);
-            si(rpInfo, RENDER_PASS_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO);
-            si(rpInfo, RENDER_PASS_CREATE_INFO, "attachmentCount", 1);
-            sa(rpInfo, RENDER_PASS_CREATE_INFO, "pAttachments", attachment);
-            si(rpInfo, RENDER_PASS_CREATE_INFO, "subpassCount", 1);
-            sa(rpInfo, RENDER_PASS_CREATE_INFO, "pSubpasses", subpass);
-            si(rpInfo, RENDER_PASS_CREATE_INFO, "dependencyCount", depCount);
-            sa(rpInfo, RENDER_PASS_CREATE_INFO, "pDependencies", deps);
-            MemorySegment pRenderPass = arena.allocate(JAVA_LONG);
-            check(invoke(vkCreateRenderPass, dev, rpInfo, MemorySegment.NULL, pRenderPass), "vkCreateRenderPass");
-            this.renderPass = pRenderPass.get(JAVA_LONG, 0);
-
             this.vertModule = shaderModule(arena, vkCreateShaderModule, dev, vertexSpirv);
             this.fragModule = shaderModule(arena, vkCreateShaderModule, dev, fragmentSpirv);
 
@@ -317,10 +238,6 @@ public final class GraphicsPipeline implements AutoCloseable {
         }
     }
 
-    public long renderPass() {
-        return renderPass;
-    }
-
     public long pipeline() {
         return pipeline;
     }
@@ -348,7 +265,6 @@ public final class GraphicsPipeline implements AutoCloseable {
         invokeVoid(vkDestroyPipelineLayout, dev, pipelineLayout, MemorySegment.NULL);
         invokeVoid(vkDestroyShaderModule, dev, fragModule, MemorySegment.NULL);
         invokeVoid(vkDestroyShaderModule, dev, vertModule, MemorySegment.NULL);
-        invokeVoid(vkDestroyRenderPass, dev, renderPass, MemorySegment.NULL);
     }
 
     private static final FunctionDescriptor C4 = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS);

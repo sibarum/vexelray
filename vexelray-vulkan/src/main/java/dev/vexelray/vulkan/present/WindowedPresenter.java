@@ -80,6 +80,7 @@ public final class WindowedPresenter implements AutoCloseable {
     private final MemorySegment dev;
     private final VulkanSwapchain swapchain;
     private final GraphicsPipeline pipeline;
+    private final long renderPass;
     private final NativeWindow window;
     private final Arena a = Arena.ofShared();
 
@@ -98,11 +99,12 @@ public final class WindowedPresenter implements AutoCloseable {
     private SwapchainFramebuffers framebuffers;
     private int vertexCount = 3;
 
-    public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, GraphicsPipeline pipeline,
-                             NativeWindow window) {
+    public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
+                             GraphicsPipeline pipeline, NativeWindow window) {
         this.device = device;
         this.dev = device.handle();
         this.swapchain = swapchain;
+        this.renderPass = renderPass;
         this.pipeline = pipeline;
         this.window = window;
 
@@ -135,7 +137,7 @@ public final class WindowedPresenter implements AutoCloseable {
         this.inFlight = createFenceSignaled(createFence);
         this.pool = createPool(createPool);
         this.cmd = allocateCommandBuffer(allocCmd);
-        this.framebuffers = new SwapchainFramebuffers(device, swapchain, pipeline.renderPass());
+        this.framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
     }
 
     /** Run until the window closes, or until {@code maxFrames} presented if {@code maxFrames > 0}. No push constants. */
@@ -186,7 +188,7 @@ public final class WindowedPresenter implements AutoCloseable {
         si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         MemorySegment rpBegin = a.allocate(RENDER_PASS_BEGIN);
         si(rpBegin, RENDER_PASS_BEGIN, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", pipeline.renderPass());
+        sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", renderPass);
         si(rpBegin, RENDER_PASS_BEGIN, "area_w", swapchain.width());
         si(rpBegin, RENDER_PASS_BEGIN, "area_h", swapchain.height());
         si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
@@ -237,7 +239,7 @@ public final class WindowedPresenter implements AutoCloseable {
         device.waitIdle();
         framebuffers.close();
         swapchain.recreate(window.width(), window.height());
-        framebuffers = new SwapchainFramebuffers(device, swapchain, pipeline.renderPass());
+        framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
     }
 
     private long createSemaphore(MethodHandle create) {

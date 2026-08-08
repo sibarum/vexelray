@@ -12,6 +12,7 @@ import dev.supirvast.vastir.core.Region;
 import dev.supirvast.vastir.core.ShaderStage;
 import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.tools.Fullscreen;
+import dev.supirvast.vastir.tools.Noise;
 import dev.supirvast.vastir.type.Type;
 import dev.supirvast.vast.CoreToTruffle;
 import com.oracle.truffle.api.CallTarget;
@@ -25,6 +26,7 @@ import dev.vexelray.os.WindowConfig;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
+import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
 import dev.vexelray.vulkan.present.WindowedPresenter;
 import dev.vexelray.vulkan.vk.Vk;
@@ -97,10 +99,13 @@ public final class Fathom {
             try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
                  VulkanSwapchain swapchain = new VulkanSwapchain(instance.handle(), device, surface,
                          window.width(), window.height());
-                 GraphicsPipeline pipeline = new GraphicsPipeline(device, swapchain.format(),
-                         Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, swapchain.width(), swapchain.height(),
+                 VulkanRenderPass renderPass = new VulkanRenderPass(device, swapchain.format(),
+                         Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                 GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(),
+                         swapchain.width(), swapchain.height(),
                          vertexSpirv, "main", fragmentSpirv, "main", 12);
-                 WindowedPresenter presenter = new WindowedPresenter(device, swapchain, pipeline, window)) {
+                 WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
+                         pipeline, window)) {
                 // v2c: WASD steers the camera; the CPU collides it against the SAME SDF the GPU renders —
                 // render/sim unity, driven by you. (Facing is fixed +z for now; turning/mouse-look is next.)
                 CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
@@ -180,18 +185,22 @@ public final class Fathom {
         Region march = Region.of(
                 new Statement.Assign(p, add(read(ro), mulS(read(rd), read(t)))),
                 new Statement.Assign(d, sceneSdf(read(p))),
-                new Statement.Assign(t, add(read(t), read(d))),
+                // Clamp the step so a ray can't leap over a thin ridge (heightfield overshoot = dark seam cracks).
+                new Statement.Assign(t, add(read(t), Expr.MathCall.min(read(d), f(0.06)))),
                 new Statement.Assign(i, new Expr.Binary(BinaryOp.ADD, read(i), new Expr.ConstInt(Type.int32(), 1))));
 
-        // finite-difference normal at the hit point
-        double eps = 0.002;
+        // finite-difference normal at the hit point. A wide eps deliberately samples the field over ~5cm so the
+        // shading normal reflects the broad surface curvature, not every sub-cell noise wiggle — that is what makes
+        // the terrain read as a smooth curved surface instead of a faceted heightmap. (Sphere/glyph are large
+        // relative to this eps, so their normals stay crisp.)
+        double eps = 0.03;
         Expr n = Expr.MathCall.normalize(new Expr.VectorConstruct(V3, List.of(
                 sub(sceneSdf(add(read(p), v3(eps, 0, 0))), sceneSdf(sub(read(p), v3(eps, 0, 0)))),
                 sub(sceneSdf(add(read(p), v3(0, eps, 0))), sceneSdf(sub(read(p), v3(0, eps, 0)))),
                 sub(sceneSdf(add(read(p), v3(0, 0, eps))), sceneSdf(sub(read(p), v3(0, 0, eps)))))));
         Expr light = v3(0.575, 0.766, -0.287);   // pre-normalized direction to the light
         Expr diff = Expr.MathCall.max(Expr.MathCall.dot(n, light), f(0.0));
-        Expr shade = Expr.MathCall.clamp(add(mul(diff, f(0.85)), f(0.15)), f(0.0), f(1.0));
+        Expr shade = Expr.MathCall.clamp(add(mul(diff, f(0.92)), f(0.08)), f(0.0), f(1.0));
         Region hit = Region.of(new Statement.InterfaceWrite(fragColor,
                 new Expr.VectorConstruct(V4, List.of(shade, shade, shade, f(1.0)))));
         Region miss = Region.of(new Statement.InterfaceWrite(fragColor,
@@ -204,10 +213,12 @@ public final class Fathom {
                 new Statement.DeclareVar(i, new Expr.ConstInt(Type.int32(), 0)),
                 new Statement.DeclareVar(p, v3(0, 0, 0)),
                 new Statement.DeclareVar(d, f(0.0)),
-                new Statement.While(new Expr.Binary(BinaryOp.LESS_THAN, read(i), new Expr.ConstInt(Type.int32(), 80)), march),
+                new Statement.While(new Expr.Binary(BinaryOp.LESS_THAN, read(i), new Expr.ConstInt(Type.int32(), 256)), march),
                 new Statement.Assign(p, add(read(ro), mulS(read(rd), read(t)))),
                 new Statement.Assign(d, sceneSdf(read(p))),
-                new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), f(0.01)), hit, miss),
+                // distance-relative hit epsilon: threshold grows with march distance t so grazing rays that run out
+                // of step budget short of the surface still register as a hit instead of leaking sky-coloured streaks.
+                new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), add(f(0.008), mul(f(0.0008), read(t)))), hit, miss),
                 new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
@@ -346,11 +357,29 @@ public final class Fathom {
      * the same source — a flat shape given real thickness, that you can walk around. Fresh IR per call.
      */
     private static Expr sceneSdf(Expr point) {
-        Expr ground = y(point);
+        Expr ground = terrain(point);
         Expr sphere = sub(Expr.MathCall.length(sub(point, v3(0.0, 1.0, 3.0))), f(1.0));
         Expr q = sub(point, v3(-1.2, 1.1, 1.5));                 // glyph local space (left of the sphere, facing us)
         Expr glyph = extrudeRounded(q, glyphV(q), 0.06, 0.04);   // thin paper with rounded edges
         return Expr.MathCall.min(Expr.MathCall.min(ground, sphere), glyph);
+    }
+
+    /**
+     * The floor: a smooth value-noise heightfield ({@link Noise#fbm2}) instead of a flat plane. A flat floor is
+     * the sphere-tracing worst case — rays grazing toward the horizon run nearly parallel to it, take vanishing
+     * steps, and blow the step budget, which is what distorted the flat horizon. Rolling terrain has curvature at
+     * every distance, so no ray runs parallel to the surface; the horizon resolves cleanly (and fades to sky
+     * beyond trace range instead of smearing). It is the SAME field the CPU collides against — render == sim.
+     *
+     * <p>A heightfield {@code y - h(x,z)} overestimates true distance where the ground is steep, so it is scaled
+     * by a conservative Lipschitz factor to stay a valid (never-overshooting) sphere-trace distance.
+     */
+    private static Expr terrain(Expr point) {
+        Expr xz = new Expr.VectorConstruct(V2, List.of(x(point), z(point)));
+        // Gradient (Perlin) fBm — organic, non-blocky (value noise shows square grid patches). Signed & centred,
+        // so it is used directly as height (no -0.5). freq 0.16 => several hills in view; amplitude sets relief.
+        Expr hp = mul(Noise.fbmPerlin2(mulS2(xz, f(0.16)), 3), f(2.0));
+        return mul(sub(y(point), hp), f(0.30));   // Lipschitz safety for the conservative sphere-trace
     }
 
     /** The 2D "V" field in the local xy-plane: two strokes (capsules) meeting at the bottom, given a half-width. */

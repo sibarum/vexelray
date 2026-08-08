@@ -22,6 +22,9 @@
         <!-- Binding-agnostic engine vocabulary: pipeline config, resources, lighting, runtime interfaces.
              No SupirVast, no Vulkan. Everything else compiles against this. -->
         <module>vexelray-core</module>
+        <!-- The public API: pipeline-building DSL (Target + RenderPipeline) and the RenderTechnique SPI.
+             Depends only on core + JDK; the front door clients write against. -->
+        <module>vexelray-engine-api</module>
         <!-- Runtime shader generation: engine descriptions -> SupirVast core IR -> SPIR-V. The SupirVast seam. -->
         <module>vexelray-shader</module>
         <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
@@ -32,6 +35,8 @@
         <module>vexelray-vulkan</module>
         <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
         <module>vexelray-demo</module>
+        <!-- Research harness: build/run/compare shape-definition + rendering techniques (perf, fidelity, scope). -->
+        <module>vexelray-experimental</module>
     </modules>
 
     <properties>
@@ -52,6 +57,11 @@
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-engine-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -141,5 +151,26 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+        <plugins>
+            <!--
+              Fathom is run via `exec:exec` (see vexelray-demo). Declared in <build><plugins> (NOT
+              pluginManagement) so its plugin-level configuration applies to the direct `exec:exec` CLI goal —
+              pluginManagement only supplies a version to CLI goals, not configuration. Inherited by every module
+              with skip=true, so a reactor run (`mvn -pl vexelray-demo -am … exec:exec`) does not run Fathom on the
+              root aggregator or the sibling modules — only vexelray-demo un-skips it (skip=false). The `executable`
+              is set here too because it is a REQUIRED parameter, validated before execute() checks skip: without a
+              value every module would fail param-validation before skip could no-op it. No phase binding, so this
+              never runs during a normal build.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <skip>true</skip>
+                    <executable>${java.home}/bin/java</executable>
+                </configuration>
+            </plugin>
+        </plugins>
     </build>
 </project>
