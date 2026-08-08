@@ -234,7 +234,20 @@ public final class OffscreenRenderer {
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4)).withName("VkFenceCreateInfo");
 
+    private static final GroupLayout PUSH_CONSTANT_RANGE = MemoryLayout.structLayout(
+            JAVA_INT.withName("stageFlags"), JAVA_INT.withName("offset"), JAVA_INT.withName("size"))
+            .withName("VkPushConstantRange");
+
     private OffscreenRenderer() {
+    }
+
+    /** Render with no push constants (fullscreen triangle / gradient). */
+    public static byte[] render(VulkanDevice device, int width, int height,
+                                byte[] vertexSpirv, String vertexEntry,
+                                byte[] fragmentSpirv, String fragmentEntry,
+                                int vertexCount, float cr, float cg, float cb, float ca) {
+        return render(device, width, height, vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry,
+                vertexCount, cr, cg, cb, ca, null);
     }
 
     /**
@@ -245,9 +258,10 @@ public final class OffscreenRenderer {
     public static byte[] render(VulkanDevice device, int width, int height,
                                 byte[] vertexSpirv, String vertexEntry,
                                 byte[] fragmentSpirv, String fragmentEntry,
-                                int vertexCount, float cr, float cg, float cb, float ca) {
+                                int vertexCount, float cr, float cg, float cb, float ca, byte[] pushConstants) {
         MemorySegment dev = device.handle();
         long pixelBytes = (long) width * height * 4;
+        boolean hasPush = pushConstants != null && pushConstants.length > 0;
 
         MethodHandle vkCreateImage = device.command("vkCreateImage", C4);
         MethodHandle vkDestroyImage = device.command("vkDestroyImage", D_LONG);
@@ -271,6 +285,8 @@ public final class OffscreenRenderer {
         MethodHandle vkCreateShaderModule = device.command("vkCreateShaderModule", C4);
         MethodHandle vkDestroyShaderModule = device.command("vkDestroyShaderModule", D_LONG);
         MethodHandle vkCreatePipelineLayout = device.command("vkCreatePipelineLayout", C4);
+        MethodHandle vkCmdPushConstants = device.command("vkCmdPushConstants",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
         MethodHandle vkDestroyPipelineLayout = device.command("vkDestroyPipelineLayout", D_LONG);
         MethodHandle vkCreateGraphicsPipelines = device.command("vkCreateGraphicsPipelines",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
@@ -462,6 +478,13 @@ public final class OffscreenRenderer {
 
             MemorySegment layoutInfo = arena.allocate(PIPELINE_LAYOUT_CREATE_INFO);
             si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+            if (hasPush) {
+                MemorySegment range = arena.allocate(PUSH_CONSTANT_RANGE);
+                si(range, PUSH_CONSTANT_RANGE, "stageFlags", Vk.SHADER_STAGE_FRAGMENT_BIT);
+                si(range, PUSH_CONSTANT_RANGE, "size", pushConstants.length);
+                si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pushConstantRangeCount", 1);
+                sa(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pPushConstantRanges", range);
+            }
             MemorySegment pLayout = arena.allocate(JAVA_LONG);
             check(invoke(vkCreatePipelineLayout, dev, layoutInfo, MemorySegment.NULL, pLayout), "vkCreatePipelineLayout");
             long pipelineLayout = pLayout.get(JAVA_LONG, 0);
@@ -538,6 +561,12 @@ public final class OffscreenRenderer {
 
             invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(vkCmdBindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            if (hasPush) {
+                MemorySegment pc = arena.allocate(pushConstants.length);
+                MemorySegment.copy(pushConstants, 0, pc, JAVA_BYTE, 0, pushConstants.length);
+                invokeVoid(vkCmdPushConstants, cmd, pipelineLayout, Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
+                        pushConstants.length, pc);
+            }
             invokeVoid(vkCmdDraw, cmd, vertexCount, 1, 0, 0);
             invokeVoid(vkCmdEndRenderPass, cmd);
 

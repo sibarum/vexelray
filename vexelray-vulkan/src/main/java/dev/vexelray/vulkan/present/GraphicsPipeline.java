@@ -133,6 +133,10 @@ public final class GraphicsPipeline implements AutoCloseable {
             JAVA_INT.withName("pushConstantRangeCount"), MemoryLayout.paddingLayout(4),
             ADDRESS.withName("pPushConstantRanges")).withName("VkPipelineLayoutCreateInfo");
 
+    private static final GroupLayout PUSH_CONSTANT_RANGE = MemoryLayout.structLayout(
+            JAVA_INT.withName("stageFlags"), JAVA_INT.withName("offset"), JAVA_INT.withName("size"))
+            .withName("VkPushConstantRange");
+
     private static final GroupLayout GRAPHICS_PIPELINE_CREATE_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("flags"), JAVA_INT.withName("stageCount"), ADDRESS.withName("pStages"),
@@ -157,7 +161,8 @@ public final class GraphicsPipeline implements AutoCloseable {
     private final MethodHandle vkDestroyShaderModule;
 
     public GraphicsPipeline(VulkanDevice device, int format, int finalLayout, int width, int height,
-                            byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry) {
+                            byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry,
+                            int pushConstantBytes) {
         this.device = device;
         MemorySegment dev = device.handle();
 
@@ -281,6 +286,13 @@ public final class GraphicsPipeline implements AutoCloseable {
 
             MemorySegment layoutInfo = arena.allocate(PIPELINE_LAYOUT_CREATE_INFO);
             si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+            if (pushConstantBytes > 0) {
+                MemorySegment range = arena.allocate(PUSH_CONSTANT_RANGE);
+                si(range, PUSH_CONSTANT_RANGE, "stageFlags", Vk.SHADER_STAGE_FRAGMENT_BIT);
+                si(range, PUSH_CONSTANT_RANGE, "size", pushConstantBytes);
+                si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pushConstantRangeCount", 1);
+                sa(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pPushConstantRanges", range);
+            }
             MemorySegment pLayout = arena.allocate(JAVA_LONG);
             check(invoke(vkCreatePipelineLayout, dev, layoutInfo, MemorySegment.NULL, pLayout), "vkCreatePipelineLayout");
             this.pipelineLayout = pLayout.get(JAVA_LONG, 0);

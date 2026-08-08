@@ -84,8 +84,14 @@ public final class WindowedPresenter implements AutoCloseable {
     private final Arena a = Arena.ofShared();
 
     private final MethodHandle waitFences, resetFences, acquire, present, submitCmd;
-    private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, draw, endRp;
+    private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, draw, endRp, pushConstants;
     private final MethodHandle destroySem, destroyFence, destroyPool;
+
+    /** Per-frame hook: fill {@code pushConstants} (camera etc.) given the elapsed time; run input/sim here. */
+    @FunctionalInterface
+    public interface Frame {
+        void update(double dtSeconds, MemorySegment pushConstants);
+    }
     private final long imageAvailable, renderFinished, inFlight, pool;
     private final MemorySegment cmd;
 
@@ -118,6 +124,8 @@ public final class WindowedPresenter implements AutoCloseable {
         this.bindPipe = device.command("vkCmdBindPipeline", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
         this.draw = device.command("vkCmdDraw", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
         this.endRp = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
+        this.pushConstants = device.command("vkCmdPushConstants",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
         this.destroySem = device.command("vkDestroySemaphore", DL);
         this.destroyFence = device.command("vkDestroyFence", DL);
         this.destroyPool = device.command("vkDestroyCommandPool", DL);
@@ -130,9 +138,19 @@ public final class WindowedPresenter implements AutoCloseable {
         this.framebuffers = new SwapchainFramebuffers(device, swapchain, pipeline.renderPass());
     }
 
-    /** Run until the window closes, or until {@code maxFrames} presented if {@code maxFrames > 0}. */
+    /** Run until the window closes, or until {@code maxFrames} presented if {@code maxFrames > 0}. No push constants. */
     public void run(int maxFrames) {
+        run(maxFrames, 0, null);
+    }
+
+    /**
+     * Run the present loop, filling {@code pushConstantBytes} of push constants each frame via {@code perFrame}
+     * (camera, time, input-driven sim). Runs until the window closes, or {@code maxFrames} if positive.
+     */
+    public void run(int maxFrames, int pushConstantBytes, Frame perFrame) {
         MemorySegment pImageIndex = a.allocate(JAVA_INT);
+        MemorySegment pushSeg = pushConstantBytes > 0 ? a.allocate(pushConstantBytes) : MemorySegment.NULL;
+        long previousNanos = System.nanoTime();
         MemorySegment pFence = a.allocate(JAVA_LONG);
         pFence.set(JAVA_LONG, 0, inFlight);
         MemorySegment waitSems = a.allocate(JAVA_LONG);
@@ -185,10 +203,21 @@ public final class WindowedPresenter implements AutoCloseable {
             check(invoke(resetFences, dev, 1, pFence), "vkResetFences");
             int imageIndex = pImageIndex.get(JAVA_INT, 0);
 
+            long now = System.nanoTime();
+            double dt = (now - previousNanos) / 1_000_000_000.0;
+            previousNanos = now;
+            if (perFrame != null && pushConstantBytes > 0) {
+                perFrame.update(dt, pushSeg);
+            }
+
             check(invoke(beginCmd, cmd, beginInfo), "vkBeginCommandBuffer");
             sl(rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
             invokeVoid(beginRp, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+            if (pushConstantBytes > 0) {
+                invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
+                        pushConstantBytes, pushSeg);
+            }
             invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
             invokeVoid(endRp, cmd);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");

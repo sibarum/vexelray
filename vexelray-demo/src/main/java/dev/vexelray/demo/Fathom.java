@@ -7,6 +7,7 @@ import dev.supirvast.vastir.core.Expr;
 import dev.supirvast.vastir.core.Function;
 import dev.supirvast.vastir.core.InterfaceVar;
 import dev.supirvast.vastir.core.LocalVar;
+import dev.supirvast.vastir.core.PushConstants;
 import dev.supirvast.vastir.core.Region;
 import dev.supirvast.vastir.core.ShaderStage;
 import dev.supirvast.vastir.core.Statement;
@@ -14,6 +15,9 @@ import dev.supirvast.vastir.tools.Fullscreen;
 import dev.supirvast.vastir.type.Type;
 import dev.supirvast.vast.CoreToTruffle;
 import com.oracle.truffle.api.CallTarget;
+
+import java.lang.foreign.MemorySegment;
+import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
@@ -65,6 +69,9 @@ public final class Fathom {
         if (args.length >= 1 && args[0].equals("--verify")) {
             verify();
             return;
+        } else if (args.length >= 2 && args[0].equals("--demo")) {
+            demoFilmstrip(platform, vertexSpirv, fragmentSpirv, args[1]);
+            return;
         } else if (args.length >= 2 && args[0].equals("--capture")) {
             capture = args[1];
         } else if (args.length == 1) {
@@ -88,9 +95,19 @@ public final class Fathom {
                          window.width(), window.height());
                  GraphicsPipeline pipeline = new GraphicsPipeline(device, swapchain.format(),
                          Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, swapchain.width(), swapchain.height(),
-                         vertexSpirv, "main", fragmentSpirv, "main");
+                         vertexSpirv, "main", fragmentSpirv, "main", 12);
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, pipeline, window)) {
-                presenter.run(maxFrames);
+                // v2b: the camera auto-walks toward the sphere and collides against the SAME SDF on the CPU —
+                // render/sim unity, live. (Interactive WASD lands next; keyboard input is the follow-up.)
+                CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
+                float[] cam = {-0.6f, 1.2f, -3.0f};
+                presenter.run(maxFrames, 12, (dt, pc) -> {
+                    cam[2] += 1.2f * (float) dt;                 // stroll forward
+                    resolveCollision(cpu, cam, 0.35f);          // stopped/slid by the field it's looking at
+                    pc.set(JAVA_FLOAT, 0, cam[0]);
+                    pc.set(JAVA_FLOAT, 4, cam[1]);
+                    pc.set(JAVA_FLOAT, 8, cam[2]);
+                });
             }
             instance.destroySurface(surface);
         }
@@ -107,16 +124,8 @@ public final class Fathom {
             System.out.println("device: " + selection.deviceName());
             try (VulkanDevice device = new VulkanDevice(instance.handle(), selection)) {
                 byte[] rgba = OffscreenRenderer.render(device, w, h, vert, "main", frag, "main", 3,
-                        0.10f, 0.12f, 0.16f, 1.0f);
-                BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-                for (int y = 0; y < h; y++) {
-                    for (int x = 0; x < w; x++) {
-                        int i = (y * w + x) * 4;
-                        image.setRGB(x, y, ((rgba[i + 3] & 0xFF) << 24) | ((rgba[i] & 0xFF) << 16)
-                                | ((rgba[i + 1] & 0xFF) << 8) | (rgba[i + 2] & 0xFF));
-                    }
-                }
-                ImageIO.write(image, "PNG", new File(path));
+                        0.10f, 0.12f, 0.16f, 1.0f, camBytes(0.0f, 1.2f, -3.0f));
+                ImageIO.write(toImage(rgba, w, h), "PNG", new File(path));
                 System.out.println("captured " + new File(path).getAbsolutePath());
             }
         }
@@ -130,6 +139,12 @@ public final class Fathom {
     private static byte[] raymarchFragment() {
         InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, V2);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, V4);
+        // Camera position comes from a push constant the host sets each frame (3 floats, 12 bytes) — see CAM_BYTES.
+        PushConstants cam = new PushConstants(List.of(
+                new PushConstants.Member("camX", F32),
+                new PushConstants.Member("camY", F32),
+                new PushConstants.Member("camZ", F32)));
+        Expr camPos = new Expr.VectorConstruct(V3, List.of(cam.read(0), cam.read(1), cam.read(2)));
 
         Expr uvx = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 0);
         Expr uvy = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 1);
@@ -166,7 +181,7 @@ public final class Fathom {
                 new Expr.VectorConstruct(V4, List.of(f(0.10), f(0.12), f(0.16), f(1.0)))));
 
         Region body = Region.of(
-                new Statement.DeclareVar(ro, v3(0.0, 1.2, -3.0)),
+                new Statement.DeclareVar(ro, camPos),
                 new Statement.DeclareVar(rd, rdInit),
                 new Statement.DeclareVar(t, f(0.0)),
                 new Statement.DeclareVar(i, new Expr.ConstInt(Type.int32(), 0)),
@@ -218,6 +233,88 @@ public final class Fathom {
 
     private static float cpuSdf(CallTarget cpu, float x, float y, float z) {
         return (Float) cpu.call((Object) new float[] {x, y, z});
+    }
+
+    /**
+     * Sphere-trace character-controller resolve: if the player sphere (radius {@code r}) overlaps the field,
+     * push it out along the SDF gradient by the penetration depth. A handful of CPU {@code sdf} calls against the
+     * exact field the GPU renders. Mutates {@code cam} (x,y,z); y is kept fixed (eye height) by only nudging x/z.
+     */
+    private static void resolveCollision(CallTarget cpu, float[] cam, float r) {
+        for (int iter = 0; iter < 2; iter++) {
+            float d = cpuSdf(cpu, cam[0], cam[1], cam[2]);
+            if (d < r) {
+                float e = 0.01f;
+                float gx = cpuSdf(cpu, cam[0] + e, cam[1], cam[2]) - cpuSdf(cpu, cam[0] - e, cam[1], cam[2]);
+                float gz = cpuSdf(cpu, cam[0], cam[1], cam[2] + e) - cpuSdf(cpu, cam[0], cam[1], cam[2] - e);
+                float g = (float) Math.sqrt(gx * gx + gz * gz) + 1e-6f;
+                float push = r - d;
+                cam[0] += (gx / g) * push;
+                cam[2] += (gz / g) * push;
+            }
+        }
+    }
+
+    /**
+     * The "live demo" surrogate: simulate walking the camera straight at the sphere, resolving collision on the
+     * CPU against the SAME field the GPU renders, and render a horizontal filmstrip of the approach. The camera
+     * stops at the sphere surface — you can see it stop growing — proving movement + render/sim-unity collision.
+     */
+    private static void demoFilmstrip(NativePlatform platform, byte[] vert, byte[] frag, String out)
+            throws IOException {
+        CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
+        float playerRadius = 0.35f;
+        float[] cam = {0.0f, 1.2f, -3.0f};
+        java.util.List<float[]> path = new java.util.ArrayList<>();
+        path.add(cam.clone());
+        for (int step = 0; step < 40; step++) {
+            cam[2] += 0.15f;                              // try to walk forward (+z)
+            resolveCollision(cpu, cam, playerRadius);    // pushed out of the sphere it can see
+            path.add(cam.clone());
+        }
+        float[] end = path.get(path.size() - 1);
+        System.out.printf("walk blocked at z=%.3f (sphere at z=3, player r=%.2f) — collision from the render SDF%n",
+                end[2], playerRadius);
+
+        int fw = 320;
+        int fh = 320;
+        int frames = 6;
+        BufferedImage strip = new BufferedImage(fw * frames, fh, BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g2 = strip.createGraphics();
+        try (VulkanInstance instance = new VulkanInstance("Fathom", platform.requiredVulkanInstanceExtensions())) {
+            VulkanInstance.DeviceSelection sel = instance.selectGraphicsDevice()
+                    .orElseThrow(() -> new IllegalStateException("no graphics device"));
+            System.out.println("device: " + sel.deviceName());
+            try (VulkanDevice device = new VulkanDevice(instance.handle(), sel)) {
+                for (int k = 0; k < frames; k++) {
+                    float[] p = path.get(k * (path.size() - 1) / (frames - 1));
+                    byte[] rgba = OffscreenRenderer.render(device, fw, fh, vert, "main", frag, "main", 3,
+                            0.10f, 0.12f, 0.16f, 1.0f, camBytes(p[0], p[1], p[2]));
+                    g2.drawImage(toImage(rgba, fw, fh), k * fw, 0, null);
+                }
+            }
+        }
+        g2.dispose();
+        ImageIO.write(strip, "PNG", new File(out));
+        System.out.println("wrote filmstrip " + new File(out).getAbsolutePath());
+    }
+
+    private static BufferedImage toImage(byte[] rgba, int w, int h) {
+        BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int i = (y * w + x) * 4;
+                image.setRGB(x, y, ((rgba[i + 3] & 0xFF) << 24) | ((rgba[i] & 0xFF) << 16)
+                        | ((rgba[i + 1] & 0xFF) << 8) | (rgba[i + 2] & 0xFF));
+            }
+        }
+        return image;
+    }
+
+    /** Camera position as 12 little-endian bytes (3 floats) for the push constant. */
+    private static byte[] camBytes(float x, float y, float z) {
+        return java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putFloat(x).putFloat(y).putFloat(z).array();
     }
 
     /** The scene SDF as a pure, CPU-lowerable {@code core} function {@code float sdf(vec3 p)} — same body as the shader. */

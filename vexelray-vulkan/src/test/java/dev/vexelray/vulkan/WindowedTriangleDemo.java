@@ -108,7 +108,7 @@ public final class WindowedTriangleDemo {
                          window.width(), window.height());
                  GraphicsPipeline pipeline = new GraphicsPipeline(device, swapchain.format(),
                          Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, swapchain.width(), swapchain.height(),
-                         vertexSpirv, "main", fragmentSpirv, "main");
+                         vertexSpirv, "main", fragmentSpirv, "main", 0);
                  Arena a = Arena.ofShared()) {
 
                 SwapchainFramebuffers framebuffers = new SwapchainFramebuffers(device, swapchain, pipeline.renderPass());
