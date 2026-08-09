@@ -44,6 +44,18 @@
             <artifactId>vastir-tools</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- MSDF text runtime (atlas model, glyph layout, MSDF shader IR) — for the text demo/smoke check. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-text</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Canvas API (unified geometry + uber-shader) — for the canvas demo/smoke check. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-canvas</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <!--

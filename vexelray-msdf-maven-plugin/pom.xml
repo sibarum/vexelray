@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-msdf-maven-plugin</artifactId>
+    <packaging>maven-plugin</packaging>
+
+    <description>
+        Build-time MSDF font-atlas generation: the generate-atlas goal runs a bundled msdf-atlas-gen binary over a
+        TTF/OTF font to produce the atlas PNG + JSON that vexelray-text consumes at runtime, then bakes a
+        font-independent missing-glyph box. A focused adaptation of Dasum's dasum-msdf-maven-plugin (single font,
+        no icon codegen). Windows binary bundled; other OSes consume committed atlases via -Dmsdf.mode=prebuilt.
+    </description>
+
+    <properties>
+        <!-- Override the parent's JDK 25 target: the maven-plugin-plugin descriptor scanner uses an ASM version
+             that can't read JDK 25 bytecode. A plugin needs no JDK 25 features; compile to a widely-supported target. -->
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <maven.compiler.release>21</maven.compiler.release>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-plugin-api</artifactId>
+            <version>${maven-plugin-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.maven.plugin-tools</groupId>
+            <artifactId>maven-plugin-annotations</artifactId>
+            <version>${maven-plugin-annotations.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-core</artifactId>
+            <version>${maven-plugin-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-plugin-plugin</artifactId>
+                <version>${maven-plugin-plugin.version}</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -9,6 +9,7 @@ import java.lang.foreign.GroupLayout;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
+import java.util.List;
 
 import static dev.vexelray.vulkan.vk.Ffm.check;
 import static dev.vexelray.vulkan.vk.Ffm.invoke;
@@ -24,15 +25,40 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
- * A graphics pipeline built against a <em>supplied</em> {@link VulkanRenderPass} — a pure {@code VkPipeline}
- * (plus its layout and shader modules) from a vertex + fragment SPIR-V pair. It does <em>not</em> own the render
- * pass: the render pass is created once by the runtime (or caller) and shared, so several pipelines — i.e.
- * several {@link dev.vexelray.engine.RenderTechnique}s — can be built against the same pass and composite into one
- * colour+depth target (see docs/refactor-decisions.md, Phase 1). Empty vertex input (the fullscreen triangle
- * comes from {@code gl_VertexIndex}); static viewport at the given extent. {@link #close()} destroys the pipeline,
- * its layout, and the shader modules — but never the render pass, which outlives it.
+ * A graphics pipeline built against a <em>supplied</em> {@link VulkanRenderPass} — a {@code VkPipeline} (plus its
+ * layout and shader modules) from a vertex + fragment SPIR-V pair. It does <em>not</em> own the render pass: the
+ * render pass is created once by the runtime (or caller) and shared, so several pipelines — i.e. several
+ * {@link dev.vexelray.engine.RenderTechnique}s — can be built against the same pass and composite into one
+ * colour+depth target (see docs/refactor-decisions.md, Phase 1).
+ *
+ * <p>What varies between a fullscreen SDF pass and a textured/blended pass (e.g. MSDF text) is captured in
+ * {@link Config}: whether there is a vertex buffer (an empty vertex input drives the fullscreen triangle from
+ * {@code gl_VertexIndex}; a non-zero stride declares interleaved attributes), which descriptor set layouts the
+ * pipeline layout includes (for sampled images etc.), whether alpha blending is on, and which stages the push
+ * constant is visible to. The zero-argument {@code pushConstantBytes} constructor keeps the original fullscreen
+ * behaviour (empty vertex input, no descriptor sets, no blend, fragment-stage push constant).
+ * {@link #close()} destroys the pipeline, its layout, and the shader modules — never the render pass or any
+ * descriptor set layout (both outlive it).
  */
 public final class GraphicsPipeline implements AutoCloseable {
+
+    /** One interleaved vertex attribute: shader {@code location}, a {@code VK_FORMAT_*}, and its byte {@code offset}. */
+    public record VertexAttribute(int location, int format, int offset) {
+    }
+
+    /**
+     * Configurable pipeline state beyond the shaders and extent.
+     *
+     * @param vertexStride        byte stride of one vertex; {@code 0} means an empty vertex input (fullscreen triangle)
+     * @param attributes          interleaved vertex attributes (ignored when {@code vertexStride == 0})
+     * @param descriptorSetLayouts {@code VkDescriptorSetLayout} handles the pipeline layout includes (may be empty)
+     * @param blendEnable         enable standard src-alpha/one-minus-src-alpha colour blending
+     * @param pushConstantStages  {@code VK_SHADER_STAGE_*} flags the push constant is visible to
+     * @param pushConstantBytes   push constant size in bytes ({@code 0} for none)
+     */
+    public record Config(int vertexStride, List<VertexAttribute> attributes, long[] descriptorSetLayouts,
+                         boolean blendEnable, int pushConstantStages, int pushConstantBytes) {
+    }
 
     private static final GroupLayout SHADER_MODULE_CREATE_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
@@ -44,6 +70,14 @@ public final class GraphicsPipeline implements AutoCloseable {
             JAVA_INT.withName("flags"), JAVA_INT.withName("stage"), JAVA_LONG.withName("module"),
             ADDRESS.withName("pName"), ADDRESS.withName("pSpecializationInfo")
     ).withName("VkPipelineShaderStageCreateInfo");
+
+    private static final GroupLayout VERTEX_BINDING = MemoryLayout.structLayout(
+            JAVA_INT.withName("binding"), JAVA_INT.withName("stride"), JAVA_INT.withName("inputRate"),
+            MemoryLayout.paddingLayout(4)).withName("VkVertexInputBindingDescription");
+
+    private static final GroupLayout VERTEX_ATTRIBUTE = MemoryLayout.structLayout(
+            JAVA_INT.withName("location"), JAVA_INT.withName("binding"), JAVA_INT.withName("format"),
+            JAVA_INT.withName("offset")).withName("VkVertexInputAttributeDescription");
 
     private static final GroupLayout VERTEX_INPUT_STATE = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
@@ -131,13 +165,18 @@ public final class GraphicsPipeline implements AutoCloseable {
     private final MethodHandle vkDestroyPipelineLayout;
     private final MethodHandle vkDestroyShaderModule;
 
-    /**
-     * Build a pipeline against the shared {@code renderPass}. The render pass is not owned here — the caller
-     * (runtime) creates and destroys it. {@code width}/{@code height} set the static viewport/scissor.
-     */
+    /** Fullscreen convenience: empty vertex input, no descriptor sets, no blend, fragment-stage push constant. */
     public GraphicsPipeline(VulkanDevice device, long renderPass, int width, int height,
                             byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry,
                             int pushConstantBytes) {
+        this(device, renderPass, width, height, vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry,
+                new Config(0, List.of(), new long[0], false, Vk.SHADER_STAGE_FRAGMENT_BIT, pushConstantBytes));
+    }
+
+    /** Build a pipeline against the shared {@code renderPass} with explicit {@link Config}. */
+    public GraphicsPipeline(VulkanDevice device, long renderPass, int width, int height,
+                            byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry,
+                            Config config) {
         this.device = device;
         MemorySegment dev = device.handle();
 
@@ -169,6 +208,26 @@ public final class GraphicsPipeline implements AutoCloseable {
 
             MemorySegment vertexInput = arena.allocate(VERTEX_INPUT_STATE);
             si(vertexInput, VERTEX_INPUT_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+            if (config.vertexStride() > 0) {
+                MemorySegment binding = arena.allocate(VERTEX_BINDING);
+                si(binding, VERTEX_BINDING, "binding", 0);
+                si(binding, VERTEX_BINDING, "stride", config.vertexStride());
+                si(binding, VERTEX_BINDING, "inputRate", Vk.VERTEX_INPUT_RATE_VERTEX);
+                List<VertexAttribute> attrs = config.attributes();
+                MemorySegment attrArr = arena.allocate(VERTEX_ATTRIBUTE, attrs.size());
+                for (int k = 0; k < attrs.size(); k++) {
+                    MemorySegment a = attrArr.asSlice((long) k * VERTEX_ATTRIBUTE.byteSize(), VERTEX_ATTRIBUTE.byteSize());
+                    si(a, VERTEX_ATTRIBUTE, "location", attrs.get(k).location());
+                    si(a, VERTEX_ATTRIBUTE, "binding", 0);
+                    si(a, VERTEX_ATTRIBUTE, "format", attrs.get(k).format());
+                    si(a, VERTEX_ATTRIBUTE, "offset", attrs.get(k).offset());
+                }
+                si(vertexInput, VERTEX_INPUT_STATE, "vertexBindingDescriptionCount", 1);
+                sa(vertexInput, VERTEX_INPUT_STATE, "pVertexBindingDescriptions", binding);
+                si(vertexInput, VERTEX_INPUT_STATE, "vertexAttributeDescriptionCount", attrs.size());
+                sa(vertexInput, VERTEX_INPUT_STATE, "pVertexAttributeDescriptions", attrArr);
+            }
+
             MemorySegment inputAssembly = arena.allocate(INPUT_ASSEMBLY_STATE);
             si(inputAssembly, INPUT_ASSEMBLY_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
             si(inputAssembly, INPUT_ASSEMBLY_STATE, "topology", Vk.PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -200,6 +259,15 @@ public final class GraphicsPipeline implements AutoCloseable {
 
             MemorySegment blendAttachment = arena.allocate(COLOR_BLEND_ATTACHMENT);
             si(blendAttachment, COLOR_BLEND_ATTACHMENT, "colorWriteMask", Vk.COLOR_COMPONENT_RGBA);
+            if (config.blendEnable()) {
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "blendEnable", Vk.VK_TRUE);
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "srcColorBlendFactor", Vk.BLEND_FACTOR_SRC_ALPHA);
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "dstColorBlendFactor", Vk.BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "colorBlendOp", Vk.BLEND_OP_ADD);
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "srcAlphaBlendFactor", Vk.BLEND_FACTOR_ONE);
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "dstAlphaBlendFactor", Vk.BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+                si(blendAttachment, COLOR_BLEND_ATTACHMENT, "alphaBlendOp", Vk.BLEND_OP_ADD);
+            }
             MemorySegment colorBlend = arena.allocate(COLOR_BLEND_STATE);
             si(colorBlend, COLOR_BLEND_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
             si(colorBlend, COLOR_BLEND_STATE, "attachmentCount", 1);
@@ -207,10 +275,19 @@ public final class GraphicsPipeline implements AutoCloseable {
 
             MemorySegment layoutInfo = arena.allocate(PIPELINE_LAYOUT_CREATE_INFO);
             si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
-            if (pushConstantBytes > 0) {
+            long[] setLayouts = config.descriptorSetLayouts();
+            if (setLayouts.length > 0) {
+                MemorySegment pSets = arena.allocate(JAVA_LONG, setLayouts.length);
+                for (int k = 0; k < setLayouts.length; k++) {
+                    pSets.setAtIndex(JAVA_LONG, k, setLayouts[k]);
+                }
+                si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "setLayoutCount", setLayouts.length);
+                sa(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pSetLayouts", pSets);
+            }
+            if (config.pushConstantBytes() > 0) {
                 MemorySegment range = arena.allocate(PUSH_CONSTANT_RANGE);
-                si(range, PUSH_CONSTANT_RANGE, "stageFlags", Vk.SHADER_STAGE_FRAGMENT_BIT);
-                si(range, PUSH_CONSTANT_RANGE, "size", pushConstantBytes);
+                si(range, PUSH_CONSTANT_RANGE, "stageFlags", config.pushConstantStages());
+                si(range, PUSH_CONSTANT_RANGE, "size", config.pushConstantBytes());
                 si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pushConstantRangeCount", 1);
                 sa(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pPushConstantRanges", range);
             }

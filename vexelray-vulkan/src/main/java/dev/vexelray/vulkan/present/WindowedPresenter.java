@@ -86,6 +86,7 @@ public final class WindowedPresenter implements AutoCloseable {
 
     private final MethodHandle waitFences, resetFences, acquire, present, submitCmd;
     private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, draw, endRp, pushConstants;
+    private final MethodHandle bindVertexBuffers, bindDescriptorSets;
     private final MethodHandle destroySem, destroyFence, destroyPool;
 
     /** Per-frame hook: fill {@code pushConstants} (camera etc.) given the elapsed time; run input/sim here. */
@@ -98,6 +99,20 @@ public final class WindowedPresenter implements AutoCloseable {
 
     private SwapchainFramebuffers framebuffers;
     private int vertexCount = 3;
+    private long vertexBuffer = 0;      // 0 = no vertex buffer (fullscreen triangle from gl_VertexIndex)
+    private long descriptorSet = 0;     // 0 = no descriptor set to bind
+
+    /**
+     * Switch from the default fullscreen draw to a vertex-buffer draw: bind {@code vertexBuffer} at binding 0 and,
+     * if non-zero, {@code descriptorSet} at set 0 (against the pipeline's layout), then draw {@code vertexCount}
+     * vertices each frame. Call once before {@link #run}. Pass {@code descriptorSet == 0} for a vertex-buffer draw
+     * that needs no descriptors.
+     */
+    public void configureDraw(long vertexBuffer, long descriptorSet, int vertexCount) {
+        this.vertexBuffer = vertexBuffer;
+        this.descriptorSet = descriptorSet;
+        this.vertexCount = vertexCount;
+    }
 
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              GraphicsPipeline pipeline, NativeWindow window) {
@@ -128,6 +143,10 @@ public final class WindowedPresenter implements AutoCloseable {
         this.endRp = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
         this.pushConstants = device.command("vkCmdPushConstants",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
+        this.bindVertexBuffers = device.command("vkCmdBindVertexBuffers",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
+        this.bindDescriptorSets = device.command("vkCmdBindDescriptorSets",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
         this.destroySem = device.command("vkDestroySemaphore", DL);
         this.destroyFence = device.command("vkDestroyFence", DL);
         this.destroyPool = device.command("vkDestroyCommandPool", DL);
@@ -183,6 +202,14 @@ public final class WindowedPresenter implements AutoCloseable {
         sa(presentInfo, PRESENT, "pSwapchains", pSwapchains);
         sa(presentInfo, PRESENT, "pImageIndices", pImageIndex);
 
+        // Per-draw binding scratch (only used when configureDraw set a vertex buffer / descriptor set).
+        MemorySegment pVertexBuffers = a.allocate(JAVA_LONG);
+        pVertexBuffers.set(JAVA_LONG, 0, vertexBuffer);
+        MemorySegment pVertexOffsets = a.allocate(JAVA_LONG);
+        pVertexOffsets.set(JAVA_LONG, 0, 0L);
+        MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
+        pDescriptorSet.set(JAVA_LONG, 0, descriptorSet);
+
         MemorySegment clear = a.allocate(JAVA_FLOAT, 4);
         MemorySegment beginInfo = a.allocate(CMD_BEGIN);
         si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
@@ -216,6 +243,13 @@ public final class WindowedPresenter implements AutoCloseable {
             sl(rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
             invokeVoid(beginRp, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+            if (descriptorSet != 0) {
+                invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
+                        0, 1, pDescriptorSet, 0, MemorySegment.NULL);
+            }
+            if (vertexBuffer != 0) {
+                invokeVoid(bindVertexBuffers, cmd, 0, 1, pVertexBuffers, pVertexOffsets);
+            }
             if (pushConstantBytes > 0) {
                 invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
                         pushConstantBytes, pushSeg);

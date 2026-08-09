@@ -126,4 +126,49 @@ public final class Vk {
     public static final int COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x0002;
     /** {@code 0xFFFFFFFF} — a surface {@code currentExtent} of this width means "the app chooses the size". */
     public static final int EXTENT_UNDEFINED = 0xFFFFFFFF;
+
+    // --- sampled textures, descriptor sets, vertex buffers, alpha blending (MSDF text path) ---
+
+    // Structure types
+    public static final int STRUCTURE_TYPE_SAMPLER_CREATE_INFO = 31;
+    public static final int STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO = 32;
+    public static final int STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO = 33;
+    public static final int STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO = 34;
+    public static final int STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET = 35;
+
+    // Formats (vertex attributes)
+    public static final int FORMAT_R32_SFLOAT = 100;
+    public static final int FORMAT_R32G32_SFLOAT = 103;
+    public static final int FORMAT_R32G32B32A32_SFLOAT = 109;
+
+    // Image usage / layout for a sampled image
+    public static final int IMAGE_USAGE_SAMPLED_BIT = 0x0004;
+    public static final int IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5;
+
+    // Buffer usage
+    public static final int BUFFER_USAGE_TRANSFER_SRC_BIT = 0x0001;
+    public static final int BUFFER_USAGE_VERTEX_BUFFER_BIT = 0x0080;
+
+    // Sampler
+    public static final int FILTER_LINEAR = 1;
+    public static final int SAMPLER_MIPMAP_MODE_NEAREST = 0;
+    public static final int SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2;
+    public static final int BORDER_COLOR_FLOAT_OPAQUE_BLACK = 0;
+
+    // Descriptors
+    public static final int DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1;
+
+    // Vertex input
+    public static final int VERTEX_INPUT_RATE_VERTEX = 0;
+
+    // Alpha blending
+    public static final int BLEND_FACTOR_ZERO = 0;
+    public static final int BLEND_FACTOR_ONE = 1;
+    public static final int BLEND_FACTOR_SRC_ALPHA = 6;
+    public static final int BLEND_FACTOR_ONE_MINUS_SRC_ALPHA = 7;
+    public static final int BLEND_OP_ADD = 0;
+
+    // Pipeline stages / access for the sampled-image transition
+    public static final int PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x0080;
+    public static final int ACCESS_SHADER_READ_BIT = 0x0020;
 }

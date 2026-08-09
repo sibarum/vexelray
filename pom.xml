@@ -27,6 +27,12 @@
         <module>vexelray-engine-api</module>
         <!-- Runtime shader generation: engine descriptions -> SupirVast core IR -> SPIR-V. The SupirVast seam. -->
         <module>vexelray-shader</module>
+        <!-- Build-time MSDF atlas generator (Maven plugin). Listed before vexelray-text, which uses it. -->
+        <module>vexelray-msdf-maven-plugin</module>
+        <!-- MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, and the MSDF shader as core IR. -->
+        <module>vexelray-text</module>
+        <!-- 2D Canvas API: immediate-mode unified-batched geometry (shapes + text) and its uber-shader as core IR. -->
+        <module>vexelray-canvas</module>
         <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
              An aggregator grouping (vexelray-os-api + vexelray-os-{windows,linux,macos}). -->
         <module>vexelray-os</module>
@@ -49,6 +55,11 @@
         <!-- Pure-Java vector/matrix math for camera/MVP transforms (no natives). -->
         <joml.version>1.10.7</joml.version>
         <junit.version>5.11.4</junit.version>
+
+        <!-- Maven plugin tooling for vexelray-msdf-maven-plugin. -->
+        <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
+        <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
+        <maven-plugin-plugin.version>3.15.1</maven-plugin-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -92,6 +103,16 @@
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-vulkan</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-text</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-canvas</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
