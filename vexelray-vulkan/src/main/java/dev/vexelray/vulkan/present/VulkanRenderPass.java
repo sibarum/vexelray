@@ -75,9 +75,10 @@ public final class VulkanRenderPass implements AutoCloseable {
         MethodHandle vkCreateRenderPass = device.command("vkCreateRenderPass", C4);
         this.vkDestroyRenderPass = device.command("vkDestroyRenderPass", D_LONG);
 
-        // For a swapchain present target one start dependency suffices; an offscreen (TRANSFER_SRC) target adds a
-        // second so a follow-up copy sees the colour writes.
+        // For a swapchain present target one start dependency suffices; an offscreen target adds a second so the
+        // follow-up work sees the colour writes — a copy (TRANSFER_SRC) or a later sample (SHADER_READ_ONLY).
         boolean present = finalLayout == Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        boolean sampled = finalLayout == Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment attachment = arena.allocate(ATTACHMENT_DESCRIPTION);
@@ -109,13 +110,17 @@ public final class VulkanRenderPass implements AutoCloseable {
             si(dep0, SUBPASS_DEPENDENCY, "srcAccessMask", 0);
             si(dep0, SUBPASS_DEPENDENCY, "dstAccessMask", Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
             if (!present) {
+                // Make the colour writes visible to the follow-up stage: a transfer copy for a TRANSFER_SRC target,
+                // or a fragment-shader sample for a SHADER_READ_ONLY target (rendering a 2D surface to be textured).
                 MemorySegment dep1 = deps.asSlice(SUBPASS_DEPENDENCY.byteSize(), SUBPASS_DEPENDENCY.byteSize());
                 si(dep1, SUBPASS_DEPENDENCY, "srcSubpass", 0);
                 si(dep1, SUBPASS_DEPENDENCY, "dstSubpass", Vk.SUBPASS_EXTERNAL);
                 si(dep1, SUBPASS_DEPENDENCY, "srcStageMask", Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "dstStageMask", Vk.PIPELINE_STAGE_TRANSFER_BIT);
+                si(dep1, SUBPASS_DEPENDENCY, "dstStageMask",
+                        sampled ? Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT : Vk.PIPELINE_STAGE_TRANSFER_BIT);
                 si(dep1, SUBPASS_DEPENDENCY, "srcAccessMask", Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "dstAccessMask", Vk.ACCESS_TRANSFER_READ_BIT);
+                si(dep1, SUBPASS_DEPENDENCY, "dstAccessMask",
+                        sampled ? Vk.ACCESS_SHADER_READ_BIT : Vk.ACCESS_TRANSFER_READ_BIT);
             }
 
             MemorySegment rpInfo = arena.allocate(RENDER_PASS_CREATE_INFO);
