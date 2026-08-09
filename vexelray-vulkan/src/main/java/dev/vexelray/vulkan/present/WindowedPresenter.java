@@ -114,6 +114,14 @@ public final class WindowedPresenter implements AutoCloseable {
         this.vertexCount = vertexCount;
     }
 
+    /**
+     * Set the number of vertices to draw for subsequent frames — call from the per-frame callback after refilling
+     * a dynamic vertex buffer (immediate-mode UI rebuilt each frame).
+     */
+    public void setVertexCount(int vertexCount) {
+        this.vertexCount = vertexCount;
+    }
+
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              GraphicsPipeline pipeline, NativeWindow window) {
         this.device = device;
@@ -235,7 +243,9 @@ public final class WindowedPresenter implements AutoCloseable {
             long now = System.nanoTime();
             double dt = (now - previousNanos) / 1_000_000_000.0;
             previousNanos = now;
-            if (perFrame != null && pushConstantBytes > 0) {
+            // Called every frame when set — carries the push-constant segment (NULL when there are no push
+            // constants). The callback may also refill a dynamic vertex buffer and call setVertexCount(...).
+            if (perFrame != null) {
                 perFrame.update(dt, pushSeg);
             }
 

@@ -23,9 +23,11 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
- * A host-visible, host-coherent vertex buffer holding an interleaved {@code float[]} — the simplest upload path
- * (map, copy, done), adequate for the small, mostly-static geometry of a text run. A device-local + staging
- * variant is a later optimisation; this proves the vertex-buffer path in the present layer.
+ * A host-visible, host-coherent vertex buffer holding interleaved {@code float}s — the simplest upload path
+ * (map, copy). Persistently mapped, so {@link #update(float[])} can rewrite its contents cheaply each frame; this
+ * is what immediate-mode UI (a Canvas rebuilt per frame) needs. Allocate once at a capacity and refill; the caller
+ * must ensure the previous frame's draw has completed before updating (the windowed present loop's per-frame fence
+ * wait guarantees this at one frame in flight). A device-local + staging variant is a later optimisation.
  */
 public final class VertexBuffer implements AutoCloseable {
 
@@ -53,13 +55,23 @@ public final class VertexBuffer implements AutoCloseable {
     private final VulkanDevice device;
     private final long buffer;
     private final long memory;
+    private final long capacityFloats;
+    private final MemorySegment mapped;
     private final MethodHandle vkDestroyBuffer;
     private final MethodHandle vkFreeMemory;
 
+    /** A static buffer initialised with {@code vertices} and sized exactly to them. */
     public VertexBuffer(VulkanDevice device, float[] vertices) {
+        this(device, vertices.length);
+        update(vertices);
+    }
+
+    /** A dynamic buffer with room for {@code capacityFloats} floats, ready for repeated {@link #update(float[])}. */
+    public VertexBuffer(VulkanDevice device, int capacityFloats) {
         this.device = device;
+        this.capacityFloats = capacityFloats;
         MemorySegment dev = device.handle();
-        long byteSize = (long) vertices.length * Float.BYTES;
+        long byteSize = (long) capacityFloats * Float.BYTES;
 
         MethodHandle vkCreateBuffer = device.command("vkCreateBuffer", C4);
         this.vkDestroyBuffer = device.command("vkDestroyBuffer", D_LONG);
@@ -69,7 +81,6 @@ public final class VertexBuffer implements AutoCloseable {
         MethodHandle vkBindBufferMemory = device.command("vkBindBufferMemory", BIND);
         MethodHandle vkMapMemory = device.command("vkMapMemory",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, ADDRESS));
-        MethodHandle vkUnmapMemory = device.command("vkUnmapMemory", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG));
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment info = arena.allocate(BUFFER_CREATE_INFO);
@@ -96,10 +107,17 @@ public final class VertexBuffer implements AutoCloseable {
 
             MemorySegment ppData = arena.allocate(ADDRESS);
             check(invoke(vkMapMemory, dev, memory, 0L, byteSize, 0, ppData), "vkMapMemory");
-            MemorySegment mapped = ppData.get(ADDRESS, 0).reinterpret(byteSize);
-            MemorySegment.copy(vertices, 0, mapped, JAVA_FLOAT, 0, vertices.length);
-            invokeVoid(vkUnmapMemory, dev, memory);
+            this.mapped = ppData.get(ADDRESS, 0).reinterpret(byteSize);   // persistent map (host-coherent)
         }
+    }
+
+    /** Overwrite the buffer's contents with {@code vertices} (must not exceed the buffer's capacity). */
+    public void update(float[] vertices) {
+        if (vertices.length > capacityFloats) {
+            throw new IllegalArgumentException("vertex data (" + vertices.length + " floats) exceeds capacity ("
+                    + capacityFloats + ")");
+        }
+        MemorySegment.copy(vertices, 0, mapped, JAVA_FLOAT, 0, vertices.length);
     }
 
     /** The {@code VkBuffer} handle to bind at vertex-input binding 0. */
