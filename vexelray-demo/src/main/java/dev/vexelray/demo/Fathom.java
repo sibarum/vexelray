@@ -19,10 +19,15 @@ import com.oracle.truffle.api.CallTarget;
 
 import java.lang.foreign.MemorySegment;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
-import dev.vexelray.os.Key;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
+import sibarum.atchung.Atchung;
+import sibarum.tactroller.api.BackendException;
+import sibarum.tactroller.api.InputEvent;
+import sibarum.tactroller.api.Key;
+import sibarum.tactroller.api.Tactroller;
+import sibarum.tactroller.atchung.TactrollerInputBridge;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
@@ -60,7 +65,7 @@ public final class Fathom {
     private static final Type.Vector V4 = new Type.Vector(F32, 4);
     private static final Type.Vector V2 = new Type.Vector(F32, 2);
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException, BackendException {
         byte[] vertexSpirv = Fullscreen.triangleVertexWithUvSpirv();
         byte[] fragmentSpirv = raymarchFragment();
         System.out.println("Fathom — raymarch fragment composed: " + fragmentSpirv.length + " bytes of SPIR-V");
@@ -90,7 +95,8 @@ public final class Fathom {
         }
 
         try (NativeWindow window = platform.createWindow(new WindowConfig("Fathom", 800, 600, true));
-             VulkanInstance instance = new VulkanInstance("Fathom", platform.requiredVulkanInstanceExtensions())) {
+             VulkanInstance instance = new VulkanInstance("Fathom", platform.requiredVulkanInstanceExtensions());
+             Tactroller input = Tactroller.open()) {
             long surface = window.createVulkanSurface(instance.handleAddress(), VkLoader.getInstanceProcAddrPointer());
             VulkanInstance.DeviceSelection selection = instance.selectGraphicsPresentDevice(surface)
                     .orElseThrow(() -> new IllegalStateException("no graphics+present device"));
@@ -108,22 +114,47 @@ public final class Fathom {
                          pipeline, window)) {
                 // v2c: WASD steers the camera; the CPU collides it against the SAME SDF the GPU renders —
                 // render/sim unity, driven by you. (Facing is fixed +z for now; turning/mouse-look is next.)
+                //
+                // Input now flows through the suite's fabric rather than window.isKeyDown: Tactroller reads the
+                // device, the tactroller-atchung bridge publishes discrete edges onto an Atchung! bus, and this
+                // demo is just a consumer — it folds KeyPressed/KeyReleased into a held-set. Focus is arbitrated
+                // by Tactroller (attached to the window's HWND), so movement only happens when Fathom is focused.
+                input.attach(sibarum.tactroller.api.NativeWindow.ofHwnd(window.osHandle()));
+                Atchung bus = Atchung.create();
+                TactrollerInputBridge inputBridge = new TactrollerInputBridge(input, bus);
+                java.util.EnumSet<Key> held = java.util.EnumSet.noneOf(Key.class);
+                bus.subscribe(inputBridge.events(), e -> {
+                    if (e instanceof InputEvent.KeyPressed k) {
+                        held.add(k.key());
+                    } else if (e instanceof InputEvent.KeyReleased k) {
+                        held.remove(k.key());
+                    }
+                });
+
                 CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
                 float[] cam = {0.0f, 1.2f, -3.0f};
-                System.out.println("Click the window, then WASD to move. Walk into the sphere — you cannot enter it.");
+                System.out.println("Click the window, then WASD to move (via Tactroller -> Atchung). "
+                        + "Walk into the sphere — you cannot enter it.");
                 presenter.run(maxFrames, 12, (dt, pc) -> {
+                    try {
+                        inputBridge.pump();                     // snapshot Tactroller -> publish this frame's edges
+                    } catch (BackendException ex) {
+                        throw new RuntimeException("input pump failed", ex);
+                    }
                     float step = 2.5f * (float) dt;
-                    if (window.isKeyDown(Key.W)) {
-                        cam[2] += step;
-                    }
-                    if (window.isKeyDown(Key.S)) {
-                        cam[2] -= step;
-                    }
-                    if (window.isKeyDown(Key.A)) {
-                        cam[0] -= step;
-                    }
-                    if (window.isKeyDown(Key.D)) {
-                        cam[0] += step;
+                    if (input.isFocused()) {                    // focus-gated: only steer when the window is active
+                        if (held.contains(Key.W)) {
+                            cam[2] += step;
+                        }
+                        if (held.contains(Key.S)) {
+                            cam[2] -= step;
+                        }
+                        if (held.contains(Key.A)) {
+                            cam[0] -= step;
+                        }
+                        if (held.contains(Key.D)) {
+                            cam[0] += step;
+                        }
                     }
                     resolveCollision(cpu, cam, 0.35f);          // stopped/slid by the field it's looking at
                     pc.set(JAVA_FLOAT, 0, cam[0]);
