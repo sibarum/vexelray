@@ -26,6 +26,7 @@ import sibarum.atchung.Atchung;
 import sibarum.tactroller.api.BackendException;
 import sibarum.tactroller.api.InputEvent;
 import sibarum.tactroller.api.Key;
+import sibarum.tactroller.api.PointerDelta;
 import sibarum.tactroller.api.Tactroller;
 import sibarum.tactroller.atchung.TactrollerInputBridge;
 import dev.vexelray.shader.ComposedShader;
@@ -109,7 +110,7 @@ public final class Fathom {
                          Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR);
                  GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(),
                          swapchain.width(), swapchain.height(),
-                         vertexSpirv, "main", fragmentSpirv, "main", 12);
+                         vertexSpirv, "main", fragmentSpirv, "main", 20);
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
                          pipeline, window)) {
                 // v2c: WASD steers the camera; the CPU collides it against the SAME SDF the GPU renders —
@@ -133,33 +134,50 @@ public final class Fathom {
 
                 CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
                 float[] cam = {0.0f, 1.2f, -3.0f};
-                System.out.println("Click the window, then WASD to move (via Tactroller -> Atchung). "
-                        + "Walk into the sphere — you cannot enter it.");
-                presenter.run(maxFrames, 12, (dt, pc) -> {
+                float[] look = {0.0f, 0.0f};                    // yaw, pitch (radians)
+                boolean[] paused = {false};                     // Escape pauses look until the window is refocused
+                final float lookSens = 0.0025f;                 // radians per pixel of mouse motion
+                System.out.println("Click the window, then look with the mouse and move with WASD (Escape pauses "
+                        + "look). Walk into the sphere — you cannot enter it.");
+                presenter.run(maxFrames, 20, (dt, pc) -> {
+                    // Input flows Tactroller -> tactroller-atchung bridge -> Atchung!, consumed here. Mouselook uses
+                    // unlocked, frame-to-frame absolute pointer deltas (the cursor stays visible by design).
+                    boolean focused;
+                    PointerDelta look_d;
                     try {
                         inputBridge.pump();                     // snapshot Tactroller -> publish this frame's edges
+                        focused = input.isFocused();
+                        look_d = input.pollPointerDelta();      // frame-to-frame absolute diff (unlocked)
                     } catch (BackendException ex) {
-                        throw new RuntimeException("input pump failed", ex);
+                        throw new RuntimeException("input failed", ex);
                     }
-                    float step = 2.5f * (float) dt;
-                    if (input.isFocused()) {                    // focus-gated: only steer when the window is active
-                        if (held.contains(Key.W)) {
-                            cam[2] += step;
-                        }
-                        if (held.contains(Key.S)) {
-                            cam[2] -= step;
-                        }
-                        if (held.contains(Key.A)) {
-                            cam[0] -= step;
-                        }
-                        if (held.contains(Key.D)) {
-                            cam[0] += step;
-                        }
+
+                    if (held.contains(Key.ESCAPE)) {
+                        paused[0] = true;
                     }
+                    if (!focused) {
+                        paused[0] = false;                      // regaining focus resumes look
+                    }
+                    if (focused && !paused[0]) {
+                        look[0] += look_d.dx() * lookSens;      // yaw
+                        look[1] = Math.max(-1.5f, Math.min(1.5f, look[1] + look_d.dy() * lookSens)); // pitch (clamped)
+                        float step = 2.5f * (float) dt;
+                        float fx = (float) Math.sin(look[0]);   // forward = yaw direction (horizontal)
+                        float fz = (float) Math.cos(look[0]);
+                        float rrx = (float) Math.cos(look[0]);  // right = forward rotated -90°
+                        float rrz = (float) -Math.sin(look[0]);
+                        if (held.contains(Key.W)) { cam[0] += fx * step; cam[2] += fz * step; }
+                        if (held.contains(Key.S)) { cam[0] -= fx * step; cam[2] -= fz * step; }
+                        if (held.contains(Key.D)) { cam[0] += rrx * step; cam[2] += rrz * step; }
+                        if (held.contains(Key.A)) { cam[0] -= rrx * step; cam[2] -= rrz * step; }
+                    }
+
                     resolveCollision(cpu, cam, 0.35f);          // stopped/slid by the field it's looking at
                     pc.set(JAVA_FLOAT, 0, cam[0]);
                     pc.set(JAVA_FLOAT, 4, cam[1]);
                     pc.set(JAVA_FLOAT, 8, cam[2]);
+                    pc.set(JAVA_FLOAT, 12, look[0]);            // yaw
+                    pc.set(JAVA_FLOAT, 16, look[1]);            // pitch
                 });
             }
             instance.destroySurface(surface);
@@ -196,15 +214,29 @@ public final class Fathom {
         PushConstants cam = new PushConstants(List.of(
                 new PushConstants.Member("camX", F32),
                 new PushConstants.Member("camY", F32),
-                new PushConstants.Member("camZ", F32)));
+                new PushConstants.Member("camZ", F32),
+                new PushConstants.Member("yaw", F32),
+                new PushConstants.Member("pitch", F32)));
         Expr camPos = new Expr.VectorConstruct(V3, List.of(cam.read(0), cam.read(1), cam.read(2)));
+        Expr yaw = cam.read(3);
+        Expr pitch = cam.read(4);
 
         Expr uvx = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 0);
         Expr uvy = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 1);
         // screen ray: x spans [-1,1], y flipped so up is +y; focal length 1.4
         Expr sx = sub(mul(uvx, f(2.0)), f(1.0));
         Expr sy = sub(f(1.0), mul(uvy, f(2.0)));
-        Expr rdInit = Expr.MathCall.normalize(new Expr.VectorConstruct(V3, List.of(sx, sy, f(1.4))));
+        // Base forward ray, then rotate by pitch (about X) then yaw (about Y) — mouselook. At yaw=pitch=0 this
+        // reduces exactly to the old fixed +z forward, so an idle mouse renders identically to before.
+        Expr cp = Expr.MathCall.cos(pitch);
+        Expr sp = Expr.MathCall.sin(pitch);
+        Expr py = sub(mul(sy, cp), mul(f(1.4), sp));      // pitched y
+        Expr pz = add(mul(sy, sp), mul(f(1.4), cp));      // pitched z
+        Expr cy = Expr.MathCall.cos(yaw);
+        Expr syw = Expr.MathCall.sin(yaw);
+        Expr rx = add(mul(sx, cy), mul(pz, syw));         // yawed x
+        Expr rz = sub(mul(pz, cy), mul(sx, syw));         // yawed z
+        Expr rdInit = Expr.MathCall.normalize(new Expr.VectorConstruct(V3, List.of(rx, py, rz)));
 
         LocalVar ro = new LocalVar("ro", V3);
         LocalVar rd = new LocalVar("rd", V3);
@@ -370,10 +402,10 @@ public final class Fathom {
         return image;
     }
 
-    /** Camera position as 12 little-endian bytes (3 floats) for the push constant. */
+    /** Camera position + orientation as 20 little-endian bytes (5 floats: x,y,z,yaw,pitch). */
     private static byte[] camBytes(float x, float y, float z) {
-        return java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                .putFloat(x).putFloat(y).putFloat(z).array();
+        return java.nio.ByteBuffer.allocate(20).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putFloat(x).putFloat(y).putFloat(z).putFloat(0.0f).putFloat(0.0f).array();
     }
 
     /** The scene SDF as a pure, CPU-lowerable {@code core} function {@code float sdf(vec3 p)} — same body as the shader. */
