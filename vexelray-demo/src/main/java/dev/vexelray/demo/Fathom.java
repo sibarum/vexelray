@@ -248,15 +248,18 @@ public final class Fathom {
         Region march = Region.of(
                 new Statement.Assign(p, add(read(ro), mulS(read(rd), read(t)))),
                 new Statement.Assign(d, sceneSdf(read(p))),
-                // Clamp the step so a ray can't leap over a thin ridge (heightfield overshoot = dark seam cracks).
-                new Statement.Assign(t, add(read(t), Expr.MathCall.min(read(d), f(0.06)))),
+                // Step forward by the distance, clamped: at most 0.06 (can't leap a thin ridge) and never NEGATIVE.
+                // A negative step (from an overshoot where d<0) would march backward and oscillate around the
+                // surface, never landing within the hit epsilon — the dark seam cracks. Freezing at d<=0 instead
+                // lets the post-loop test see d<0 and register a clean hit.
+                new Statement.Assign(t, add(read(t), Expr.MathCall.max(Expr.MathCall.min(read(d), f(0.06)), f(0.0)))),
                 new Statement.Assign(i, new Expr.Binary(BinaryOp.ADD, read(i), new Expr.ConstInt(Type.int32(), 1))));
 
         // finite-difference normal at the hit point. A wide eps deliberately samples the field over ~5cm so the
         // shading normal reflects the broad surface curvature, not every sub-cell noise wiggle — that is what makes
         // the terrain read as a smooth curved surface instead of a faceted heightmap. (Sphere/glyph are large
         // relative to this eps, so their normals stay crisp.)
-        double eps = 0.03;
+        double eps = 0.08;
         Expr n = Expr.MathCall.normalize(new Expr.VectorConstruct(V3, List.of(
                 sub(sceneSdf(add(read(p), v3(eps, 0, 0))), sceneSdf(sub(read(p), v3(eps, 0, 0)))),
                 sub(sceneSdf(add(read(p), v3(0, eps, 0))), sceneSdf(sub(read(p), v3(0, eps, 0)))),
@@ -281,7 +284,7 @@ public final class Fathom {
                 new Statement.Assign(d, sceneSdf(read(p))),
                 // distance-relative hit epsilon: threshold grows with march distance t so grazing rays that run out
                 // of step budget short of the surface still register as a hit instead of leaking sky-coloured streaks.
-                new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), add(f(0.008), mul(f(0.0008), read(t)))), hit, miss),
+                new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), add(f(0.008), mul(f(0.0018), read(t)))), hit, miss),
                 new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
@@ -434,15 +437,27 @@ public final class Fathom {
      * every distance, so no ray runs parallel to the surface; the horizon resolves cleanly (and fades to sky
      * beyond trace range instead of smearing). It is the SAME field the CPU collides against — render == sim.
      *
-     * <p>A heightfield {@code y - h(x,z)} overestimates true distance where the ground is steep, so it is scaled
-     * by a conservative Lipschitz factor to stay a valid (never-overshooting) sphere-trace distance.
+     * <p>A heightfield {@code y - h(x,z)} over-estimates true distance where the ground is steep. Rather than a
+     * single conservative Lipschitz constant (too loose → overshoot gashes on steep slopes; too tight → tiny
+     * steps that exhaust the budget on grazing rays → gashes there instead), we divide by the local surface
+     * slope: {@code (y - h) / sqrt(1 + |grad h|^2)}. That is the true distance to a locally-planar heightfield —
+     * accurate everywhere, so steps are as large as is safe and never overshoot.
      */
     private static Expr terrain(Expr point) {
-        Expr xz = new Expr.VectorConstruct(V2, List.of(x(point), z(point)));
-        // Gradient (Perlin) fBm — organic, non-blocky (value noise shows square grid patches). Signed & centred,
-        // so it is used directly as height (no -0.5). freq 0.16 => several hills in view; amplitude sets relief.
-        Expr hp = mul(Noise.fbmPerlin2(mulS2(xz, f(0.16)), 3), f(2.0));
-        return mul(sub(y(point), hp), f(0.30));   // Lipschitz safety for the conservative sphere-trace
+        Expr px = x(point);
+        Expr pz = z(point);
+        double e = 0.22;                                  // world-space epsilon for the height gradient
+        Expr h = heightAt(px, pz);
+        Expr hx = mul(sub(heightAt(add(px, f(e)), pz), heightAt(sub(px, f(e)), pz)), f(1.0 / (2 * e)));
+        Expr hz = mul(sub(heightAt(px, add(pz, f(e))), heightAt(px, sub(pz, f(e)))), f(1.0 / (2 * e)));
+        Expr slope = Expr.MathCall.sqrt(add(add(f(1.0), mul(hx, hx)), mul(hz, hz)));
+        return div(sub(y(point), h), slope);
+    }
+
+    /** The terrain height at world (x,z): Perlin fBm, freq 0.16, amplitude 2.0. Organic, non-blocky. */
+    private static Expr heightAt(Expr xc, Expr zc) {
+        Expr xz = new Expr.VectorConstruct(V2, List.of(xc, zc));
+        return mul(Noise.fbmPerlin2(mulS2(xz, f(0.16)), 3), f(2.0));
     }
 
     /** The 2D "V" field in the local xy-plane: two strokes (capsules) meeting at the bottom, given a half-width. */
