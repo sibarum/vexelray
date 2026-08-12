@@ -26,6 +26,7 @@ import sibarum.tactroller.api.BackendException;
 import sibarum.tactroller.api.InputEvent;
 import sibarum.tactroller.api.Key;
 import sibarum.tactroller.api.PointerDelta;
+import sibarum.tactroller.api.PointerLockMode;
 import sibarum.tactroller.api.Tactroller;
 import sibarum.tactroller.atchung.TactrollerInputBridge;
 import dev.vexelray.shader.ComposedShader;
@@ -67,6 +68,17 @@ public final class Fathom {
 
     /** The terrain SDF as a callable core Function — emitted once, called (not inlined) at every SDF tap. */
     private static final Function TERRAIN_FN = buildTerrainFunction();
+
+    /** The whole scene SDF as a callable core Function {@code float sdf(vec3)} — the one field the march calls. */
+    private static final Function SDF_FN = sdfFunction();
+
+    /**
+     * THE ray-march, authored once as {@code core} IR: {@code float march(vec3 ro, vec3 rd)} returns the distance
+     * travelled to the surface. This is lowered to SPIR-V for the GPU fragment AND to Truffle for CPU raycasts, so
+     * the stepping loop is a single source of truth — the GPU and CPU cannot use different marchers. (Previously
+     * the GPU marcher was inline IR and the CPU marcher was a hand-written Java loop; they silently diverged.)
+     */
+    private static final Function MARCH_FN = buildMarchFunction();
 
     public static void main(String[] args) throws IOException, BackendException {
         byte[] vertexSpirv = Fullscreen.triangleVertexWithUvSpirv();
@@ -138,18 +150,19 @@ public final class Fathom {
                 float[] cam = {0.0f, 1.2f, -3.0f};
                 float[] look = {0.0f, 0.0f};                    // yaw, pitch (radians)
                 boolean[] paused = {false};                     // Escape pauses look until the window is refocused
+                boolean[] locked = {false};                     // tracks the RAW pointer-lock state we own
                 final float lookSens = 0.0025f;                 // radians per pixel of mouse motion
                 System.out.println("Click the window, then look with the mouse and move with WASD (Escape pauses "
                         + "look). Walk into the sphere — you cannot enter it.");
                 presenter.run(maxFrames, 20, (dt, pc) -> {
                     // Input flows Tactroller -> tactroller-atchung bridge -> Atchung!, consumed here. Mouselook uses
-                    // unlocked, frame-to-frame absolute pointer deltas (the cursor stays visible by design).
+                    // a RAW pointer lock: RawInput device deltas, so motion never clamps at the screen edge and the
+                    // camera keeps every degree of freedom. We hold the lock only while actively looking and release
+                    // it when paused/unfocused so the OS cursor reappears for interacting with the window.
                     boolean focused;
-                    PointerDelta look_d;
                     try {
                         inputBridge.pump();                     // snapshot Tactroller -> publish this frame's edges
                         focused = input.isFocused();
-                        look_d = input.pollPointerDelta();      // frame-to-frame absolute diff (unlocked)
                     } catch (BackendException ex) {
                         throw new RuntimeException("input failed", ex);
                     }
@@ -160,7 +173,25 @@ public final class Fathom {
                     if (!focused) {
                         paused[0] = false;                      // regaining focus resumes look
                     }
-                    if (focused && !paused[0]) {
+
+                    // Reconcile the pointer lock with whether we're actively looking, then drain this frame's
+                    // motion. lockPointer(RAW) zeroes the delta accumulator, so toggling never yields a stray jump.
+                    boolean wantLock = focused && !paused[0];
+                    PointerDelta look_d;
+                    try {
+                        if (wantLock && !locked[0]) {
+                            input.lockPointer(PointerLockMode.RAW);
+                            locked[0] = true;
+                        } else if (!wantLock && locked[0]) {
+                            input.unlockPointer();
+                            locked[0] = false;
+                        }
+                        look_d = input.pollPointerDelta();      // RAW device delta while locked; edge-independent
+                    } catch (BackendException ex) {
+                        throw new RuntimeException("input failed", ex);
+                    }
+
+                    if (wantLock) {
                         look[0] += look_d.dx() * lookSens;      // yaw
                         look[1] = Math.max(-1.5f, Math.min(1.5f, look[1] + look_d.dy() * lookSens)); // pitch (clamped)
                         float step = 2.5f * (float) dt;
@@ -243,29 +274,23 @@ public final class Fathom {
         LocalVar ro = new LocalVar("ro", V3);
         LocalVar rd = new LocalVar("rd", V3);
         LocalVar t = new LocalVar("t", F32);
-        LocalVar i = new LocalVar("i", Type.int32());
         LocalVar p = new LocalVar("p", V3);
         LocalVar d = new LocalVar("d", F32);
 
-        Region march = Region.of(
-                new Statement.Assign(p, add(read(ro), mulS(read(rd), read(t)))),
-                new Statement.Assign(d, sceneSdf(read(p))),
-                // Step forward by the distance, clamped: at most 0.06 (can't leap a thin ridge) and never NEGATIVE.
-                // A negative step (from an overshoot where d<0) would march backward and oscillate around the
-                // surface, never landing within the hit epsilon — the dark seam cracks. Freezing at d<=0 instead
-                // lets the post-loop test see d<0 and register a clean hit.
-                new Statement.Assign(t, add(read(t), Expr.MathCall.max(Expr.MathCall.min(read(d), f(0.06)), f(0.0)))),
-                new Statement.Assign(i, new Expr.Binary(BinaryOp.ADD, read(i), new Expr.ConstInt(Type.int32(), 1))));
-
-        // finite-difference normal at the hit point. A wide eps deliberately samples the field over ~5cm so the
-        // shading normal reflects the broad surface curvature, not every sub-cell noise wiggle — that is what makes
-        // the terrain read as a smooth curved surface instead of a faceted heightmap. (Sphere/glyph are large
-        // relative to this eps, so their normals stay crisp.)
-        double eps = 0.03;
+        // Finite-difference normal at the hit point, with a DISTANCE-SCALED sampling radius. A far pixel's hit
+        // lands up to the hit-epsilon (~0.008+0.0008·t) off the true surface, and its footprint covers many world
+        // units; sampling the field at a fixed ~3cm eps there straddles sub-cell wiggles and off-surface error,
+        // so normalize() amplifies noise and the normal flips sign — the black scribbles on distant grazing
+        // slopes. Growing eps with t makes the normal reflect the surface curvature at the pixel's actual scale:
+        // crisp up close, broad far away. (The sphere/glyph are near and large, so their normals stay sharp.)
+        Expr eps = add(f(0.03), mul(f(0.006), read(t)));
+        Expr ex = new Expr.VectorConstruct(V3, List.of(eps, f(0.0), f(0.0)));
+        Expr ey = new Expr.VectorConstruct(V3, List.of(f(0.0), eps, f(0.0)));
+        Expr ez = new Expr.VectorConstruct(V3, List.of(f(0.0), f(0.0), eps));
         Expr n = Expr.MathCall.normalize(new Expr.VectorConstruct(V3, List.of(
-                sub(sceneSdf(add(read(p), v3(eps, 0, 0))), sceneSdf(sub(read(p), v3(eps, 0, 0)))),
-                sub(sceneSdf(add(read(p), v3(0, eps, 0))), sceneSdf(sub(read(p), v3(0, eps, 0)))),
-                sub(sceneSdf(add(read(p), v3(0, 0, eps))), sceneSdf(sub(read(p), v3(0, 0, eps)))))));
+                sub(sdf(add(read(p), ex)), sdf(sub(read(p), ex))),
+                sub(sdf(add(read(p), ey)), sdf(sub(read(p), ey))),
+                sub(sdf(add(read(p), ez)), sdf(sub(read(p), ez))))));
         Expr light = v3(0.575, 0.766, -0.287);   // pre-normalized direction to the light
         Expr diff = Expr.MathCall.max(Expr.MathCall.dot(n, light), f(0.0));
         Expr shade = Expr.MathCall.clamp(add(mul(diff, f(0.92)), f(0.08)), f(0.0), f(1.0));
@@ -277,20 +302,19 @@ public final class Fathom {
         Region body = Region.of(
                 new Statement.DeclareVar(ro, camPos),
                 new Statement.DeclareVar(rd, rdInit),
-                new Statement.DeclareVar(t, f(0.0)),
-                new Statement.DeclareVar(i, new Expr.ConstInt(Type.int32(), 0)),
-                new Statement.DeclareVar(p, v3(0, 0, 0)),
-                new Statement.DeclareVar(d, f(0.0)),
-                new Statement.While(new Expr.Binary(BinaryOp.LESS_THAN, read(i), new Expr.ConstInt(Type.int32(), 256)), march),
-                new Statement.Assign(p, add(read(ro), mulS(read(rd), read(t)))),
-                new Statement.Assign(d, sceneSdf(read(p))),
+                // The march is the shared MARCH_FN — the SAME core function the CPU raycast calls. The stepping
+                // loop lives only in that function now, so the GPU and CPU marchers cannot drift apart.
+                new Statement.DeclareVar(t, new Expr.Call(MARCH_FN, List.of(read(ro), read(rd)))),
+                new Statement.DeclareVar(p, add(read(ro), mulS(read(rd), read(t)))),
+                new Statement.DeclareVar(d, sdf(read(p))),
                 // distance-relative hit epsilon: threshold grows with march distance t so grazing rays that run out
                 // of step budget short of the surface still register as a hit instead of leaking sky-coloured streaks.
                 new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), add(f(0.008), mul(f(0.0008), read(t)))), hit, miss),
                 new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
-        CoreModule module = new CoreModule().addFunction(TERRAIN_FN)
+        CoreModule module = new CoreModule()
+                .addFunction(TERRAIN_FN).addFunction(SDF_FN).addFunction(MARCH_FN)
                 .addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
         return ComposedShader.lower(ShaderStage.FRAGMENT, module, "main").spirv();
     }
@@ -309,17 +333,17 @@ public final class Fathom {
         probe(cpu, 5.0f, 0.0f, 3.0f);    // on the floor   -> ~ 0
         probe(cpu, 0.0f, 4.0f, 3.0f);    // high air       -> ~ +2
 
-        // CPU sphere-trace of the centre ray — a physics-style raycast against the render field, in plain Java
-        // calling the shared IR each step. The GPU draws the sphere front near z=2; the CPU should find it there.
+        // CPU raycast of the centre ray — a physics-style raycast against the render field. Crucially this is NOT
+        // a hand-written Java march: it calls the SAME MARCH_FN core function the GPU fragment calls, lowered to
+        // Truffle. The stepping loop is single-source, so "the CPU marched differently than the GPU" is now
+        // unrepresentable. The GPU draws the sphere front near z=2; the CPU finds it at the identical t.
+        CallTarget march = lowerMarch();
         float ox = 0.0f, oy = 1.2f, oz = -3.0f;
-        float t = 0.0f;
-        for (int i = 0; i < 80; i++) {
-            t += cpuSdf(cpu, ox, oy, oz + t);
-        }
+        float t = (Float) march.call(new float[] {ox, oy, oz}, new float[] {0.0f, 0.0f, 1.0f});
         float residual = cpuSdf(cpu, ox, oy, oz + t);
-        System.out.printf("  centre-ray march: t=%.3f  hit=(%.2f, %.2f, %.2f)  residual=%.4f  %s%n",
-                t, ox, oy, oz + t, residual, residual < 0.01f ? "HIT" : "miss");
-        System.out.println("render == sim: one field, drawn on the GPU and queried on the CPU.");
+        System.out.printf("  centre-ray march (shared MARCH_FN): t=%.3f  hit=(%.2f, %.2f, %.2f)  residual=%.4f  %s%n",
+                t, ox, oy, oz + t, residual, residual < 0.02f ? "HIT" : "miss");
+        System.out.println("render == sim: one field AND one marcher, run on the GPU and on the CPU.");
     }
 
     private static void probe(CallTarget cpu, float x, float y, float z) {
@@ -414,16 +438,29 @@ public final class Fathom {
                 .putFloat(x).putFloat(y).putFloat(z).putFloat(0.0f).putFloat(0.0f).array();
     }
 
-    /** Lower the scene SDF for the CPU (Truffle), including the called terrain function in the module. */
+    /** Lower the shared scene SDF for the CPU (Truffle), including the called terrain function in the module. */
     private static CallTarget lowerSdf() {
-        Function sdf = sdfFunction();
-        return new CoreToTruffle().lowerModule(List.of(TERRAIN_FN, sdf), sdf);
+        return new CoreToTruffle().lowerModule(List.of(TERRAIN_FN, SDF_FN), SDF_FN);
+    }
+
+    /**
+     * Lower the shared {@link #MARCH_FN} for the CPU (Truffle) — the SAME marcher the GPU fragment calls. Its
+     * module carries the whole call graph it reaches ({@code march -> sdf -> terrain}). Calling the returned
+     * target is {@code march(float[] ro, float[] rd) -> Float t}.
+     */
+    private static CallTarget lowerMarch() {
+        return new CoreToTruffle().lowerModule(List.of(TERRAIN_FN, SDF_FN, MARCH_FN), MARCH_FN);
     }
 
     /** The scene SDF as a pure, CPU-lowerable {@code core} function {@code float sdf(vec3 p)} — same body as the shader. */
     private static Function sdfFunction() {
         return new Function("sdf", new Type.FunctionType(F32, List.of(V3)),
                 Region.of(new Statement.Return(sceneSdf(new Expr.Param(0, V3)))));
+    }
+
+    /** Call the shared scene {@link #SDF_FN} at a point — the one field both the march and the shading normal use. */
+    private static Expr sdf(Expr point) {
+        return new Expr.Call(SDF_FN, List.of(point));
     }
 
     /**
@@ -480,10 +517,64 @@ public final class Fathom {
                 Region.of(body.toArray(new Statement[0])));
     }
 
-    /** A 2D value hash in [0,1) for a grid cell, seeded so several independent jitters can be drawn per cell. */
+    /**
+     * THE sphere-tracer as a callable {@code core} function {@code float march(vec3 ro, vec3 rd)}: step along the
+     * ray by the FULL scene distance each iteration (the field is a conservative SDF, so a step of length d never
+     * overshoots), for a fixed budget, and return the marched distance t. Both the GPU fragment and the CPU
+     * raycast call this exact function — the stepping loop exists once, in IR, and lowers to both backends. There
+     * is deliberately no per-backend copy of this loop; that is what let the GPU and CPU marchers drift before.
+     */
+    private static Function buildMarchFunction() {
+        Expr ro = new Expr.Param(0, V3);
+        Expr rd = new Expr.Param(1, V3);
+        LocalVar t = new LocalVar("t", F32);
+        LocalVar i = new LocalVar("i", Type.int32());
+        LocalVar p = new LocalVar("p", V3);
+        LocalVar d = new LocalVar("d", F32);
+
+        Region step = Region.of(
+                new Statement.Assign(p, add(ro, mulS(rd, read(t)))),
+                new Statement.Assign(d, new Expr.Call(SDF_FN, List.of(read(p)))),
+                // Sphere tracing, advancing by the reported distance, clamped to the terrain's conservative
+                // bound. The sphere/glyph are exact global SDFs, but the terrain only evaluates its 3x3 cell
+                // neighbourhood, so it OVER-estimates distance once the true nearest blob sits outside that
+                // window — non-conservative, and an over-estimate lets a full-distance step leap a hilltop
+                // (overshoot). The window is provably safe while d < cell-radius = 3.5-1.5 = 2.0, so clamping the
+                // step to 1.8 (a margin under that) keeps every step overshoot-free. This is NOT the old 0.06
+                // heightmap relic: its value is the field's real conservative radius, ~33x larger, so open-space
+                // striding stays fast. max(.,0) freezes the ray on a numerical d<0 for the caller's hit test.
+                new Statement.Assign(t, add(read(t),
+                        Expr.MathCall.max(Expr.MathCall.min(read(d), f(1.8)), f(0.0)))),
+                new Statement.Assign(i, new Expr.Binary(BinaryOp.ADD, read(i), new Expr.ConstInt(Type.int32(), 1))));
+
+        Region body = Region.of(
+                new Statement.DeclareVar(t, f(0.0)),
+                new Statement.DeclareVar(i, new Expr.ConstInt(Type.int32(), 0)),
+                new Statement.DeclareVar(p, v3(0, 0, 0)),
+                new Statement.DeclareVar(d, f(0.0)),
+                new Statement.While(new Expr.Binary(BinaryOp.LESS_THAN, read(i),
+                        new Expr.ConstInt(Type.int32(), 256)), step),
+                new Statement.Return(read(t)));
+        return new Function("march", new Type.FunctionType(F32, List.of(V3, V3)), body);
+    }
+
+    /**
+     * A 2D value hash in [0,1) for a grid cell, seeded so several independent jitters can be drawn per cell.
+     *
+     * <p>Deliberately NOT the classic {@code fract(sin(dot(...)) * 43758.5)}: that hash is not portable across
+     * backends. {@code sin} of a moderately large argument evaluates differently in GPU float32 than in CPU
+     * float64, and the {@code ×43758} amplifies that tiny difference past the {@code fract}, so a cell can get a
+     * completely different blob position on the GPU than on the CPU. That broke render==sim and scattered
+     * degenerate blobs on the GPU only — the dark diagonal slashes. This is a Dave Hoskins-style hash using only
+     * multiply/add/fract on small-magnitude values, so it is bit-stable enough to agree on both backends.
+     */
     private static Expr hash(Expr cx, Expr cz, double seed) {
-        Expr dotv = add(mul(cx, f(127.1 + seed)), mul(cz, f(311.7 + seed * 1.7)));
-        return Expr.MathCall.fract(mul(Expr.MathCall.sin(dotv), f(43758.5453)));
+        Expr h = Expr.MathCall.fract(mul(
+                add(add(mul(cx, f(0.1031)), mul(cz, f(0.11369))), f(0.13787 + seed * 0.0173)),
+                f(0.1031)));
+        h = mul(h, add(h, f(33.33)));
+        h = mul(h, add(h, h));
+        return Expr.MathCall.fract(h);
     }
 
     /** Polynomial smooth-minimum: blends two SDFs over radius k, under-estimating near the blend (overshoot-safe). */
