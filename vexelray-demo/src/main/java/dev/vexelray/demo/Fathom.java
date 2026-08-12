@@ -12,7 +12,6 @@ import dev.supirvast.vastir.core.Region;
 import dev.supirvast.vastir.core.ShaderStage;
 import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.tools.Fullscreen;
-import dev.supirvast.vastir.tools.Noise;
 import dev.supirvast.vastir.type.Type;
 import dev.supirvast.vast.CoreToTruffle;
 import com.oracle.truffle.api.CallTarget;
@@ -65,6 +64,9 @@ public final class Fathom {
     private static final Type.Vector V3 = new Type.Vector(F32, 3);
     private static final Type.Vector V4 = new Type.Vector(F32, 4);
     private static final Type.Vector V2 = new Type.Vector(F32, 2);
+
+    /** The terrain SDF as a callable core Function — emitted once, called (not inlined) at every SDF tap. */
+    private static final Function TERRAIN_FN = buildTerrainFunction();
 
     public static void main(String[] args) throws IOException, BackendException {
         byte[] vertexSpirv = Fullscreen.triangleVertexWithUvSpirv();
@@ -132,7 +134,7 @@ public final class Fathom {
                     }
                 });
 
-                CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
+                CallTarget cpu = lowerSdf();
                 float[] cam = {0.0f, 1.2f, -3.0f};
                 float[] look = {0.0f, 0.0f};                    // yaw, pitch (radians)
                 boolean[] paused = {false};                     // Escape pauses look until the window is refocused
@@ -259,7 +261,7 @@ public final class Fathom {
         // shading normal reflects the broad surface curvature, not every sub-cell noise wiggle — that is what makes
         // the terrain read as a smooth curved surface instead of a faceted heightmap. (Sphere/glyph are large
         // relative to this eps, so their normals stay crisp.)
-        double eps = 0.08;
+        double eps = 0.03;
         Expr n = Expr.MathCall.normalize(new Expr.VectorConstruct(V3, List.of(
                 sub(sceneSdf(add(read(p), v3(eps, 0, 0))), sceneSdf(sub(read(p), v3(eps, 0, 0)))),
                 sub(sceneSdf(add(read(p), v3(0, eps, 0))), sceneSdf(sub(read(p), v3(0, eps, 0)))),
@@ -284,11 +286,12 @@ public final class Fathom {
                 new Statement.Assign(d, sceneSdf(read(p))),
                 // distance-relative hit epsilon: threshold grows with march distance t so grazing rays that run out
                 // of step budget short of the surface still register as a hit instead of leaking sky-coloured streaks.
-                new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), add(f(0.008), mul(f(0.0018), read(t)))), hit, miss),
+                new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d), add(f(0.008), mul(f(0.0008), read(t)))), hit, miss),
                 new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
-        CoreModule module = new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+        CoreModule module = new CoreModule().addFunction(TERRAIN_FN)
+                .addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
         return ComposedShader.lower(ShaderStage.FRAGMENT, module, "main").spirv();
     }
 
@@ -298,7 +301,7 @@ public final class Fathom {
      * the identical IR — which is how collision, line-of-sight, and physics will query exactly what you see.
      */
     private static void verify() {
-        CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
+        CallTarget cpu = lowerSdf();
         System.out.println("CPU-evaluating the SAME sceneSdf IR the GPU renders (SupirVast Truffle backend):");
         probe(cpu, 0.0f, 1.0f, 3.0f);    // sphere centre  -> ~ -1 (deep inside)
         probe(cpu, 0.0f, 1.5f, 3.0f);    // upper sphere   -> ~ -0.5 (inside)
@@ -356,7 +359,7 @@ public final class Fathom {
      */
     private static void demoFilmstrip(NativePlatform platform, byte[] vert, byte[] frag, String out)
             throws IOException {
-        CallTarget cpu = new CoreToTruffle().lower(sdfFunction());
+        CallTarget cpu = lowerSdf();
         float playerRadius = 0.35f;
         float[] cam = {0.0f, 1.2f, -3.0f};
         java.util.List<float[]> path = new java.util.ArrayList<>();
@@ -411,6 +414,12 @@ public final class Fathom {
                 .putFloat(x).putFloat(y).putFloat(z).putFloat(0.0f).putFloat(0.0f).array();
     }
 
+    /** Lower the scene SDF for the CPU (Truffle), including the called terrain function in the module. */
+    private static CallTarget lowerSdf() {
+        Function sdf = sdfFunction();
+        return new CoreToTruffle().lowerModule(List.of(TERRAIN_FN, sdf), sdf);
+    }
+
     /** The scene SDF as a pure, CPU-lowerable {@code core} function {@code float sdf(vec3 p)} — same body as the shader. */
     private static Function sdfFunction() {
         return new Function("sdf", new Type.FunctionType(F32, List.of(V3)),
@@ -423,7 +432,7 @@ public final class Fathom {
      * the same source — a flat shape given real thickness, that you can walk around. Fresh IR per call.
      */
     private static Expr sceneSdf(Expr point) {
-        Expr ground = terrain(point);
+        Expr ground = new Expr.Call(TERRAIN_FN, List.of(point));
         Expr sphere = sub(Expr.MathCall.length(sub(point, v3(0.0, 1.0, 3.0))), f(1.0));
         Expr q = sub(point, v3(-1.2, 1.1, 1.5));                 // glyph local space (left of the sphere, facing us)
         Expr glyph = extrudeRounded(q, glyphV(q), 0.06, 0.04);   // thin paper with rounded edges
@@ -431,33 +440,56 @@ public final class Fathom {
     }
 
     /**
-     * The floor: a smooth value-noise heightfield ({@link Noise#fbm2}) instead of a flat plane. A flat floor is
-     * the sphere-tracing worst case — rays grazing toward the horizon run nearly parallel to it, take vanishing
-     * steps, and blow the step budget, which is what distorted the flat horizon. Rolling terrain has curvature at
-     * every distance, so no ray runs parallel to the surface; the horizon resolves cleanly (and fades to sky
-     * beyond trace range instead of smearing). It is the SAME field the CPU collides against — render == sim.
-     *
-     * <p>A heightfield {@code y - h(x,z)} over-estimates true distance where the ground is steep. Rather than a
-     * single conservative Lipschitz constant (too loose → overshoot gashes on steep slopes; too tight → tiny
-     * steps that exhaust the budget on grazing rays → gashes there instead), we divide by the local surface
-     * slope: {@code (y - h) / sqrt(1 + |grad h|^2)}. That is the true distance to a locally-planar heightfield —
-     * accurate everywhere, so steps are as large as is safe and never overshoot.
+     * The floor, built the SDF-native way: a base plane smooth-unioned with a field of <em>exact</em> sphere
+     * primitives placed on a jittered grid. This is NOT a heightfield {@code y - h(x,z)} — a heightfield is a
+     * function graph (a polygon-terrain concept) that isn't a real distance field, which is the whole source of
+     * the overshoot/Lipschitz/gradient-correction pain. Here every term is a true SDF and {@code smin} keeps the
+     * combined field well-behaved (it under-estimates distance near a blend, which is <em>safe</em> for sphere
+     * tracing — it can only understep, never overshoot). So: no Lipschitz factor, no gradient correction, no
+     * noise, no seam cracks — and a small shader. Only the 3x3 grid neighbourhood around the point is evaluated.
+     * The same field renders on the GPU and collides on the CPU — render == sim.
      */
-    private static Expr terrain(Expr point) {
+    private static Function buildTerrainFunction() {
+        Expr point = new Expr.Param(0, V3);
         Expr px = x(point);
         Expr pz = z(point);
-        double e = 0.22;                                  // world-space epsilon for the height gradient
-        Expr h = heightAt(px, pz);
-        Expr hx = mul(sub(heightAt(add(px, f(e)), pz), heightAt(sub(px, f(e)), pz)), f(1.0 / (2 * e)));
-        Expr hz = mul(sub(heightAt(px, add(pz, f(e))), heightAt(px, sub(pz, f(e)))), f(1.0 / (2 * e)));
-        Expr slope = Expr.MathCall.sqrt(add(add(f(1.0), mul(hx, hx)), mul(hz, hz)));
-        return div(sub(y(point), h), slope);
+        double cell = 3.5;
+        double k = 0.4;                                   // smooth-union blend radius (thin halo)
+        double radius = 1.5;
+        Expr gx = Expr.MathCall.floor(div(px, f(cell)));
+        Expr gz = Expr.MathCall.floor(div(pz, f(cell)));
+        LocalVar d = new LocalVar("d", F32);
+        java.util.List<Statement> body = new java.util.ArrayList<>();
+        body.add(new Statement.DeclareVar(d, add(y(point), f(0.5))));   // base plane at y=-0.5
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                Expr cx = add(gx, f(dx));
+                Expr cz = add(gz, f(dz));
+                Expr wx = mul(add(cx, hash(cx, cz, 0.0)), f(cell));      // jittered blob centre, world x
+                Expr wz = mul(add(cz, hash(cx, cz, 19.1)), f(cell));     //                        world z
+                Expr wy = sub(mul(hash(cx, cz, 41.7), f(0.7)), f(1.7)); // centre [-1.7,-1.0] -> tops [-0.2,0.5]
+                Expr centre = new Expr.VectorConstruct(V3, List.of(wx, wy, wz));
+                Expr sphere = sub(Expr.MathCall.length(sub(point, centre)), f(radius));
+                // Accumulate into a LOCAL variable — read(d) is a leaf, so no expression-tree duplication
+                // across the 9 blobs (a chained pure-expression smin would blow up exponentially).
+                body.add(new Statement.Assign(d, smin(read(d), sphere, k)));
+            }
+        }
+        body.add(new Statement.Return(read(d)));
+        return new Function("terrain", new Type.FunctionType(F32, List.of(V3)),
+                Region.of(body.toArray(new Statement[0])));
     }
 
-    /** The terrain height at world (x,z): Perlin fBm, freq 0.16, amplitude 2.0. Organic, non-blocky. */
-    private static Expr heightAt(Expr xc, Expr zc) {
-        Expr xz = new Expr.VectorConstruct(V2, List.of(xc, zc));
-        return mul(Noise.fbmPerlin2(mulS2(xz, f(0.16)), 3), f(2.0));
+    /** A 2D value hash in [0,1) for a grid cell, seeded so several independent jitters can be drawn per cell. */
+    private static Expr hash(Expr cx, Expr cz, double seed) {
+        Expr dotv = add(mul(cx, f(127.1 + seed)), mul(cz, f(311.7 + seed * 1.7)));
+        return Expr.MathCall.fract(mul(Expr.MathCall.sin(dotv), f(43758.5453)));
+    }
+
+    /** Polynomial smooth-minimum: blends two SDFs over radius k, under-estimating near the blend (overshoot-safe). */
+    private static Expr smin(Expr a, Expr b, double k) {
+        Expr hh = Expr.MathCall.clamp(add(f(0.5), mul(f(0.5 / k), sub(b, a))), f(0.0), f(1.0));
+        return sub(Expr.MathCall.mix(b, a, hh), mul(f(k), mul(hh, sub(f(1.0), hh))));
     }
 
     /** The 2D "V" field in the local xy-plane: two strokes (capsules) meeting at the bottom, given a half-width. */
