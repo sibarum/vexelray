@@ -15,6 +15,7 @@ import static dev.vexelray.vulkan.vk.Ffm.check;
 import static dev.vexelray.vulkan.vk.Ffm.invoke;
 import static dev.vexelray.vulkan.vk.Ffm.invokeVoid;
 import static dev.vexelray.vulkan.vk.Ffm.sa;
+import static dev.vexelray.vulkan.vk.Ffm.sf;
 import static dev.vexelray.vulkan.vk.Ffm.si;
 import static dev.vexelray.vulkan.vk.Ffm.sl;
 import static java.lang.foreign.ValueLayout.ADDRESS;
@@ -73,8 +74,18 @@ public final class WindowedPresenter implements AutoCloseable {
             JAVA_INT.withName("swapchainCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pSwapchains"),
             ADDRESS.withName("pImageIndices"), ADDRESS.withName("pResults")).withName("VkPresentInfoKHR");
 
+    private static final GroupLayout VIEWPORT = MemoryLayout.structLayout(
+            JAVA_FLOAT.withName("x"), JAVA_FLOAT.withName("y"), JAVA_FLOAT.withName("width"),
+            JAVA_FLOAT.withName("height"), JAVA_FLOAT.withName("minDepth"), JAVA_FLOAT.withName("maxDepth")
+    ).withName("VkViewport");
+
+    private static final GroupLayout RECT2D = MemoryLayout.structLayout(
+            JAVA_INT.withName("offset_x"), JAVA_INT.withName("offset_y"),
+            JAVA_INT.withName("extent_w"), JAVA_INT.withName("extent_h")).withName("VkRect2D");
+
     private static final FunctionDescriptor C4 = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS);
     private static final FunctionDescriptor DL = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);
+    private static final FunctionDescriptor SET_VS = FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS);
 
     private final VulkanDevice device;
     private final MemorySegment dev;
@@ -86,7 +97,7 @@ public final class WindowedPresenter implements AutoCloseable {
 
     private final MethodHandle waitFences, resetFences, acquire, present, submitCmd;
     private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, draw, endRp, pushConstants;
-    private final MethodHandle bindVertexBuffers, bindDescriptorSets;
+    private final MethodHandle bindVertexBuffers, bindDescriptorSets, setViewport, setScissor;
     private final MethodHandle destroySem, destroyFence, destroyPool;
 
     /** Per-frame hook: fill {@code pushConstants} (camera etc.) given the elapsed time; run input/sim here. */
@@ -155,6 +166,8 @@ public final class WindowedPresenter implements AutoCloseable {
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
         this.bindDescriptorSets = device.command("vkCmdBindDescriptorSets",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
+        this.setViewport = device.command("vkCmdSetViewport", SET_VS);
+        this.setScissor = device.command("vkCmdSetScissor", SET_VS);
         this.destroySem = device.command("vkDestroySemaphore", DL);
         this.destroyFence = device.command("vkDestroyFence", DL);
         this.destroyPool = device.command("vkDestroyCommandPool", DL);
@@ -218,6 +231,12 @@ public final class WindowedPresenter implements AutoCloseable {
         MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
         pDescriptorSet.set(JAVA_LONG, 0, descriptorSet);
 
+        // Dynamic viewport + scissor, refilled each frame from the current swapchain extent so a resize needs no
+        // pipeline rebuild.
+        MemorySegment pViewport = a.allocate(VIEWPORT);
+        sf(pViewport, VIEWPORT, "maxDepth", 1.0f);
+        MemorySegment pScissor = a.allocate(RECT2D);
+
         MemorySegment clear = a.allocate(JAVA_FLOAT, 4);
         MemorySegment beginInfo = a.allocate(CMD_BEGIN);
         si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
@@ -249,10 +268,23 @@ public final class WindowedPresenter implements AutoCloseable {
                 perFrame.update(dt, pushSeg);
             }
 
+            // Track the live swapchain extent (it changes on resize/rebuild) for the render area and dynamic
+            // viewport/scissor this frame.
+            int extentW = swapchain.width();
+            int extentH = swapchain.height();
+
             check(invoke(beginCmd, cmd, beginInfo), "vkBeginCommandBuffer");
+            si(rpBegin, RENDER_PASS_BEGIN, "area_w", extentW);
+            si(rpBegin, RENDER_PASS_BEGIN, "area_h", extentH);
             sl(rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
             invokeVoid(beginRp, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+            sf(pViewport, VIEWPORT, "width", extentW);
+            sf(pViewport, VIEWPORT, "height", extentH);
+            invokeVoid(setViewport, cmd, 0, 1, pViewport);
+            si(pScissor, RECT2D, "extent_w", extentW);
+            si(pScissor, RECT2D, "extent_h", extentH);
+            invokeVoid(setScissor, cmd, 0, 1, pScissor);
             if (descriptorSet != 0) {
                 invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
                         0, 1, pDescriptorSet, 0, MemorySegment.NULL);

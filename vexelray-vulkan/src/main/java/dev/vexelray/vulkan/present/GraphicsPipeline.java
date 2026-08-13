@@ -105,6 +105,12 @@ public final class GraphicsPipeline implements AutoCloseable {
             JAVA_INT.withName("scissorCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pScissors")
     ).withName("VkPipelineViewportStateCreateInfo");
 
+    private static final GroupLayout DYNAMIC_STATE = MemoryLayout.structLayout(
+            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
+            JAVA_INT.withName("flags"), JAVA_INT.withName("dynamicStateCount"), MemoryLayout.paddingLayout(4),
+            ADDRESS.withName("pDynamicStates")
+    ).withName("VkPipelineDynamicStateCreateInfo");
+
     private static final GroupLayout RASTERIZATION_STATE = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("flags"), JAVA_INT.withName("depthClampEnable"), JAVA_INT.withName("rasterizerDiscardEnable"),
@@ -246,6 +252,17 @@ public final class GraphicsPipeline implements AutoCloseable {
             si(viewportState, VIEWPORT_STATE, "scissorCount", 1);
             sa(viewportState, VIEWPORT_STATE, "pScissors", scissor);
 
+            // Viewport + scissor are dynamic: the present loop sets them each frame from the swapchain extent, so a
+            // window resize needs no pipeline rebuild — only a swapchain recreate. The baked values above are the
+            // required placeholders (counts stay 1; the pointers are ignored once the states are dynamic).
+            MemorySegment dynamicStates = arena.allocate(JAVA_INT, 2);
+            dynamicStates.setAtIndex(JAVA_INT, 0, Vk.DYNAMIC_STATE_VIEWPORT);
+            dynamicStates.setAtIndex(JAVA_INT, 1, Vk.DYNAMIC_STATE_SCISSOR);
+            MemorySegment dynamicState = arena.allocate(DYNAMIC_STATE);
+            si(dynamicState, DYNAMIC_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
+            si(dynamicState, DYNAMIC_STATE, "dynamicStateCount", 2);
+            sa(dynamicState, DYNAMIC_STATE, "pDynamicStates", dynamicStates);
+
             MemorySegment rasterizer = arena.allocate(RASTERIZATION_STATE);
             si(rasterizer, RASTERIZATION_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
             si(rasterizer, RASTERIZATION_STATE, "polygonMode", Vk.POLYGON_MODE_FILL);
@@ -305,6 +322,7 @@ public final class GraphicsPipeline implements AutoCloseable {
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pRasterizationState", rasterizer);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pMultisampleState", multisample);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pColorBlendState", colorBlend);
+            sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pDynamicState", dynamicState);
             sl(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "layout", pipelineLayout);
             sl(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "renderPass", renderPass);
             si(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "subpass", 0);

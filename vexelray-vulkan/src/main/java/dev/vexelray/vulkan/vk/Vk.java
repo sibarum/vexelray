@@ -76,7 +76,11 @@ public final class Vk {
     public static final int STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO = 23;
     public static final int STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO = 24;
     public static final int STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO = 26;
+    public static final int STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO = 27;
     public static final int STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO = 28;
+    /** VkDynamicState: viewport and scissor are set per-frame via vkCmdSetViewport/Scissor (resize support). */
+    public static final int DYNAMIC_STATE_VIEWPORT = 0;
+    public static final int DYNAMIC_STATE_SCISSOR = 1;
     public static final int STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO = 30;
     public static final int STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO = 37;
     public static final int STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO = 38;

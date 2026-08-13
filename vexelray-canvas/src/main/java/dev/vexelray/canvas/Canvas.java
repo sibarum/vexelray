@@ -20,8 +20,8 @@ public final class Canvas {
     public static final float AA = 1.0f;
     private static final float PAD = AA + 1f;   // quad extends this far past the shape so the AA falloff isn't clipped
 
-    private final int width;
-    private final int height;
+    private int width;
+    private int height;
     private float[] data = new float[CanvasVertex.FLOATS_PER_VERTEX * 6 * 64];
     private int count;   // floats used
 
@@ -37,6 +37,16 @@ public final class Canvas {
 
     public int height() {
         return height;
+    }
+
+    /**
+     * Change the surface size in pixels — only the pixel→NDC mapping; the vertex buffer is retained. Call between
+     * frames (e.g. on a window resize) to avoid reallocating the whole canvas.
+     */
+    public Canvas resize(int width, int height) {
+        this.width = width;
+        this.height = height;
+        return this;
     }
 
     /** Reset the draw list for a new frame. */
