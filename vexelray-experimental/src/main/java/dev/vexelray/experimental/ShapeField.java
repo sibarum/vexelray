@@ -2,6 +2,8 @@ package dev.vexelray.experimental;
 
 import dev.supirvast.vastir.core.Expr;
 
+import static dev.vexelray.experimental.Ir.v3;
+
 /**
  * A candidate way to <em>define a shape</em> as a signed-distance field, for head-to-head comparison in the
  * {@link ComparisonHarness}. Each implementation contributes only the field math; the harness wraps every field
@@ -32,4 +34,13 @@ public interface ShapeField {
      * can express, whether it bounds cleanly, closed vs heightfield, authoring cost. Free-form.
      */
     String applicability();
+
+    /**
+     * The surface albedo (linear RGB, a {@code vec3}) at a hit point — evaluated only at the shading point, not
+     * per march step. Defaults to a neutral grey so shape-only fields render as before; fields that carry
+     * materials (e.g. blended primitives) override this to return their per-material / blended colour.
+     */
+    default Expr material(Expr point) {
+        return v3(0.8, 0.8, 0.8);
+    }
 }

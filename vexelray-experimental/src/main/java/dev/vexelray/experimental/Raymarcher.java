@@ -95,9 +95,14 @@ public final class Raymarcher {
                 sub(call(sdfFn, add(read(p), v3(0, 0, eps))), call(sdfFn, sub(read(p), v3(0, 0, eps)))))));
         Expr light = v3(0.575, 0.766, -0.287);
         Expr diff = Expr.MathCall.max(Expr.MathCall.dot(n, light), f(0.0));
-        Expr shade = Expr.MathCall.clamp(add(mul(diff, f(0.9)), f(0.1)), f(0.0), f(1.0));
-        Region hit = Region.of(new Statement.InterfaceWrite(fragColor,
-                new Expr.VectorConstruct(V4, List.of(shade, shade, shade, f(1.0)))));
+        Expr lit = Expr.MathCall.clamp(add(mul(diff, f(0.9)), f(0.1)), f(0.0), f(1.0));
+        // Shade material albedo × diffuse. Material is evaluated once here (at the hit), not per march step.
+        LocalVar col = new LocalVar("col", V3);
+        Region hit = Region.of(
+                new Statement.DeclareVar(col, mulS3(field.material(read(p)), lit)),
+                new Statement.InterfaceWrite(fragColor, new Expr.VectorConstruct(V4, List.of(
+                        new Expr.VectorExtract(read(col), 0), new Expr.VectorExtract(read(col), 1),
+                        new Expr.VectorExtract(read(col), 2), f(1.0)))));
         Region miss = Region.of(new Statement.InterfaceWrite(fragColor,
                 new Expr.VectorConstruct(V4, List.of(f(0.10), f(0.12), f(0.16), f(1.0)))));
 

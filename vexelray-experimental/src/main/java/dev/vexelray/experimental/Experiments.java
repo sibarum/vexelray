@@ -1,5 +1,6 @@
 package dev.vexelray.experimental;
 
+import dev.vexelray.experimental.fields.BlendedPrimitivesField;
 import dev.vexelray.experimental.fields.FlatPlaneField;
 import dev.vexelray.experimental.fields.PerlinAnalyticField;
 import dev.vexelray.experimental.fields.PerlinField;
@@ -23,7 +24,8 @@ public final class Experiments {
             new FlatPlaneField(),
             new ValueNoiseField(),
             new PerlinField(),
-            new PerlinAnalyticField());
+            new PerlinAnalyticField(),
+            new BlendedPrimitivesField());
 
     public static void main(String[] args) {
         Path outDir = Path.of("target", "experiments");
