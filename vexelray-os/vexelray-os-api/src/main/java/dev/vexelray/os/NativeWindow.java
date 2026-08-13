@@ -17,6 +17,13 @@ public interface NativeWindow extends AutoCloseable {
     /** Pump the OS event queue once. Returns {@code false} once the window has been asked to close. */
     boolean pumpEvents();
 
+    /**
+     * Make the window visible. Idempotent. A window is created hidden so that the (potentially slow) Vulkan
+     * bring-up runs while nothing is on screen; the present loop calls this once the first frame is ready, so the
+     * window appears already painted instead of flashing blank/unresponsive during initialization.
+     */
+    void show();
+
     /** Whether {@code key} is currently held down (updated by {@link #pumpEvents()}). */
     boolean isKeyDown(Key key);
 

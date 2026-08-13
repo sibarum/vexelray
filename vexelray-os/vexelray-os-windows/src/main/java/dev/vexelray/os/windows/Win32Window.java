@@ -79,6 +79,7 @@ public final class Win32Window implements NativeWindow {
     private int width;
     private int height;
     private volatile boolean shouldClose;
+    private boolean shown;
     private final boolean[] keyDown = new boolean[256];   // indexed by Win32 virtual-key code
 
     public Win32Window(WindowConfig config) {
@@ -87,7 +88,9 @@ public final class Win32Window implements NativeWindow {
 
         try (Arena temp = Arena.ofConfined()) {
             MemorySegment title = temp.allocateFrom(config.title(), StandardCharsets.UTF_16LE);
-            int style = User32.WS_OVERLAPPEDWINDOW | User32.WS_VISIBLE;
+            // Created hidden (no WS_VISIBLE): Vulkan bring-up runs off screen, then the present loop calls show()
+            // once the first frame is ready, so the window never flashes blank/"Not Responding" during init.
+            int style = User32.WS_OVERLAPPEDWINDOW;
             this.hwnd = User32.createWindowExW(0, classNameSeg, title, style,
                     User32.CW_USEDEFAULT, User32.CW_USEDEFAULT, config.width(), config.height(),
                     MemorySegment.NULL, MemorySegment.NULL, hInstance, MemorySegment.NULL);
@@ -95,7 +98,6 @@ public final class Win32Window implements NativeWindow {
 
         WINDOWS.put(hwnd.address(), this);
         this.msgBuffer = arena.allocate(User32.MSG);
-        User32.showWindow(hwnd, User32.SW_SHOW);
         readClientSize();
     }
 
@@ -158,6 +160,15 @@ public final class Win32Window implements NativeWindow {
     @Override
     public int height() {
         return height;
+    }
+
+    @Override
+    public void show() {
+        if (shown) {
+            return;
+        }
+        shown = true;
+        User32.showWindow(hwnd, User32.SW_SHOW);
     }
 
     @Override

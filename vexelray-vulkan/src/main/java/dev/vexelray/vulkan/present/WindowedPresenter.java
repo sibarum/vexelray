@@ -274,6 +274,11 @@ public final class WindowedPresenter implements AutoCloseable {
             if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
                 rebuild();
             }
+            if (frame == 0) {
+                // First frame is on screen — reveal the (until-now hidden) window already painted, so slow Vulkan
+                // bring-up never shows a blank/unresponsive window. Idempotent for the rest of the run.
+                window.show();
+            }
             frame++;
         }
         device.waitIdle();
