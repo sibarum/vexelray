@@ -56,8 +56,22 @@ public final class GraphicsPipeline implements AutoCloseable {
      * @param pushConstantStages  {@code VK_SHADER_STAGE_*} flags the push constant is visible to
      * @param pushConstantBytes   push constant size in bytes ({@code 0} for none)
      */
+    /**
+     * @param dynamicViewport when true, viewport + scissor are dynamic pipeline state — the caller (e.g.
+     *                        {@link WindowedPresenter}) must set them each frame via {@code vkCmdSetViewport/Scissor}.
+     *                        Enables window resize without a pipeline rebuild. When false, a fixed viewport is baked
+     *                        at creation (the offscreen / fixed-size path).
+     */
     public record Config(int vertexStride, List<VertexAttribute> attributes, long[] descriptorSetLayouts,
-                         boolean blendEnable, int pushConstantStages, int pushConstantBytes) {
+                         boolean blendEnable, int pushConstantStages, int pushConstantBytes,
+                         boolean dynamicViewport) {
+
+        /** Config with a fixed (baked) viewport — the prior 6-arg form. */
+        public Config(int vertexStride, List<VertexAttribute> attributes, long[] descriptorSetLayouts,
+                      boolean blendEnable, int pushConstantStages, int pushConstantBytes) {
+            this(vertexStride, attributes, descriptorSetLayouts, blendEnable, pushConstantStages, pushConstantBytes,
+                    false);
+        }
     }
 
     private static final GroupLayout SHADER_MODULE_CREATE_INFO = MemoryLayout.structLayout(
@@ -107,7 +121,7 @@ public final class GraphicsPipeline implements AutoCloseable {
 
     private static final GroupLayout DYNAMIC_STATE = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), JAVA_INT.withName("dynamicStateCount"), MemoryLayout.paddingLayout(4),
+            JAVA_INT.withName("flags"), JAVA_INT.withName("dynamicStateCount"),
             ADDRESS.withName("pDynamicStates")
     ).withName("VkPipelineDynamicStateCreateInfo");
 
@@ -165,6 +179,7 @@ public final class GraphicsPipeline implements AutoCloseable {
     private final VulkanDevice device;
     private final long pipelineLayout;
     private final long pipeline;
+    private final boolean dynamicViewport;
     private final long vertModule;
     private final long fragModule;
     private final MethodHandle vkDestroyPipeline;
@@ -184,6 +199,7 @@ public final class GraphicsPipeline implements AutoCloseable {
                             byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry,
                             Config config) {
         this.device = device;
+        this.dynamicViewport = config.dynamicViewport();
         MemorySegment dev = device.handle();
 
         MethodHandle vkCreateShaderModule = device.command("vkCreateShaderModule", C4);
@@ -252,16 +268,20 @@ public final class GraphicsPipeline implements AutoCloseable {
             si(viewportState, VIEWPORT_STATE, "scissorCount", 1);
             sa(viewportState, VIEWPORT_STATE, "pScissors", scissor);
 
-            // Viewport + scissor are dynamic: the present loop sets them each frame from the swapchain extent, so a
-            // window resize needs no pipeline rebuild — only a swapchain recreate. The baked values above are the
-            // required placeholders (counts stay 1; the pointers are ignored once the states are dynamic).
-            MemorySegment dynamicStates = arena.allocate(JAVA_INT, 2);
-            dynamicStates.setAtIndex(JAVA_INT, 0, Vk.DYNAMIC_STATE_VIEWPORT);
-            dynamicStates.setAtIndex(JAVA_INT, 1, Vk.DYNAMIC_STATE_SCISSOR);
-            MemorySegment dynamicState = arena.allocate(DYNAMIC_STATE);
-            si(dynamicState, DYNAMIC_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
-            si(dynamicState, DYNAMIC_STATE, "dynamicStateCount", 2);
-            sa(dynamicState, DYNAMIC_STATE, "pDynamicStates", dynamicStates);
+            // Optionally make viewport + scissor dynamic: the present loop then sets them each frame from the
+            // swapchain extent, so a window resize needs no pipeline rebuild — only a swapchain recreate. The baked
+            // values above stay as the required placeholders (counts stay 1; the pointers are then ignored). When
+            // dynamic state is off, the baked fixed viewport is used (offscreen / fixed-size path).
+            MemorySegment dynamicState = MemorySegment.NULL;
+            if (dynamicViewport) {
+                MemorySegment dynamicStates = arena.allocate(JAVA_INT, 2);
+                dynamicStates.setAtIndex(JAVA_INT, 0, Vk.DYNAMIC_STATE_VIEWPORT);
+                dynamicStates.setAtIndex(JAVA_INT, 1, Vk.DYNAMIC_STATE_SCISSOR);
+                dynamicState = arena.allocate(DYNAMIC_STATE);
+                si(dynamicState, DYNAMIC_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
+                si(dynamicState, DYNAMIC_STATE, "dynamicStateCount", 2);
+                sa(dynamicState, DYNAMIC_STATE, "pDynamicStates", dynamicStates);
+            }
 
             MemorySegment rasterizer = arena.allocate(RASTERIZATION_STATE);
             si(rasterizer, RASTERIZATION_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
@@ -335,6 +355,11 @@ public final class GraphicsPipeline implements AutoCloseable {
 
     public long pipeline() {
         return pipeline;
+    }
+
+    /** Whether viewport + scissor are dynamic (the presenter must set them per frame). */
+    public boolean hasDynamicViewport() {
+        return dynamicViewport;
     }
 
     public long pipelineLayout() {

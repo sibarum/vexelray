@@ -279,12 +279,16 @@ public final class WindowedPresenter implements AutoCloseable {
             sl(rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
             invokeVoid(beginRp, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-            sf(pViewport, VIEWPORT, "width", extentW);
-            sf(pViewport, VIEWPORT, "height", extentH);
-            invokeVoid(setViewport, cmd, 0, 1, pViewport);
-            si(pScissor, RECT2D, "extent_w", extentW);
-            si(pScissor, RECT2D, "extent_h", extentH);
-            invokeVoid(setScissor, cmd, 0, 1, pScissor);
+            // Only set dynamic viewport/scissor when the pipeline declared them dynamic; a fixed-viewport pipeline
+            // must not receive these commands.
+            if (pipeline.hasDynamicViewport()) {
+                sf(pViewport, VIEWPORT, "width", extentW);
+                sf(pViewport, VIEWPORT, "height", extentH);
+                invokeVoid(setViewport, cmd, 0, 1, pViewport);
+                si(pScissor, RECT2D, "extent_w", extentW);
+                si(pScissor, RECT2D, "extent_h", extentH);
+                invokeVoid(setScissor, cmd, 0, 1, pScissor);
+            }
             if (descriptorSet != 0) {
                 invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
                         0, 1, pDescriptorSet, 0, MemorySegment.NULL);
