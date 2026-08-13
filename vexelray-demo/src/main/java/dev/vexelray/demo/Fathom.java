@@ -25,7 +25,6 @@ import sibarum.atchung.Atchung;
 import sibarum.tactroller.api.BackendException;
 import sibarum.tactroller.api.InputEvent;
 import sibarum.tactroller.api.Key;
-import sibarum.tactroller.api.PointerDelta;
 import sibarum.tactroller.api.PointerLockMode;
 import sibarum.tactroller.api.Tactroller;
 import sibarum.tactroller.atchung.TactrollerInputBridge;
@@ -138,11 +137,15 @@ public final class Fathom {
                 Atchung bus = Atchung.create();
                 TactrollerInputBridge inputBridge = new TactrollerInputBridge(input, bus);
                 java.util.EnumSet<Key> held = java.util.EnumSet.noneOf(Key.class);
+                int[] lookDelta = {0, 0};                       // this frame's summed pointer motion, from the bus
                 bus.subscribe(inputBridge.events(), e -> {
                     if (e instanceof InputEvent.KeyPressed k) {
                         held.add(k.key());
                     } else if (e instanceof InputEvent.KeyReleased k) {
                         held.remove(k.key());
+                    } else if (e instanceof InputEvent.PointerMoved m) {
+                        lookDelta[0] += m.dx();                 // sum: pump() may emit several between reads
+                        lookDelta[1] += m.dy();
                     }
                 });
 
@@ -159,13 +162,14 @@ public final class Fathom {
                     // a RAW pointer lock: RawInput device deltas, so motion never clamps at the screen edge and the
                     // camera keeps every degree of freedom. We hold the lock only while actively looking and release
                     // it when paused/unfocused so the OS cursor reappears for interacting with the window.
-                    boolean focused;
-                    try {
-                        inputBridge.pump();                     // snapshot Tactroller -> publish this frame's edges
-                        focused = input.isFocused();
-                    } catch (BackendException ex) {
-                        throw new RuntimeException("input failed", ex);
-                    }
+                    //
+                    // pump() is the SOLE drain of Tactroller's motion accumulator: it publishes this frame's delta as
+                    // an InputEvent.PointerMoved, which our subscriber sums into lookDelta. We must not also call
+                    // pollPointerDelta() — a second drain would race pump() for the same accumulator and win/lose at
+                    // random, freezing the camera. So: reset the accumulator, set the lock mode, then pump.
+                    lookDelta[0] = 0;
+                    lookDelta[1] = 0;
+                    boolean focused = input.isFocused();
 
                     if (held.contains(Key.ESCAPE)) {
                         paused[0] = true;
@@ -174,10 +178,9 @@ public final class Fathom {
                         paused[0] = false;                      // regaining focus resumes look
                     }
 
-                    // Reconcile the pointer lock with whether we're actively looking, then drain this frame's
-                    // motion. lockPointer(RAW) zeroes the delta accumulator, so toggling never yields a stray jump.
+                    // Reconcile the lock BEFORE pumping so this frame's snapshot drains in the right mode.
+                    // lockPointer(RAW) zeroes the backend accumulator, so toggling never yields a stray jump.
                     boolean wantLock = focused && !paused[0];
-                    PointerDelta look_d;
                     try {
                         if (wantLock && !locked[0]) {
                             input.lockPointer(PointerLockMode.RAW);
@@ -186,14 +189,14 @@ public final class Fathom {
                             input.unlockPointer();
                             locked[0] = false;
                         }
-                        look_d = input.pollPointerDelta();      // RAW device delta while locked; edge-independent
+                        inputBridge.pump();                     // snapshot -> publish edges + PointerMoved (fills lookDelta)
                     } catch (BackendException ex) {
                         throw new RuntimeException("input failed", ex);
                     }
 
                     if (wantLock) {
-                        look[0] += look_d.dx() * lookSens;      // yaw
-                        look[1] = Math.max(-1.5f, Math.min(1.5f, look[1] + look_d.dy() * lookSens)); // pitch (clamped)
+                        look[0] += lookDelta[0] * lookSens;     // yaw
+                        look[1] = Math.max(-1.5f, Math.min(1.5f, look[1] + lookDelta[1] * lookSens)); // pitch (clamped)
                         float step = 2.5f * (float) dt;
                         float fx = (float) Math.sin(look[0]);   // forward = yaw direction (horizontal)
                         float fz = (float) Math.cos(look[0]);
