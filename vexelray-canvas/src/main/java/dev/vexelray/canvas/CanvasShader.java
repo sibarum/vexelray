@@ -53,12 +53,16 @@ public final class CanvasShader {
         InterfaceVar inKind = InterfaceVar.input("inKind", CanvasVertex.LOC_KIND, F32);
         InterfaceVar inLocal = InterfaceVar.input("inLocal", CanvasVertex.LOC_LOCAL, V2);
         InterfaceVar inShape = InterfaceVar.input("inShape", CanvasVertex.LOC_SHAPE, V4);
+        InterfaceVar inClipBox = InterfaceVar.input("inClipBox", CanvasVertex.LOC_CLIPBOX, V4);
+        InterfaceVar inClipRs = InterfaceVar.input("inClipRs", CanvasVertex.LOC_CLIPRS, V4);
 
         InterfaceVar vColor = InterfaceVar.output("vColor", CanvasVertex.LOC_COLOR, V4);
         InterfaceVar vUv = InterfaceVar.output("vUv", CanvasVertex.LOC_UV, V2);
         InterfaceVar vKind = InterfaceVar.output("vKind", CanvasVertex.LOC_KIND, F32);
         InterfaceVar vLocal = InterfaceVar.output("vLocal", CanvasVertex.LOC_LOCAL, V2);
         InterfaceVar vShape = InterfaceVar.output("vShape", CanvasVertex.LOC_SHAPE, V4);
+        InterfaceVar vClipBox = InterfaceVar.output("vClipBox", CanvasVertex.LOC_CLIPBOX, V4);
+        InterfaceVar vClipRs = InterfaceVar.output("vClipRs", CanvasVertex.LOC_CLIPRS, V4);
 
         Expr pos = new Expr.InterfaceRead(inPos);
         Expr clip = new Expr.VectorConstruct(V4, List.of(
@@ -70,6 +74,8 @@ public final class CanvasShader {
                 new Statement.InterfaceWrite(vKind, new Expr.InterfaceRead(inKind)),
                 new Statement.InterfaceWrite(vLocal, new Expr.InterfaceRead(inLocal)),
                 new Statement.InterfaceWrite(vShape, new Expr.InterfaceRead(inShape)),
+                new Statement.InterfaceWrite(vClipBox, new Expr.InterfaceRead(inClipBox)),
+                new Statement.InterfaceWrite(vClipRs, new Expr.InterfaceRead(inClipRs)),
                 new Statement.ReturnVoid());
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
         return ComposedShader.lower(ShaderStage.VERTEX,
@@ -83,12 +89,30 @@ public final class CanvasShader {
         InterfaceVar vKind = InterfaceVar.input("vKind", CanvasVertex.LOC_KIND, F32);
         InterfaceVar vLocal = InterfaceVar.input("vLocal", CanvasVertex.LOC_LOCAL, V2);
         InterfaceVar vShape = InterfaceVar.input("vShape", CanvasVertex.LOC_SHAPE, V4);
+        InterfaceVar vClipBox = InterfaceVar.input("vClipBox", CanvasVertex.LOC_CLIPBOX, V4);
+        InterfaceVar vClipRs = InterfaceVar.input("vClipRs", CanvasVertex.LOC_CLIPRS, V4);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, V4);
         Texture atlas = new Texture("uAtlas", ATLAS_SET, ATLAS_BINDING);
 
         Expr color = new Expr.InterfaceRead(vColor);
         Expr rgb = new Expr.VectorConstruct(V3, List.of(x(color), y(color), z(color)));
-        Expr alpha = w(color);
+
+        // --- clip: rounded-box SDF coverage at the fragment's screen position, multiplied into alpha ---
+        Expr clipBox = new Expr.InterfaceRead(vClipBox);
+        Expr clipRs = new Expr.InterfaceRead(vClipRs);
+        Expr clipCenter = new Expr.VectorConstruct(V2, List.of(x(clipBox), y(clipBox)));
+        Expr clipHalf = new Expr.VectorConstruct(V2, List.of(z(clipBox), w(clipBox)));
+        Expr fragScreen = new Expr.VectorConstruct(V2, List.of(x(clipRs), y(clipRs)));
+        Expr clipR = z(clipRs);
+        Expr clipAa = w(clipRs);
+        Expr cl = sub(fragScreen, clipCenter);
+        Expr qc = add(sub(Expr.MathCall.abs(cl), clipHalf), new Expr.VectorConstruct(V2, List.of(clipR, clipR)));
+        Expr outsideC = Expr.MathCall.length(Expr.MathCall.max(qc, v2(0.0, 0.0)));
+        Expr insideC = Expr.MathCall.min(Expr.MathCall.max(x(qc), y(qc)), f(0.0));
+        Expr dc = sub(add(outsideC, insideC), clipR);
+        Expr clipCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(clipAa), clipAa, dc));
+
+        Expr alpha = mul(w(color), clipCov);
         Expr shape = new Expr.InterfaceRead(vShape);
 
         // --- shape branch: rounded-box SDF coverage ---

@@ -20,10 +20,21 @@ public final class Canvas {
     public static final float AA = 1.0f;
     private static final float PAD = AA + 1f;   // quad extends this far past the shape so the AA falloff isn't clipped
 
+    /** Effectively-infinite half-extent for the default (unclipped) clip box. */
+    private static final float NO_CLIP = 1e9f;
+
     private int width;
     private int height;
     private float[] data = new float[CanvasVertex.FLOATS_PER_VERTEX * 6 * 64];
     private int count;   // floats used
+
+    // Current clip (rounded rect, px) stamped into every vertex, and the stack for push/pop. Default = infinite.
+    private float clipCx;
+    private float clipCy;
+    private float clipHw = NO_CLIP;
+    private float clipHh = NO_CLIP;
+    private float clipR;
+    private final java.util.ArrayDeque<float[]> clipStack = new java.util.ArrayDeque<>();
 
     /** A canvas sized to the target it will be drawn into, in pixels. */
     public Canvas(int width, int height) {
@@ -49,9 +60,52 @@ public final class Canvas {
         return this;
     }
 
-    /** Reset the draw list for a new frame. */
+    /** Reset the draw list for a new frame and clear any clip. */
     public Canvas begin() {
         count = 0;
+        clipStack.clear();
+        clipCx = 0f;
+        clipCy = 0f;
+        clipHw = NO_CLIP;
+        clipHh = NO_CLIP;
+        clipR = 0f;
+        return this;
+    }
+
+    /**
+     * Push a rounded-rect clip in pixels: subsequent draws are clipped (as antialiased coverage) to the
+     * intersection of this rect with the current clip, with corner radius {@code radius}. Balance with
+     * {@link #popClip()}. The intersection is of the axis-aligned bounds (so content never escapes an ancestor
+     * clip); the corner radius is that of this innermost push.
+     */
+    public Canvas pushClip(float x, float y, float w, float h, float radius) {
+        clipStack.push(new float[]{clipCx, clipCy, clipHw, clipHh, clipR});
+        float ncx = x + w * 0.5f;
+        float ncy = y + h * 0.5f;
+        float nhw = w * 0.5f;
+        float nhh = h * 0.5f;
+        float minX = Math.max(clipCx - clipHw, ncx - nhw);
+        float maxX = Math.min(clipCx + clipHw, ncx + nhw);
+        float minY = Math.max(clipCy - clipHh, ncy - nhh);
+        float maxY = Math.min(clipCy + clipHh, ncy + nhh);
+        clipCx = (minX + maxX) * 0.5f;
+        clipCy = (minY + maxY) * 0.5f;
+        clipHw = Math.max(0f, (maxX - minX) * 0.5f);
+        clipHh = Math.max(0f, (maxY - minY) * 0.5f);
+        clipR = Math.max(0f, radius);
+        return this;
+    }
+
+    /** Pop the most recent {@link #pushClip}. */
+    public Canvas popClip() {
+        if (!clipStack.isEmpty()) {
+            float[] c = clipStack.pop();
+            clipCx = c[0];
+            clipCy = c[1];
+            clipHw = c[2];
+            clipHh = c[3];
+            clipR = c[4];
+        }
         return this;
     }
 
@@ -166,19 +220,21 @@ public final class Canvas {
                            float halfW, float halfH, float radius, Color c) {
         float sx = cx + lx * cos - ly * sin;
         float sy = cy + lx * sin + ly * cos;
-        push(ndcX(sx), ndcY(sy), c, 0f, 0f, CanvasVertex.KIND_SHAPE, lx, ly, halfW, halfH, radius, AA);
+        push(sx, sy, c, 0f, 0f, CanvasVertex.KIND_SHAPE, lx, ly, halfW, halfH, radius, AA);
     }
 
     private void glyphVert(float sx, float sy, float u, float v, float screenPxRange, Color c) {
-        push(ndcX(sx), ndcY(sy), c, u, v, CanvasVertex.KIND_GLYPH, 0f, 0f, screenPxRange, 0f, 0f, 0f);
+        push(sx, sy, c, u, v, CanvasVertex.KIND_GLYPH, 0f, 0f, screenPxRange, 0f, 0f, 0f);
     }
 
-    private void push(float px, float py, Color c, float u, float v, int kind,
+    /** Append one vertex. {@code sx,sy} is the screen-pixel position (converted to NDC for {@code pos}, and kept
+     *  raw for the clip SDF); the current clip box is stamped in from {@link #pushClip}. */
+    private void push(float sx, float sy, Color c, float u, float v, int kind,
                       float localX, float localY, float s0, float s1, float s2, float s3) {
         ensure(CanvasVertex.FLOATS_PER_VERTEX);
         int o = count;
-        data[o] = px;
-        data[o + 1] = py;
+        data[o] = ndcX(sx);
+        data[o + 1] = ndcY(sy);
         data[o + 2] = c.r();
         data[o + 3] = c.g();
         data[o + 4] = c.b();
@@ -192,6 +248,14 @@ public final class Canvas {
         data[o + 12] = s1;
         data[o + 13] = s2;
         data[o + 14] = s3;
+        data[o + 15] = clipCx;
+        data[o + 16] = clipCy;
+        data[o + 17] = clipHw;
+        data[o + 18] = clipHh;
+        data[o + 19] = sx;
+        data[o + 20] = sy;
+        data[o + 21] = clipR;
+        data[o + 22] = AA;
         count = o + CanvasVertex.FLOATS_PER_VERTEX;
     }
 
