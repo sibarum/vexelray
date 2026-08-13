@@ -67,8 +67,44 @@ vexelray-technique-sdf   First technique + its SDF-scene authoring API.   (later
       ▲
 vexelray-demo (Fathom)   Reference client app. Ships the -Pnative single-binary profile.
 
-vexelray-os  (+ os-windows / os-linux / os-macos)   Direct-OS Panama layer: window, surface, input.
+vexelray-os  (+ os-windows / os-linux / os-macos)   Direct-OS Panama layer: window + Vulkan surface.
+Tactroller (external, sibling repo)                 Input devices (pointer/keyboard). Same Panama +
+                                                    ServiceLoader + native-image convention; consumed, not rebuilt.
+Atchung (external, sibling repo)                    Event/message fabric. Input, sim, GUI meet here as
+                                                    producers/consumers — no direct coupling between them.
 ```
+
+**Input and events are Tactroller + Atchung, not `vexelray-os`.** `vexelray-os` owns only **window + surface**.
+Two sibling first-party projects supply the rest:
+
+- **[Tactroller](../../tactroller)** — device acquisition. It already implements the exact convention `vexelray-os`
+  uses (per-OS Panama bindings to system libraries only — `user32`, `libX11`, CoreGraphics — one `InputBackend`
+  via `ServiceLoader`, native-image-clean, no bundled natives). The engine polls it on the **render thread** once
+  per frame via `Tactroller.snapshot()` — no daemon, no cross-thread hand-off — with the window attached
+  (`NativeWindow.ofHwnd(window.osHandle())`) for focus gating and `RAW` pointer-lock for mouselook.
+- **[Atchung](../../atchung)** — the event/message fabric every component meets on. Input does not call the sim
+  or GUI directly; it publishes onto the bus and they subscribe. The `tactroller-atchung` bridge makes Tactroller
+  "just another producer": each frame it snapshots and republishes into the bus's **two integration shapes**.
+
+**Two integration patterns (both used for input):**
+
+- **Pub/Sub** — discrete *edges* (key/button press·release, scroll, focus change) go to a `Topic<InputEvent>`:
+  lossless, per-topic FIFO. Fathom subscribes and folds `KeyPressed`/`KeyReleased` into a held-set. This is for
+  "what happened," where every event must land.
+- **State synchronization** — the *pointer position* goes to a `State<PointerState>`: coalesced, versioned,
+  lock-free zero-copy reads. This is for "what is true now," where only the latest value matters and a dropped
+  intermediate is harmless.
+
+**Why route local input through a bus at all.** In-JVM, messages pass by reference straight to their destinations,
+so Atchung can look superfluous — it is deliberate. The indirection is what makes future capabilities *cheap and
+non-invasive*: a transport bridge (planned `atchung-elektroq`) forwards selected topics over a network without
+touching the local surface; `State<T>` version numbers are the delta/keyframe hook and named commits are the
+replicable unit, so **rewind/replay, remote control, session sharing, and automation** fall out of the same
+design. None of that ships today, but the seams for it exist from day one — consumers already couple only to the
+bus, never to Tactroller.
+
+This does not breach "own the runtime; no third-party natives": Tactroller and Atchung *are* our runtime, factored
+into their own repos — not upstreams like LWJGL/GLFW. (Atchung is pure Java: no native code, no reflection.)
 
 **Substrate vs runtime.** `vexelray-vulkan` holds Vulkan *object wrappers* (device, swapchain, pipeline,
 buffers). `vexelray-engine` holds *orchestration* (frame loop, present targets, technique driving). Techniques
@@ -125,6 +161,7 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 | Render == sim | SDF evaluated CPU + GPU from one IR; sphere-trace collision | physics/queries against the render field; GPU/CPU placement |
 | Resources | ad hoc per class | `ResourceManager` impl; pooled/suballocated memory |
 | Lighting | inline in the SDF shader | pluggable `LightingModel`s folded into composition |
+| Input / events | Tactroller snapshot → `tactroller-atchung` bridge → Atchung bus; Fathom subscribes (edges as `Topic<InputEvent>`, pointer as `State<PointerState>`) | same fabric; add GUI/recorder/network consumers with no core change |
 | Platform | Windows (Panama); Linux/macOS skeletons | all three; per-OS reachability metadata |
 | Packaging | JVM run + `-Pnative` profile wired | verified single native binary, driver-only |
 

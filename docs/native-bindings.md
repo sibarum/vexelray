@@ -48,6 +48,13 @@ to make that cost boringly uniform: one skeleton, copied, never improvised.
 Every platform additionally requires the base `VK_KHR_surface` instance extension. A platform reports its own
 required instance extensions (§5); the Vulkan module enables exactly what the active platform asks for.
 
+> **Input lives in Tactroller, not here.** This document covers windowing and the Vulkan surface only.
+> Pointer/keyboard input is delegated to [Tactroller](../../tactroller), a sibling first-party project that
+> already applies this convention verbatim (per-OS Panama bindings to `user32`/`libX11`/CoreGraphics, one
+> `InputBackend` via `ServiceLoader`, native-image-clean). `vexelray-os` never binds `GetAsyncKeyState`,
+> `GetCursorPos`, or their peers — the engine depends on `tactroller-api` and polls it per frame. Adding a new
+> platform (§7.2) therefore means window + surface only; input for that platform is Tactroller's concern.
+
 > **Windows is the first implementation.** X11, Wayland, and macOS are stubs that throw
 > `UnsupportedOperationException("<platform> not yet implemented")` until built — but their module, interface,
 > and service registration exist from day one (P1), so adding one is filling in a skeleton, never inventing one.

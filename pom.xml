@@ -164,6 +164,12 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>3.13.0</version>
+                    <!-- Explicit release on the plugin (not only the maven.compiler.release property) so IDEs pick
+                         up the language level reliably. Sourced from the property so a module that overrides it
+                         still wins — e.g. vexelray-msdf-maven-plugin pins 21 for the plugin-descriptor scanner. -->
+                    <configuration>
+                        <release>${maven.compiler.release}</release>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
