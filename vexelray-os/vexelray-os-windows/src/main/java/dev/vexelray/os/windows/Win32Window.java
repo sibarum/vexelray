@@ -5,6 +5,7 @@ import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
 import dev.vexelray.os.ffi.Ffi;
 import dev.vexelray.os.ffi.NativeException;
+import dev.vexelray.os.windows.sys.Gdi32;
 import dev.vexelray.os.windows.sys.Kernel32;
 import dev.vexelray.os.windows.sys.User32;
 
@@ -99,6 +100,12 @@ public final class Win32Window implements NativeWindow {
         WINDOWS.put(hwnd.address(), this);
         this.msgBuffer = arena.allocate(User32.MSG);
         readClientSize();
+
+        // Appear immediately, painted with the class background brush, and pump once so the OS actually erases the
+        // client area now. The (potentially slow) Vulkan bring-up then runs with a clean coloured window on screen
+        // instead of nothing — the swapchain takes over the pixels once the first frame presents.
+        show();
+        pumpEvents();
     }
 
     private static synchronized void ensureClassRegistered(MemorySegment hInstance) {
@@ -109,8 +116,11 @@ public final class Win32Window implements NativeWindow {
         MemorySegment wndProc = Ffi.upcall(MethodHandles.lookup(), Win32Window.class, "wndProc",
                 WNDPROC_DESC, Ffi.GLOBAL);
         MemorySegment cursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_ARROW);
+        // A neutral dark background painted before the first Vulkan present (0x11141b). Process-lifetime, like the
+        // class itself — the OS reclaims it at exit.
+        MemorySegment background = Gdi32.createSolidBrush(Gdi32.rgb(0x11, 0x14, 0x1b));
         try (Arena temp = Arena.ofConfined()) {
-            MemorySegment wc = User32.allocWndClassExW(temp, wndProc, hInstance, cursor, classNameSeg);
+            MemorySegment wc = User32.allocWndClassExW(temp, wndProc, hInstance, cursor, classNameSeg, background);
             User32.registerClassExW(wc);
         }
     }

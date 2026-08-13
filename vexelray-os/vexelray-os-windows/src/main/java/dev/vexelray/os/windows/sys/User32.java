@@ -96,6 +96,7 @@ public final class User32 {
     private static final VarHandle WC_lpfnWndProc   = fieldHandle(WNDCLASSEXW, "lpfnWndProc");
     private static final VarHandle WC_hInstance     = fieldHandle(WNDCLASSEXW, "hInstance");
     private static final VarHandle WC_hCursor       = fieldHandle(WNDCLASSEXW, "hCursor");
+    private static final VarHandle WC_hbrBackground = fieldHandle(WNDCLASSEXW, "hbrBackground");
     private static final VarHandle WC_lpszClassName = fieldHandle(WNDCLASSEXW, "lpszClassName");
 
     private static final VarHandle RECT_right  = fieldHandle(RECT, "right");
@@ -141,18 +142,21 @@ public final class User32 {
 
     /**
      * Allocate and populate a {@code WNDCLASSEXW} with the fields VexelRay sets: size, redraw style, the window
-     * procedure, instance, cursor, and class name. The rest are left zero (no icon, no menu, no background —
-     * the swapchain owns every pixel).
+     * procedure, instance, cursor, class name, and background brush. The background lets the OS erase the client
+     * area to a solid colour the instant the window is shown, before Vulkan presents its first frame; the swapchain
+     * owns every pixel thereafter. Pass {@code hbrBackground == MemorySegment.NULL} to leave it unset. Icon and
+     * menu are left zero.
      */
     public static MemorySegment allocWndClassExW(SegmentAllocator allocator, MemorySegment wndProc,
                                                  MemorySegment hInstance, MemorySegment hCursor,
-                                                 MemorySegment className) {
+                                                 MemorySegment className, MemorySegment hbrBackground) {
         MemorySegment wc = allocator.allocate(WNDCLASSEXW);
         WC_cbSize.set(wc, (int) WNDCLASSEXW.byteSize());
         WC_style.set(wc, CS_HREDRAW | CS_VREDRAW | CS_OWNDC);
         WC_lpfnWndProc.set(wc, wndProc);
         WC_hInstance.set(wc, hInstance);
         WC_hCursor.set(wc, hCursor);
+        WC_hbrBackground.set(wc, hbrBackground);
         WC_lpszClassName.set(wc, className);
         return wc;
     }
