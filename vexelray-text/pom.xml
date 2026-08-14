@@ -57,8 +57,29 @@
                                 <atlas>
                                     <name>primary</name>
                                     <font>${project.basedir}/fonts/NotoSans-Regular.ttf</font>
-                                    <charset>ascii</charset>
-                                    <atlasSize>1024</atlasSize>
+                                    <!--
+                                      Broad coverage for real-world UI text: Basic Latin, Latin-1, Latin Extended-A,
+                                      Greek, Cyrillic, General Punctuation (en/em dash, curly quotes, ellipsis,
+                                      bullet), currency, letterlike, arrows, math operators, box drawing, geometric
+                                      shapes and dingbats (checks/crosses/stars). ~1300 glyphs of Noto Sans present
+                                      in these ranges, comfortably inside a 2048 atlas at 32px.
+                                    -->
+                                    <charset>
+[0x20, 0x7E]
+[0xA0, 0xFF]
+[0x100, 0x17F]
+[0x370, 0x3FF]
+[0x400, 0x4FF]
+[0x2000, 0x206F]
+[0x20A0, 0x20BF]
+[0x2100, 0x214F]
+[0x2190, 0x21FF]
+[0x2200, 0x22FF]
+[0x2500, 0x257F]
+[0x25A0, 0x25FF]
+[0x2700, 0x27BF]
+                                    </charset>
+                                    <atlasSize>2048</atlasSize>
                                     <fontSize>32</fontSize>
                                     <pxRange>4</pxRange>
                                 </atlas>
