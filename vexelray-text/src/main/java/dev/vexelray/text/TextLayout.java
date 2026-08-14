@@ -52,6 +52,17 @@ public final class TextLayout {
     public record TextBox(float x, float y, float width, float height) {
     }
 
+    /**
+     * One visual line as an offset span into the original text: {@code [start, end)} (untrimmed, so it maps
+     * caret offsets exactly), and whether a hard break ({@code '\n'} or the end of the text) ended it. Produced
+     * by {@link #breakLineSpans} for callers (e.g. a text editor) that must map character offsets to visual lines
+     * across wrapping. Note: leading whitespace dropped when wrapping a line belongs to the preceding span's tail,
+     * so consecutive spans can leave a gap of dropped spaces — treat a character as belonging to the last span
+     * whose {@code start <= offset}.
+     */
+    public record LineSpan(int start, int end, boolean hardBreak) {
+    }
+
     /** One visual line: its text (trailing whitespace trimmed), advance width in px, and whether a hard break ('\n' or end) ended it. */
     public record TextLine(String text, float width, boolean hardBreak) {
     }
@@ -210,6 +221,78 @@ public final class TextLayout {
             }
         }
         out.add(makeLine(text, lineStart, n, true, pixelSize));
+        return out;
+    }
+
+    /**
+     * Break {@code text} into visual lines as offset spans into the original string (see {@link LineSpan}) —
+     * the offset-aware companion to {@link #breakLines}, for callers that must map character offsets to visual
+     * lines (a wrapped text editor). Same wrapping rules; {@code maxWidth <= 0} disables wrapping.
+     */
+    public List<LineSpan> breakLineSpans(String text, float pixelSize, float maxWidth, WrapMode mode) {
+        WrapMode effective = (maxWidth <= 0f) ? WrapMode.NONE : mode;
+        List<LineSpan> out = new ArrayList<>();
+        int n = text.length();
+        if (n == 0) {
+            out.add(new LineSpan(0, 0, true));
+            return out;
+        }
+        boolean charBreak = effective == WrapMode.WORD_CHAR || effective == WrapMode.CHAR;
+        boolean pureChar = effective == WrapMode.CHAR;
+
+        int i = 0;
+        int lineStart = 0;
+        float lineWidth = 0f;
+        while (i < n) {
+            char c = text.charAt(i);
+            if (c == '\n') {
+                out.add(new LineSpan(lineStart, i, true));
+                i++;
+                lineStart = i;
+                lineWidth = 0f;
+                continue;
+            }
+            if (effective == WrapMode.NONE) {
+                int e = i;
+                while (e < n && text.charAt(e) != '\n') {
+                    e++;
+                }
+                i = e;
+                continue;
+            }
+
+            int chunkEnd;
+            if (pureChar) {
+                chunkEnd = i + Character.charCount(text.codePointAt(i));
+            } else {
+                chunkEnd = i + 1;
+                while (chunkEnd < n && text.charAt(chunkEnd) != '\n' && !canBreakBetween(text, chunkEnd)) {
+                    chunkEnd++;
+                }
+            }
+            float chunkWidth = measureRange(text, i, chunkEnd, pixelSize);
+            if (charBreak && chunkWidth > maxWidth) {
+                chunkEnd = largestPrefixWithin(text, i, chunkEnd, pixelSize, maxWidth);
+                chunkWidth = measureRange(text, i, chunkEnd, pixelSize);
+            }
+
+            boolean lineEmpty = lineWidth == 0f;
+            boolean fits = lineWidth + chunkWidth <= maxWidth + EPS;
+            boolean chunkTooBig = chunkWidth > maxWidth;
+
+            if (fits || lineEmpty || chunkTooBig) {
+                lineWidth += chunkWidth;
+                i = chunkEnd;
+            } else {
+                out.add(new LineSpan(lineStart, i, false));
+                while (i < n && isSpaceOrTab(text.charAt(i))) {
+                    i++;
+                }
+                lineStart = i;
+                lineWidth = 0f;
+            }
+        }
+        out.add(new LineSpan(lineStart, n, true));
         return out;
     }
 
