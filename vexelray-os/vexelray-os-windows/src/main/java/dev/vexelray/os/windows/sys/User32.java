@@ -46,11 +46,17 @@ public final class User32 {
     public static final int WM_SIZE    = 0x0005;
     public static final int WM_CLOSE   = 0x0010;
     public static final int WM_QUIT    = 0x0012;
-    public static final int WM_KEYDOWN = 0x0100;
-    public static final int WM_KEYUP   = 0x0101;
+    public static final int WM_KEYDOWN   = 0x0100;
+    public static final int WM_KEYUP     = 0x0101;
+    public static final int WM_SETCURSOR = 0x0020;
+
+    /** {@code HTCLIENT} — the WM_SETCURSOR hit-test code (LOWORD of lParam) for the window's client area. */
+    public static final int HTCLIENT = 1;
 
     /** {@code IDC_ARROW} — the standard arrow cursor, passed to LoadCursorW as a MAKEINTRESOURCE pseudo-pointer. */
     public static final int IDC_ARROW = 32512;
+    /** {@code IDC_IBEAM} — the text-placement (I-beam) cursor. */
+    public static final int IDC_IBEAM = 32513;
 
     // ---- Struct layouts (named fields; padding explicit to match the x64 C ABI) -----------------------------
 
@@ -115,6 +121,8 @@ public final class User32 {
             FunctionDescriptor.of(JAVA_SHORT, ADDRESS));
     private static final MethodHandle LoadCursorW = Ffi.downcall(LIB, "LoadCursorW",
             FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
+    private static final MethodHandle SetCursor = Ffi.downcall(LIB, "SetCursor",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
     private static final MethodHandle CreateWindowExW = Ffi.downcall(LIB, "CreateWindowExW",
             FunctionDescriptor.of(ADDRESS,
                     JAVA_INT, ADDRESS, ADDRESS, JAVA_INT,
@@ -192,6 +200,15 @@ public final class User32 {
             return (MemorySegment) LoadCursorW.invokeExact(hInstance, MemorySegment.ofAddress(cursorId));
         } catch (Throwable t) {
             throw NativeException.rethrow("LoadCursorW", t);
+        }
+    }
+
+    /** Set the cursor for the calling thread; returns the previous cursor handle (ignored). */
+    public static void setCursor(MemorySegment hCursor) {
+        try {
+            MemorySegment ignored = (MemorySegment) SetCursor.invokeExact(hCursor);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetCursor", t);
         }
     }
 

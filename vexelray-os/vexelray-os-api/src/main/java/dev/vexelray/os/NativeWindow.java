@@ -27,6 +27,18 @@ public interface NativeWindow extends AutoCloseable {
     /** Whether {@code key} is currently held down (updated by {@link #pumpEvents()}). */
     boolean isKeyDown(Key key);
 
+    /** The mouse-cursor shapes a window can display over its client area. */
+    enum Cursor { ARROW, TEXT }
+
+    /**
+     * Request the cursor shape shown over the client area (e.g. an I-beam over editable text). Takes effect the
+     * next time the OS queries the cursor (typically the next pointer move). The default is a no-op for platforms
+     * without cursor control yet.
+     */
+    default void setCursor(Cursor cursor) {
+        // no-op by default
+    }
+
     /**
      * Create a {@code VkSurfaceKHR} for this window. The OS module owns the platform surface struct and its
      * {@code vkCreate*SurfaceKHR} entry point; the Vulkan module stays platform-agnostic and only supplies the

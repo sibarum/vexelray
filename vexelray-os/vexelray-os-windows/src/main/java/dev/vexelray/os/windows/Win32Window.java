@@ -44,6 +44,10 @@ public final class Win32Window implements NativeWindow {
     /** hwnd address → window, so the shared window procedure can route messages to the right instance. */
     private static final Map<Long, Win32Window> WINDOWS = new ConcurrentHashMap<>();
 
+    // Predefined system cursors, loaded once and shared (process-lifetime; the OS owns them).
+    private static MemorySegment arrowCursor = MemorySegment.NULL;
+    private static MemorySegment ibeamCursor = MemorySegment.NULL;
+
     private static final FunctionDescriptor WNDPROC_DESC =
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG);
 
@@ -80,6 +84,8 @@ public final class Win32Window implements NativeWindow {
     private int width;
     private int height;
     private volatile boolean shouldClose;
+    // Desired client-area cursor; read by the (message-pump-thread) window procedure on WM_SETCURSOR.
+    private volatile Cursor desiredCursor = Cursor.ARROW;
     private boolean shown;
     private final boolean[] keyDown = new boolean[256];   // indexed by Win32 virtual-key code
 
@@ -115,7 +121,9 @@ public final class Win32Window implements NativeWindow {
         classNameSeg = Ffi.GLOBAL.allocateFrom(CLASS_NAME, StandardCharsets.UTF_16LE);
         MemorySegment wndProc = Ffi.upcall(MethodHandles.lookup(), Win32Window.class, "wndProc",
                 WNDPROC_DESC, Ffi.GLOBAL);
-        MemorySegment cursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_ARROW);
+        arrowCursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_ARROW);
+        ibeamCursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_IBEAM);
+        MemorySegment cursor = arrowCursor;
         // A neutral dark background painted before the first Vulkan present (0x11141b). Process-lifetime, like the
         // class itself — the OS reclaims it at exit.
         MemorySegment background = Gdi32.createSolidBrush(Gdi32.rgb(0x11, 0x14, 0x1b));
@@ -147,10 +155,22 @@ public final class Win32Window implements NativeWindow {
                     window.keyDown[(int) (wParam & 0xFF)] = false;
                     return 0;
                 }
+                case User32.WM_SETCURSOR -> {
+                    // Only override the client-area cursor; leave the non-client (resize borders, etc.) to Windows.
+                    if ((int) (lParam & 0xFFFF) == User32.HTCLIENT) {
+                        User32.setCursor(window.desiredCursor == Cursor.TEXT ? ibeamCursor : arrowCursor);
+                        return 1; // TRUE — we handled it, so Windows won't reset the class cursor
+                    }
+                }
                 default -> { /* fall through */ }
             }
         }
         return User32.defWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    @Override
+    public void setCursor(Cursor cursor) {
+        this.desiredCursor = cursor == null ? Cursor.ARROW : cursor;
     }
 
     private void readClientSize() {
