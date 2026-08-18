@@ -9,10 +9,13 @@ import java.util.List;
  * <pre>
  *   loc0 pos   vec2   clip-space position
  *   loc1 color vec4   straight RGBA
- *   loc2 uv    vec2   atlas UV (glyphs; 0 for shapes)
- *   loc3 kind  float  {@link #KIND_SHAPE} or {@link #KIND_GLYPH}
+ *   loc2 uv    vec2   atlas UV (glyphs); effect params for shape kinds (see below)
+ *   loc3 kind  float  {@link #KIND_SHAPE}, {@link #KIND_GLYPH}, {@link #KIND_SHADOW}, {@link #KIND_STROKE}
+ *                     or {@link #KIND_LIT}
  *   loc4 local vec2   shape-local pixel coord, box-centre origin (shapes); unused for glyphs
- *   loc5 shape vec4   shapes: (halfW, halfH, cornerRadius, aa) px ; glyphs: (screenPxRange, 0, 0, 0)
+ *   loc5 shape vec4   shapes: (halfW, halfH, cornerRadiusTop, cornerRadiusBottom) px — the radius is selected
+ *                     per vertical half, so a tab is (r, 0); AA is the system constant 1px, baked in the shader.
+ *                     glyphs: (screenPxRange, 0, 0, 0)
  *   loc6 clipBox vec4 clip rounded-rect in px: (centerX, centerY, halfW, halfH)
  *   loc7 clipRs  vec4 (screenX, screenY, clipCornerRadius, clipAa) px — the fragment's own screen pos + clip edge
  * </pre>
@@ -32,6 +35,22 @@ public final class CanvasVertex {
 
     public static final int KIND_SHAPE = 0;
     public static final int KIND_GLYPH = 1;
+
+    // Effect kinds — the same analytic rounded-box SDF as KIND_SHAPE, run through a different transfer function.
+    // Shapes never sample the atlas, so loc2 (uv) is free to carry each kind's parameters; the SDF itself is
+    // evaluated exactly once per fragment and everything below is a function of that one distance.
+
+    /** Soft shadow / outer glow: coverage is a squared-smoothstep falloff over {@code uv.x} blur px around the edge. */
+    public static final int KIND_SHADOW = 2;
+    /** Stroke: a crisp ring of width {@code uv.x} px hugging the inside of the edge ({@code abs(d + w/2) - w/2}). */
+    public static final int KIND_STROKE = 3;
+    /**
+     * Lit fill: normal fill coverage, with the colour modulated by (a) an embossed edge light — the SDF evaluated a
+     * second time at the fragment shifted toward a fixed top-left light, the difference confined to a band of
+     * {@code uv.x} bevel px inside the edge — and (b) a vertical luminance gradient of amplitude {@code uv.y}
+     * (top brighter, bottom darker). Two SDF evaluations, no normals, no textures.
+     */
+    public static final int KIND_LIT = 4;
 
     public static final int FLOATS_PER_VERTEX = 23;
     public static final int STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;

@@ -37,4 +37,29 @@
             <artifactId>vastir</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Pre-compile the uber-shader (CanvasShader.Vertex / .Fragment) to SPIR-V at build time. The binaries
+              ship in the jar as META-INF/supirvast/shaders/canvas.{vert,frag}.spv, and CanvasShader.vertex() /
+              fragment() load them via Shaders.loadOrLower — so at runtime, pipeline creation is a resource read
+              and CoreToSpirv never runs. That takes shader lowering off the startup path (which lives on the main
+              thread by design) without moving any work to another thread.
+            -->
+            <plugin>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>supirvast-maven-plugin</artifactId>
+                <version>${supirvast.version}</version>
+                <executions>
+                    <execution>
+                        <id>precompile-shaders</id>
+                        <goals>
+                            <goal>compile-shaders</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

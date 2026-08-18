@@ -118,10 +118,16 @@ public final class Canvas {
 
     /** Filled rounded rectangle; {@code radius} clamped to half the smaller side. */
     public Canvas fillRoundRect(float x, float y, float w, float h, float radius, Color color) {
+        return fillRoundRect(x, y, w, h, radius, radius, color);
+    }
+
+    /** As {@link #fillRoundRect} with independent top and bottom corner radii — a tab is {@code (r, 0)}. */
+    public Canvas fillRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
+                                Color color) {
         float halfW = w * 0.5f;
         float halfH = h * 0.5f;
-        float r = clampRadius(radius, halfW, halfH);
-        shape(x + halfW, y + halfH, halfW, halfH, r, 0f, color);
+        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
+                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_SHAPE, 0f, 0f, PAD, color);
         return this;
     }
 
@@ -148,6 +154,63 @@ public final class Canvas {
         return this;
     }
 
+    // --- effects (still the same SDF; a different transfer function over its distance) ------------------------
+
+    /**
+     * A soft shadow (or, tinted, an outer glow) for the rounded rect {@code (x,y,w,h,radius)}: coverage falls off
+     * over {@code blur} px either side of the edge. Draw it before the shape it sits under, offset as desired.
+     */
+    public Canvas shadowRoundRect(float x, float y, float w, float h, float radius, float blur, Color color) {
+        return shadowRoundRect(x, y, w, h, radius, radius, blur, color);
+    }
+
+    /** As {@link #shadowRoundRect} with independent top and bottom corner radii. */
+    public Canvas shadowRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
+                                  float blur, Color color) {
+        float halfW = w * 0.5f;
+        float halfH = h * 0.5f;
+        float b = Math.max(blur, AA);
+        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
+                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_SHADOW, b, 0f, b + 1f, color);
+        return this;
+    }
+
+    /** A crisp {@code width}-px outline hugging the inside edge of the rounded rect — no fill-then-inset. */
+    public Canvas strokeRoundRect(float x, float y, float w, float h, float radius, float width, Color color) {
+        return strokeRoundRect(x, y, w, h, radius, radius, width, color);
+    }
+
+    /** As {@link #strokeRoundRect} with independent top and bottom corner radii. */
+    public Canvas strokeRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
+                                  float width, Color color) {
+        float halfW = w * 0.5f;
+        float halfH = h * 0.5f;
+        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
+                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_STROKE, Math.max(width, 0f), 0f,
+                PAD, color);
+        return this;
+    }
+
+    /**
+     * A filled rounded rect lit from the top-left: an embossed edge highlight/shade confined to {@code bevel} px
+     * inside the edge, plus a vertical luminance gradient of amplitude {@code gradient} (0 = flat, ~0.06 subtle).
+     */
+    public Canvas litRoundRect(float x, float y, float w, float h, float radius, float bevel, float gradient,
+                               Color color) {
+        return litRoundRect(x, y, w, h, radius, radius, bevel, gradient, color);
+    }
+
+    /** As {@link #litRoundRect} with independent top and bottom corner radii. */
+    public Canvas litRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
+                               float bevel, float gradient, Color color) {
+        float halfW = w * 0.5f;
+        float halfH = h * 0.5f;
+        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
+                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_LIT, Math.max(bevel, 1f), gradient,
+                PAD, color);
+        return this;
+    }
+
     // --- text -----------------------------------------------------------------------------------------------
 
     /** Lay {@code text} out inside {@code box} (wrap + align per {@code style}) and append its glyphs in {@code color}. */
@@ -171,11 +234,16 @@ public final class Canvas {
     }
 
     private void appendGlyphs(List<GlyphQuad> quads, float screenPxRange, Color c) {
+        appendGlyphs(quads, screenPxRange, c, 0f, 0f);
+    }
+
+    /** Append glyph quads offset by {@code (dx,dy)} px. */
+    private void appendGlyphs(List<GlyphQuad> quads, float screenPxRange, Color c, float dx, float dy) {
         for (GlyphQuad q : quads) {
-            float x0 = q.x();
-            float y0 = q.y();
-            float x1 = q.x() + q.w();
-            float y1 = q.y() + q.h();
+            float x0 = q.x() + dx;
+            float y0 = q.y() + dy;
+            float x1 = x0 + q.w();
+            float y1 = y0 + q.h();
             glyphVert(x0, y0, q.u0(), q.v0(), screenPxRange, c);
             glyphVert(x1, y0, q.u1(), q.v0(), screenPxRange, c);
             glyphVert(x1, y1, q.u1(), q.v1(), screenPxRange, c);
@@ -184,6 +252,27 @@ public final class Canvas {
             glyphVert(x0, y1, q.u0(), q.v1(), screenPxRange, c);
         }
     }
+
+    /**
+     * Sunken ("letterpress") text: the glyphs read as pressed below the surface, lit by the same overhead light
+     * as everything else. Depth is directional, not an outline: a soft dark copy nudged <em>up</em> (the cavity's
+     * top lip shades the recessed face) and a faint light copy nudged <em>down</em> (the bottom edge catches the
+     * light), with the text itself crisp on top. Three passes over one layout, all plain glyph draws — the soft
+     * edges come from a reduced screenPxRange, because in MSDF a reduced px range <em>is</em> a blur.
+     */
+    public Canvas textSunken(TextLayout layout, String text, float x, float y, float w, float h,
+                             TextLayout.TextStyle style, Color color, float depthPx) {
+        TextLayout.PlacedText placed = layout.place(text, new TextLayout.TextBox(x, y, w, h), style);
+        float spr = layout.screenPxRange(style.pixelSize());
+        appendGlyphs(placed.quads(), spr * 0.7f, SUNKEN_SHADE, 0f, -depthPx);
+        appendGlyphs(placed.quads(), spr * 0.7f, SUNKEN_GLINT, 0f, depthPx);
+        appendGlyphs(placed.quads(), spr, color);
+        return this;
+    }
+
+    /** Letterpress inks: the shade above the glyph and the glint below it. */
+    private static final Color SUNKEN_SHADE = Color.withAlpha(Color.rgb(0x000000), 0.4f);
+    private static final Color SUNKEN_GLINT = Color.withAlpha(Color.rgb(0xffffff), 0.25f);
 
     // --- output ---------------------------------------------------------------------------------------------
 
@@ -203,24 +292,36 @@ public final class Canvas {
 
     /** Emit a shape quad centred at {@code (cx,cy)} px, rotated by {@code angle}, with the given SDF parameters. */
     private void shape(float cx, float cy, float halfW, float halfH, float radius, float angle, Color color) {
-        float ex = halfW + PAD;
-        float ey = halfH + PAD;
+        shape(cx, cy, halfW, halfH, radius, radius, angle, CanvasVertex.KIND_SHAPE, 0f, 0f, PAD, color);
+    }
+
+    /**
+     * Emit a shape-family quad: {@code kind} picks the transfer function, {@code (u,v)} are its parameters (rides
+     * in the atlas-UV slot, which shapes never sample), {@code pad} is how far past the box the quad must extend
+     * so the effect's falloff isn't clipped (a shadow reaches {@code blur} px outside; a fill only {@code AA}).
+     * Corner radii are per vertical half: {@code rTop} above the centre line, {@code rBottom} below.
+     */
+    private void shape(float cx, float cy, float halfW, float halfH, float rTop, float rBottom, float angle,
+                       int kind, float u, float v, float pad, Color color) {
+        float ex = halfW + pad;
+        float ey = halfH + pad;
         float cos = (float) Math.cos(angle);
         float sin = (float) Math.sin(angle);
         // Box-local corners (unrotated); the SDF is evaluated in this frame. Screen positions are rotated.
-        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, radius, color);
-        shapeVert(cx, cy, cos, sin, ex, -ey, halfW, halfH, radius, color);
-        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, radius, color);
-        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, radius, color);
-        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, radius, color);
-        shapeVert(cx, cy, cos, sin, -ex, ey, halfW, halfH, radius, color);
+        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
+        shapeVert(cx, cy, cos, sin, ex, -ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
+        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
+        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
+        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
+        shapeVert(cx, cy, cos, sin, -ex, ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
     }
 
     private void shapeVert(float cx, float cy, float cos, float sin, float lx, float ly,
-                           float halfW, float halfH, float radius, Color c) {
+                           float halfW, float halfH, float rTop, float rBottom, int kind, float u, float v,
+                           Color c) {
         float sx = cx + lx * cos - ly * sin;
         float sy = cy + lx * sin + ly * cos;
-        push(sx, sy, c, 0f, 0f, CanvasVertex.KIND_SHAPE, lx, ly, halfW, halfH, radius, AA);
+        push(sx, sy, c, u, v, kind, lx, ly, halfW, halfH, rTop, rBottom);
     }
 
     private void glyphVert(float sx, float sy, float u, float v, float screenPxRange, Color c) {
