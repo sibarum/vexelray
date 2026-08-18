@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/branding/vexelray-logo.jpg" alt="VexelRay — pure-SDF renderer for 2D + 3D" width="390">
+</p>
+
 # VexelRay
 
 A Vulkan graphics engine whose **shaders are generated programmatically at runtime**. A hybrid polygon
