@@ -21,6 +21,19 @@ public class AtlasConfig {
      */
     public String charset = "ascii";
 
+    /**
+     * Additional faces packed into the same atlas image via msdf-atlas-gen's {@code -and} inputs. The JSON
+     * output switches to the multi-font {@code variants} shape: one variant per face, in declaration order,
+     * with the primary {@code <font>} first — runtime face indices follow that order.
+     */
+    public java.util.List<ExtraFont> extraFonts;
+
+    /** One additional face: its font file and its own charset (defaults to ascii — extra faces are usually code). */
+    public static class ExtraFont {
+        public File font;
+        public String charset = "ascii";
+    }
+
     /** Atlas image dimensions in pixels (square). */
     public int atlasSize = 1024;
 

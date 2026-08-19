@@ -79,6 +79,16 @@
 [0x25A0, 0x25FF]
 [0x2700, 0x27BF]
                                     </charset>
+                                    <!--
+                                      Face 1: monospace for code. Latin-1 coverage is enough for source text;
+                                      anything outside it falls back to the primary face's glyphs at runtime.
+                                    -->
+                                    <extraFonts>
+                                        <extraFont>
+                                            <font>${project.basedir}/fonts/NotoSansMono-Regular.ttf</font>
+                                            <charset>latin-1</charset>
+                                        </extraFont>
+                                    </extraFonts>
                                     <atlasSize>2048</atlasSize>
                                     <fontSize>32</fontSize>
                                     <pxRange>4</pxRange>

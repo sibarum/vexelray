@@ -20,7 +20,9 @@ import java.util.List;
 /**
  * Generates MSDF (multi-channel signed distance field) atlases from TTF/OTF fonts via a bundled
  * {@code msdf-atlas-gen} binary, then bakes a font-independent missing-glyph box. A focused adaptation of Dasum's
- * {@code dasum-msdf-maven-plugin}: one font per atlas, no icon-font codegen, no multi-font merging.
+ * {@code dasum-msdf-maven-plugin}: no icon-font codegen. One primary font per atlas, plus optional
+ * {@code <extraFonts>} packed into the same image via msdf-atlas-gen's {@code -and} inputs (the JSON output then
+ * uses the multi-font {@code variants} shape, one variant per face in declaration order).
  *
  * <p>Two modes via {@code msdf.mode}:
  * <ul>
@@ -118,6 +120,11 @@ public class GenerateAtlasMojo extends AbstractMojo {
         if (!cfg.font.isFile()) {
             throw new MojoExecutionException("Atlas '" + cfg.name + "' font not found: " + cfg.font);
         }
+        for (AtlasConfig.ExtraFont extra : extraFonts(cfg)) {
+            if (extra.font == null || !extra.font.isFile()) {
+                throw new MojoExecutionException("Atlas '" + cfg.name + "' extra font not found: " + extra.font);
+            }
+        }
         if (isUpToDate(cfg, pngOut, jsonOut)) {
             getLog().info("Atlas '" + cfg.name + "' is up to date — skipping.");
             bakeNotdef(cfg, pngOut, jsonOut);
@@ -146,7 +153,15 @@ public class GenerateAtlasMojo extends AbstractMojo {
             return false;
         }
         long outputMtime = Math.min(pngOut.lastModified(), jsonOut.lastModified());
-        return cfg.font.lastModified() <= outputMtime;
+        long inputMtime = cfg.font.lastModified();
+        for (AtlasConfig.ExtraFont extra : extraFonts(cfg)) {
+            inputMtime = Math.max(inputMtime, extra.font.lastModified());
+        }
+        return inputMtime <= outputMtime;
+    }
+
+    private static List<AtlasConfig.ExtraFont> extraFonts(AtlasConfig cfg) {
+        return cfg.extraFonts == null ? List.of() : cfg.extraFonts;
     }
 
     private static String resolveCharsetContent(String charset) {
@@ -180,6 +195,18 @@ public class GenerateAtlasMojo extends AbstractMojo {
         cmd.add(cfg.font.getAbsolutePath());
         cmd.add("-charset");
         cmd.add(charsetFile.getAbsolutePath());
+        // Additional faces share the one atlas image; -and switches the JSON to the "variants" shape,
+        // one variant per face in this order (the runtime resolves face indices from that order).
+        int extraIndex = 0;
+        for (AtlasConfig.ExtraFont extra : extraFonts(cfg)) {
+            File extraCharset = writeCharsetFile(cfg.name + "-extra" + extraIndex++,
+                    resolveCharsetContent(extra.charset));
+            cmd.add("-and");
+            cmd.add("-font");
+            cmd.add(extra.font.getAbsolutePath());
+            cmd.add("-charset");
+            cmd.add(extraCharset.getAbsolutePath());
+        }
         cmd.add("-type");
         cmd.add("msdf");
         cmd.add("-format");
