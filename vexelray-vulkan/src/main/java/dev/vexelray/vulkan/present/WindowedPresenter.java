@@ -188,136 +188,168 @@ public final class WindowedPresenter implements AutoCloseable {
     /**
      * Run the present loop, filling {@code pushConstantBytes} of push constants each frame via {@code perFrame}
      * (camera, time, input-driven sim). Runs until the window closes, or {@code maxFrames} if positive.
+     *
+     * <p>Single-window convenience over {@link #frame}: a multi-window host owns the loop itself and calls
+     * {@code frame} on each of its presenters per iteration instead.
      */
     public void run(int maxFrames, int pushConstantBytes, Frame perFrame) {
-        MemorySegment pImageIndex = a.allocate(JAVA_INT);
-        MemorySegment pushSeg = pushConstantBytes > 0 ? a.allocate(pushConstantBytes) : MemorySegment.NULL;
-        long previousNanos = System.nanoTime();
-        MemorySegment pFence = a.allocate(JAVA_LONG);
-        pFence.set(JAVA_LONG, 0, inFlight);
-        MemorySegment waitSems = a.allocate(JAVA_LONG);
-        waitSems.set(JAVA_LONG, 0, imageAvailable);
-        MemorySegment signalSems = a.allocate(JAVA_LONG);
-        signalSems.set(JAVA_LONG, 0, renderFinished);
-        MemorySegment waitStages = a.allocate(JAVA_INT);
-        waitStages.set(JAVA_INT, 0, Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        MemorySegment pCmd = a.allocate(ADDRESS);
-        pCmd.set(ADDRESS, 0, cmd);
-        MemorySegment pSwapchains = a.allocate(JAVA_LONG);
-
-        MemorySegment submit = a.allocate(SUBMIT);
-        si(submit, SUBMIT, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
-        si(submit, SUBMIT, "waitSemaphoreCount", 1);
-        sa(submit, SUBMIT, "pWaitSemaphores", waitSems);
-        sa(submit, SUBMIT, "pWaitDstStageMask", waitStages);
-        si(submit, SUBMIT, "commandBufferCount", 1);
-        sa(submit, SUBMIT, "pCommandBuffers", pCmd);
-        si(submit, SUBMIT, "signalSemaphoreCount", 1);
-        sa(submit, SUBMIT, "pSignalSemaphores", signalSems);
-
-        MemorySegment presentInfo = a.allocate(PRESENT);
-        si(presentInfo, PRESENT, "sType", Vk.STRUCTURE_TYPE_PRESENT_INFO_KHR);
-        si(presentInfo, PRESENT, "waitSemaphoreCount", 1);
-        sa(presentInfo, PRESENT, "pWaitSemaphores", signalSems);
-        si(presentInfo, PRESENT, "swapchainCount", 1);
-        sa(presentInfo, PRESENT, "pSwapchains", pSwapchains);
-        sa(presentInfo, PRESENT, "pImageIndices", pImageIndex);
-
-        // Per-draw binding scratch (only used when configureDraw set a vertex buffer / descriptor set).
-        MemorySegment pVertexBuffers = a.allocate(JAVA_LONG);
-        pVertexBuffers.set(JAVA_LONG, 0, vertexBuffer);
-        MemorySegment pVertexOffsets = a.allocate(JAVA_LONG);
-        pVertexOffsets.set(JAVA_LONG, 0, 0L);
-        MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
-        pDescriptorSet.set(JAVA_LONG, 0, descriptorSet);
-
-        // Dynamic viewport + scissor, refilled each frame from the current swapchain extent so a resize needs no
-        // pipeline rebuild.
-        MemorySegment pViewport = a.allocate(VIEWPORT);
-        sf(pViewport, VIEWPORT, "maxDepth", 1.0f);
-        MemorySegment pScissor = a.allocate(RECT2D);
-
-        MemorySegment clear = a.allocate(JAVA_FLOAT, 4);
-        MemorySegment beginInfo = a.allocate(CMD_BEGIN);
-        si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-        MemorySegment rpBegin = a.allocate(RENDER_PASS_BEGIN);
-        si(rpBegin, RENDER_PASS_BEGIN, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", renderPass);
-        si(rpBegin, RENDER_PASS_BEGIN, "area_w", swapchain.width());
-        si(rpBegin, RENDER_PASS_BEGIN, "area_h", swapchain.height());
-        si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
-        sa(rpBegin, RENDER_PASS_BEGIN, "pClearValues", clear);
-
         int frame = 0;
-        while (window.pumpEvents() && (maxFrames <= 0 || frame < maxFrames)) {
-            check(invoke(waitFences, dev, 1, pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
-            int acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, pImageIndex);
-            if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
-                rebuild();
-                continue;
-            }
-            check(invoke(resetFences, dev, 1, pFence), "vkResetFences");
-            int imageIndex = pImageIndex.get(JAVA_INT, 0);
-
-            long now = System.nanoTime();
-            double dt = (now - previousNanos) / 1_000_000_000.0;
-            previousNanos = now;
-            // Called every frame when set — carries the push-constant segment (NULL when there are no push
-            // constants). The callback may also refill a dynamic vertex buffer and call setVertexCount(...).
-            if (perFrame != null) {
-                perFrame.update(dt, pushSeg);
-            }
-
-            // Track the live swapchain extent (it changes on resize/rebuild) for the render area and dynamic
-            // viewport/scissor this frame.
-            int extentW = swapchain.width();
-            int extentH = swapchain.height();
-
-            check(invoke(beginCmd, cmd, beginInfo), "vkBeginCommandBuffer");
-            si(rpBegin, RENDER_PASS_BEGIN, "area_w", extentW);
-            si(rpBegin, RENDER_PASS_BEGIN, "area_h", extentH);
-            sl(rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
-            invokeVoid(beginRp, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
-            invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-            // Only set dynamic viewport/scissor when the pipeline declared them dynamic; a fixed-viewport pipeline
-            // must not receive these commands.
-            if (pipeline.hasDynamicViewport()) {
-                sf(pViewport, VIEWPORT, "width", extentW);
-                sf(pViewport, VIEWPORT, "height", extentH);
-                invokeVoid(setViewport, cmd, 0, 1, pViewport);
-                si(pScissor, RECT2D, "extent_w", extentW);
-                si(pScissor, RECT2D, "extent_h", extentH);
-                invokeVoid(setScissor, cmd, 0, 1, pScissor);
-            }
-            if (descriptorSet != 0) {
-                invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                        0, 1, pDescriptorSet, 0, MemorySegment.NULL);
-            }
-            if (vertexBuffer != 0) {
-                invokeVoid(bindVertexBuffers, cmd, 0, 1, pVertexBuffers, pVertexOffsets);
-            }
-            if (pushConstantBytes > 0) {
-                invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
-                        pushConstantBytes, pushSeg);
-            }
-            invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
-            invokeVoid(endRp, cmd);
-            check(invoke(endCmd, cmd), "vkEndCommandBuffer");
-
-            check(invoke(submitCmd, device.queue(), 1, submit, inFlight), "vkQueueSubmit");
-            pSwapchains.set(JAVA_LONG, 0, swapchain.handle());
-            int res = invoke(present, device.queue(), presentInfo);
-            if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
-                rebuild();
-            }
-            if (frame == 0) {
-                // First frame is on screen — reveal the (until-now hidden) window already painted, so slow Vulkan
-                // bring-up never shows a blank/unresponsive window. Idempotent for the rest of the run.
-                window.show();
-            }
+        while ((maxFrames <= 0 || frame < maxFrames) && frame(pushConstantBytes, perFrame)) {
             frame++;
         }
         device.waitIdle();
+    }
+
+    /**
+     * One step of the present loop: pump this window's events, then acquire → record → submit → present a single
+     * frame. Returns {@code false} once the window has been asked to close (nothing is presented for that call).
+     * The first successful frame reveals the window ({@link NativeWindow#show()}), so it appears already painted.
+     *
+     * <p>This is the multi-window seam: a host that owns several windows on one thread drives each presenter one
+     * {@code frame(...)} per loop iteration — every presenter pumps only its own window and touches only its own
+     * swapchain, so presenters on a shared {@link VulkanDevice} interleave safely on the calling thread.
+     */
+    public boolean frame(int pushConstantBytes, Frame perFrame) {
+        if (state == null) {
+            state = new FrameState();
+        }
+        FrameState s = state;
+        if (!window.pumpEvents()) {
+            return false;
+        }
+        if (pushConstantBytes > s.pushCapacity) {
+            s.pushSeg = a.allocate(pushConstantBytes);
+            s.pushCapacity = pushConstantBytes;
+        }
+        check(invoke(waitFences, dev, 1, s.pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+        int acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, s.pImageIndex);
+        if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
+            rebuild();
+            return true;   // skip this frame; the window is still open
+        }
+        check(invoke(resetFences, dev, 1, s.pFence), "vkResetFences");
+        int imageIndex = s.pImageIndex.get(JAVA_INT, 0);
+
+        long now = System.nanoTime();
+        double dt = (now - s.previousNanos) / 1_000_000_000.0;
+        s.previousNanos = now;
+        // Called every frame when set — carries the push-constant segment (NULL when there are no push
+        // constants). The callback may also refill a dynamic vertex buffer and call setVertexCount(...).
+        if (perFrame != null) {
+            perFrame.update(dt, s.pushSeg);
+        }
+
+        // Track the live swapchain extent (it changes on resize/rebuild) for the render area and dynamic
+        // viewport/scissor this frame. Draw bindings are re-read each frame so a late configureDraw takes effect.
+        int extentW = swapchain.width();
+        int extentH = swapchain.height();
+        s.pVertexBuffers.set(JAVA_LONG, 0, vertexBuffer);
+        s.pDescriptorSet.set(JAVA_LONG, 0, descriptorSet);
+
+        check(invoke(beginCmd, cmd, s.beginInfo), "vkBeginCommandBuffer");
+        si(s.rpBegin, RENDER_PASS_BEGIN, "area_w", extentW);
+        si(s.rpBegin, RENDER_PASS_BEGIN, "area_h", extentH);
+        sl(s.rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
+        invokeVoid(beginRp, cmd, s.rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
+        invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+        // Only set dynamic viewport/scissor when the pipeline declared them dynamic; a fixed-viewport pipeline
+        // must not receive these commands.
+        if (pipeline.hasDynamicViewport()) {
+            sf(s.pViewport, VIEWPORT, "width", extentW);
+            sf(s.pViewport, VIEWPORT, "height", extentH);
+            invokeVoid(setViewport, cmd, 0, 1, s.pViewport);
+            si(s.pScissor, RECT2D, "extent_w", extentW);
+            si(s.pScissor, RECT2D, "extent_h", extentH);
+            invokeVoid(setScissor, cmd, 0, 1, s.pScissor);
+        }
+        if (descriptorSet != 0) {
+            invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
+                    0, 1, s.pDescriptorSet, 0, MemorySegment.NULL);
+        }
+        if (vertexBuffer != 0) {
+            invokeVoid(bindVertexBuffers, cmd, 0, 1, s.pVertexBuffers, s.pVertexOffsets);
+        }
+        if (pushConstantBytes > 0) {
+            invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
+                    pushConstantBytes, s.pushSeg);
+        }
+        invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
+        invokeVoid(endRp, cmd);
+        check(invoke(endCmd, cmd), "vkEndCommandBuffer");
+
+        check(invoke(submitCmd, device.queue(), 1, s.submit, inFlight), "vkQueueSubmit");
+        s.pSwapchains.set(JAVA_LONG, 0, swapchain.handle());
+        int res = invoke(present, device.queue(), s.presentInfo);
+        if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
+            rebuild();
+        }
+        if (!s.shown) {
+            // First frame is on screen — reveal the (until-now hidden) window already painted, so slow Vulkan
+            // bring-up never shows a blank/unresponsive window.
+            window.show();
+            s.shown = true;
+        }
+        return true;
+    }
+
+    private FrameState state;
+
+    /** The loop-invariant native structs, built once on the first {@link #frame} and reused every frame. */
+    private final class FrameState {
+        final MemorySegment pImageIndex = a.allocate(JAVA_INT);
+        final MemorySegment pFence = a.allocate(JAVA_LONG);
+        final MemorySegment waitSems = a.allocate(JAVA_LONG);
+        final MemorySegment signalSems = a.allocate(JAVA_LONG);
+        final MemorySegment waitStages = a.allocate(JAVA_INT);
+        final MemorySegment pCmd = a.allocate(ADDRESS);
+        final MemorySegment pSwapchains = a.allocate(JAVA_LONG);
+        final MemorySegment submit = a.allocate(SUBMIT);
+        final MemorySegment presentInfo = a.allocate(PRESENT);
+        final MemorySegment pVertexBuffers = a.allocate(JAVA_LONG);
+        final MemorySegment pVertexOffsets = a.allocate(JAVA_LONG);
+        final MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
+        final MemorySegment pViewport = a.allocate(VIEWPORT);
+        final MemorySegment pScissor = a.allocate(RECT2D);
+        final MemorySegment clear = a.allocate(JAVA_FLOAT, 4);
+        final MemorySegment beginInfo = a.allocate(CMD_BEGIN);
+        final MemorySegment rpBegin = a.allocate(RENDER_PASS_BEGIN);
+        MemorySegment pushSeg = MemorySegment.NULL;
+        int pushCapacity = 0;
+        long previousNanos = System.nanoTime();
+        boolean shown = false;
+
+        FrameState() {
+            pFence.set(JAVA_LONG, 0, inFlight);
+            waitSems.set(JAVA_LONG, 0, imageAvailable);
+            signalSems.set(JAVA_LONG, 0, renderFinished);
+            waitStages.set(JAVA_INT, 0, Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            pCmd.set(ADDRESS, 0, cmd);
+            pVertexOffsets.set(JAVA_LONG, 0, 0L);
+
+            si(submit, SUBMIT, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
+            si(submit, SUBMIT, "waitSemaphoreCount", 1);
+            sa(submit, SUBMIT, "pWaitSemaphores", waitSems);
+            sa(submit, SUBMIT, "pWaitDstStageMask", waitStages);
+            si(submit, SUBMIT, "commandBufferCount", 1);
+            sa(submit, SUBMIT, "pCommandBuffers", pCmd);
+            si(submit, SUBMIT, "signalSemaphoreCount", 1);
+            sa(submit, SUBMIT, "pSignalSemaphores", signalSems);
+
+            si(presentInfo, PRESENT, "sType", Vk.STRUCTURE_TYPE_PRESENT_INFO_KHR);
+            si(presentInfo, PRESENT, "waitSemaphoreCount", 1);
+            sa(presentInfo, PRESENT, "pWaitSemaphores", signalSems);
+            si(presentInfo, PRESENT, "swapchainCount", 1);
+            sa(presentInfo, PRESENT, "pSwapchains", pSwapchains);
+            sa(presentInfo, PRESENT, "pImageIndices", pImageIndex);
+
+            sf(pViewport, VIEWPORT, "maxDepth", 1.0f);
+
+            si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+            si(rpBegin, RENDER_PASS_BEGIN, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+            sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", renderPass);
+            si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
+            sa(rpBegin, RENDER_PASS_BEGIN, "pClearValues", clear);
+        }
     }
 
     private void rebuild() {
