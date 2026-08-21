@@ -17,6 +17,36 @@ public interface NativeWindow extends AutoCloseable {
     /** Pump the OS event queue once. Returns {@code false} once the window has been asked to close. */
     boolean pumpEvents();
 
+    // ---- Outer bounds, for persisting and restoring window placement. The rect these describe is the same one
+    // WindowConfig's width/height/x/y request, so save-then-recreate round-trips exactly (a client-rect size fed
+    // back as an outer size would shrink the window by its frame on every launch). Defaults are for platforms
+    // without placement support yet: they report nothing useful and move nothing, rather than throwing.
+
+    /** Screen x of the window's outer top-left, or 0 where the platform doesn't report placement yet. */
+    default int screenX() {
+        return 0;
+    }
+
+    /** Screen y of the window's outer top-left, or 0 where the platform doesn't report placement yet. */
+    default int screenY() {
+        return 0;
+    }
+
+    /** Outer width of the window (frame included), or {@link #width()} where placement isn't supported yet. */
+    default int outerWidth() {
+        return width();
+    }
+
+    /** Outer height of the window (frame included), or {@link #height()} where placement isn't supported yet. */
+    default int outerHeight() {
+        return height();
+    }
+
+    /** Move the window's outer top-left to screen {@code (x, y)}. No-op where placement isn't supported yet. */
+    default void setPosition(int x, int y) {
+        // no-op by default
+    }
+
     /**
      * Make the window visible. Idempotent. A window is created hidden so that the (potentially slow) Vulkan
      * bring-up runs while nothing is on screen; the present loop calls this once the first frame is ready, so the

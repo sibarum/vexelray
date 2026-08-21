@@ -98,9 +98,17 @@ public final class Win32Window implements NativeWindow {
             // Created hidden (no WS_VISIBLE): Vulkan bring-up runs off screen, then the present loop calls show()
             // once the first frame is ready, so the window never flashes blank/"Not Responding" during init.
             int style = User32.WS_OVERLAPPEDWINDOW;
+            // An owner makes this an *owned* window (hWndParent on a top-level style is ownership, not child-ness):
+            // no taskbar button of its own, always above the owner, raised/minimized/destroyed with it. The whole
+            // "many windows, one application" feel is this one argument — nothing else to manage.
+            MemorySegment owner = config.owner() != 0L
+                    ? MemorySegment.ofAddress(config.owner())
+                    : MemorySegment.NULL;
+            int x = config.x() == WindowConfig.UNPOSITIONED ? User32.CW_USEDEFAULT : config.x();
+            int y = config.y() == WindowConfig.UNPOSITIONED ? User32.CW_USEDEFAULT : config.y();
             this.hwnd = User32.createWindowExW(0, classNameSeg, title, style,
-                    User32.CW_USEDEFAULT, User32.CW_USEDEFAULT, config.width(), config.height(),
-                    MemorySegment.NULL, MemorySegment.NULL, hInstance, MemorySegment.NULL);
+                    x, y, config.width(), config.height(),
+                    owner, MemorySegment.NULL, hInstance, MemorySegment.NULL);
         }
 
         WINDOWS.put(hwnd.address(), this);
@@ -272,6 +280,40 @@ public final class Win32Window implements NativeWindow {
             case SHIFT -> 0x10;
             case ESCAPE -> 0x1B;
         };
+    }
+
+    @Override
+    public int screenX() {
+        return windowRect(User32::rectLeft);
+    }
+
+    @Override
+    public int screenY() {
+        return windowRect(User32::rectTop);
+    }
+
+    @Override
+    public int outerWidth() {
+        return windowRect(User32::rectSpanX);
+    }
+
+    @Override
+    public int outerHeight() {
+        return windowRect(User32::rectSpanY);
+    }
+
+    /** Read one value off the window's outer rect — same rect WindowConfig requests, so bounds round-trip. */
+    private int windowRect(java.util.function.ToIntFunction<MemorySegment> field) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment rect = temp.allocate(User32.RECT);
+            User32.getWindowRect(hwnd, rect);
+            return field.applyAsInt(rect);
+        }
+    }
+
+    @Override
+    public void setPosition(int x, int y) {
+        User32.moveWindow(hwnd, x, y);
     }
 
     @Override

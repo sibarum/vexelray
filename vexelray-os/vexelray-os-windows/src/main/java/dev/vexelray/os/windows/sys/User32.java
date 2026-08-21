@@ -105,6 +105,8 @@ public final class User32 {
     private static final VarHandle WC_hbrBackground = fieldHandle(WNDCLASSEXW, "hbrBackground");
     private static final VarHandle WC_lpszClassName = fieldHandle(WNDCLASSEXW, "lpszClassName");
 
+    private static final VarHandle RECT_left   = fieldHandle(RECT, "left");
+    private static final VarHandle RECT_top    = fieldHandle(RECT, "top");
     private static final VarHandle RECT_right  = fieldHandle(RECT, "right");
     private static final VarHandle RECT_bottom = fieldHandle(RECT, "bottom");
 
@@ -136,6 +138,10 @@ public final class User32 {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
     private static final MethodHandle GetClientRect = Ffi.downcall(LIB, "GetClientRect",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle GetWindowRect = Ffi.downcall(LIB, "GetWindowRect",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle SetWindowPos = Ffi.downcall(LIB, "SetWindowPos",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
     private static final MethodHandle PeekMessageW = Ffi.downcall(LIB, "PeekMessageW",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
     private static final MethodHandle TranslateMessage = Ffi.downcall(LIB, "TranslateMessage",
@@ -167,6 +173,26 @@ public final class User32 {
         WC_hbrBackground.set(wc, hbrBackground);
         WC_lpszClassName.set(wc, className);
         return wc;
+    }
+
+    /** The {@code left} of a filled {@code RECT} (screen x for GetWindowRect). */
+    public static int rectLeft(MemorySegment rect) {
+        return (int) RECT_left.get(rect);
+    }
+
+    /** The {@code top} of a filled {@code RECT} (screen y for GetWindowRect). */
+    public static int rectTop(MemorySegment rect) {
+        return (int) RECT_top.get(rect);
+    }
+
+    /** The width of a filled {@code RECT} (right − left) — outer width for GetWindowRect. */
+    public static int rectSpanX(MemorySegment rect) {
+        return (int) RECT_right.get(rect) - (int) RECT_left.get(rect);
+    }
+
+    /** The height of a filled {@code RECT} (bottom − top) — outer height for GetWindowRect. */
+    public static int rectSpanY(MemorySegment rect) {
+        return (int) RECT_bottom.get(rect) - (int) RECT_top.get(rect);
     }
 
     /** The client width of a filled {@code RECT} (right − left, and left is 0 for GetClientRect). */
@@ -266,6 +292,36 @@ public final class User32 {
             }
         } catch (Throwable t) {
             throw NativeException.rethrow("GetClientRect", t);
+        }
+    }
+
+    /** Fill {@code rect} with the window's outer rect, in screen coordinates. */
+    public static void getWindowRect(MemorySegment hwnd, MemorySegment rect) {
+        try {
+            int ok = (int) GetWindowRect.invokeExact(hwnd, rect);
+            if (ok == 0) {
+                throw new NativeException("GetWindowRect failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetWindowRect", t);
+        }
+    }
+
+    /** SetWindowPos flags: keep size, keep z-order, don't steal activation — a pure move. */
+    public static final int SWP_NOSIZE     = 0x0001;
+    public static final int SWP_NOZORDER   = 0x0004;
+    public static final int SWP_NOACTIVATE = 0x0010;
+
+    /** Move the window's outer top-left to screen {@code (x, y)} without resizing, re-stacking or activating. */
+    public static void moveWindow(MemorySegment hwnd, int x, int y) {
+        try {
+            int ok = (int) SetWindowPos.invokeExact(hwnd, MemorySegment.NULL, x, y, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            if (ok == 0) {
+                throw new NativeException("SetWindowPos failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetWindowPos", t);
         }
     }
 
