@@ -12,17 +12,21 @@ package dev.vexelray.os;
  *
  * <p><b>Position.</b> {@code x}/{@code y} place the window's outer top-left in screen coordinates;
  * {@link #UNPOSITIONED} lets the OS choose. Width/height size the <em>outer</em> rect, which is what
- * {@link NativeWindow#screenX()}/{@code outerWidth()} report back — so persisted bounds round-trip exactly.
+ * {@link NativeWindow#screenX()}/{@code outerWidth()} report back — so persisted bounds round-trip exactly. That
+ * stays true under {@link Decorations#CLIENT}: the frame is still there and still sized, it is simply drawn by
+ * the application, so bounds saved from a system-framed window restore unchanged into a client-framed one.
  *
- * @param title      the window title
- * @param width      requested width (outer rect)
- * @param height     requested height (outer rect)
- * @param resizable  whether the user may resize the window
- * @param owner      raw OS handle of the owning window, or 0 for an ordinary top-level window
- * @param x          screen x of the outer top-left, or {@link #UNPOSITIONED} for OS placement
- * @param y          screen y of the outer top-left, or {@link #UNPOSITIONED} for OS placement
+ * @param title       the window title
+ * @param width       requested width (outer rect)
+ * @param height      requested height (outer rect)
+ * @param resizable   whether the user may resize the window
+ * @param owner       raw OS handle of the owning window, or 0 for an ordinary top-level window
+ * @param x           screen x of the outer top-left, or {@link #UNPOSITIONED} for OS placement
+ * @param y           screen y of the outer top-left, or {@link #UNPOSITIONED} for OS placement
+ * @param decorations who draws the frame (see {@link Decorations})
  */
-public record WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y) {
+public record WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
+                           Decorations decorations) {
 
     /** "Let the OS place it" — the default for {@link #x}/{@link #y}. */
     public static final int UNPOSITIONED = Integer.MIN_VALUE;
@@ -34,11 +38,19 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("window size must be positive, got " + width + "x" + height);
         }
+        if (decorations == null) {
+            decorations = Decorations.SYSTEM;
+        }
     }
 
-    /** An ordinary, unowned, OS-placed window. */
+    /** An ordinary, unowned, OS-placed, OS-decorated window. */
     public WindowConfig(String title, int width, int height, boolean resizable) {
-        this(title, width, height, resizable, 0L, UNPOSITIONED, UNPOSITIONED);
+        this(title, width, height, resizable, 0L, UNPOSITIONED, UNPOSITIONED, Decorations.SYSTEM);
+    }
+
+    /** The five-argument form kept for callers that set ownership and placement only. */
+    public WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y) {
+        this(title, width, height, resizable, owner, x, y, Decorations.SYSTEM);
     }
 
     /** A resizable window with the given title and size. */
@@ -48,11 +60,16 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
 
     /** This window as a satellite of {@code ownerHandle} (see the class doc for what ownership means). */
     public WindowConfig ownedBy(long ownerHandle) {
-        return new WindowConfig(title, width, height, resizable, ownerHandle, x, y);
+        return new WindowConfig(title, width, height, resizable, ownerHandle, x, y, decorations);
     }
 
     /** This window placed at screen {@code (x, y)} instead of OS placement. */
     public WindowConfig at(int x, int y) {
-        return new WindowConfig(title, width, height, resizable, owner, x, y);
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations);
+    }
+
+    /** This window with the given frame ownership — {@link Decorations#CLIENT} to draw the chrome yourself. */
+    public WindowConfig decorations(Decorations decorations) {
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations);
     }
 }

@@ -210,13 +210,39 @@ public final class WindowedPresenter implements AutoCloseable {
      * swapchain, so presenters on a shared {@link VulkanDevice} interleave safely on the calling thread.
      */
     public boolean frame(int pushConstantBytes, Frame perFrame) {
+        if (!window.pumpEvents()) {
+            return false;
+        }
+        return render(pushConstantBytes, perFrame);
+    }
+
+    /**
+     * {@link #frame} without the pump: acquire → record → submit → present one frame against the window as it
+     * currently is. This is the entry point for frames the <em>platform</em> asks for rather than the host loop —
+     * a Win32 modal move/resize, a macOS live resize — where the pump is already running one level up, and
+     * pumping again from in here would re-enter the OS's own loop ({@link NativeWindow#setFrameSink}).
+     *
+     * <p>Re-entrancy is refused rather than queued: a render requested while one is in flight returns without
+     * drawing, because a platform timer that outruns the frame time must not stack frames inside one another
+     * over a single command buffer and fence.
+     */
+    public boolean render(int pushConstantBytes, Frame perFrame) {
+        if (rendering) {
+            return true;
+        }
+        rendering = true;
+        try {
+            return renderOnce(pushConstantBytes, perFrame);
+        } finally {
+            rendering = false;
+        }
+    }
+
+    private boolean renderOnce(int pushConstantBytes, Frame perFrame) {
         if (state == null) {
             state = new FrameState();
         }
         FrameState s = state;
-        if (!window.pumpEvents()) {
-            return false;
-        }
         if (pushConstantBytes > s.pushCapacity) {
             s.pushSeg = a.allocate(pushConstantBytes);
             s.pushCapacity = pushConstantBytes;
@@ -293,6 +319,8 @@ public final class WindowedPresenter implements AutoCloseable {
     }
 
     private FrameState state;
+    /** Guards render(): a platform-pulled frame must never nest inside the one already in flight. */
+    private boolean rendering;
 
     /** The loop-invariant native structs, built once on the first {@link #frame} and reused every frame. */
     private final class FrameState {

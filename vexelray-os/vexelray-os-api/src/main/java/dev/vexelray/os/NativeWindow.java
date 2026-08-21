@@ -69,6 +69,72 @@ public interface NativeWindow extends AutoCloseable {
         // no-op by default
     }
 
+    // ---- Client-drawn chrome. All defaults, so a platform that has not implemented Decorations.CLIENT yet
+    // simply keeps its system frame: the window still works, it is only decorated by the OS.
+
+    /**
+     * Declare where this window's own drawing is caption and where it is content, for a
+     * {@link Decorations#CLIENT} window. Push the regions once per frame from the laid-out UI; the platform
+     * answers the window manager's hit-test from them, so move, resize, snap, double-click-to-maximize and the
+     * system menu keep working against application-drawn chrome. Ignored by a system-decorated window.
+     */
+    default void setHitRegions(HitRegions regions) {
+        // no-op by default
+    }
+
+    /**
+     * Install the callback the platform invokes when it must paint outside the host's own loop — while the
+     * window manager runs a modal move or resize, or during a live resize. Without it a window drawn by a
+     * pull-style frame loop freezes for the duration of a drag, because that loop is suspended inside the
+     * platform's nested one; with it, the platform pulls a frame instead.
+     *
+     * <p>The callback renders <b>one</b> frame and must not pump events: it is already being called from inside
+     * the event pump. Pass {@code null} to remove it.
+     */
+    default void setFrameSink(Runnable renderOneFrame) {
+        // no-op by default
+    }
+
+    /** Minimize (iconify) the window — the action an application-drawn minimize button performs. */
+    default void minimize() {
+        // no-op by default
+    }
+
+    /** Maximize the window to the current monitor's work area. */
+    default void maximize() {
+        // no-op by default
+    }
+
+    /** Restore the window from maximized (or minimized) back to its previous bounds. */
+    default void restore() {
+        // no-op by default
+    }
+
+    /** Whether the window is currently maximized — what an application-drawn maximize button toggles on. */
+    default boolean isMaximized() {
+        return false;
+    }
+
+    /**
+     * Whether the window is minimized. A minimized window has no client area — zero by zero — so there is
+     * nothing to present to, and a renderer that carries on drawing to it is at best doing pointless work and at
+     * worst hanging on a swapchain whose surface no longer has an extent. Hosts skip their draw while this is
+     * true; the default {@code false} keeps platforms that cannot report it rendering as they always did.
+     */
+    default boolean isMinimized() {
+        return false;
+    }
+
+    /**
+     * Ask the window to close, exactly as its system close button would: the request travels the ordinary route,
+     * so {@link #pumpEvents()} reports the close on the next pump and the host tears the window down on its own
+     * terms. This is what an application-drawn close button calls — never {@link #close()}, which destroys OS
+     * resources the host may still be presenting to.
+     */
+    default void requestClose() {
+        // no-op by default
+    }
+
     /**
      * Create a {@code VkSurfaceKHR} for this window. The OS module owns the platform surface struct and its
      * {@code vkCreate*SurfaceKHR} entry point; the Vulkan module stays platform-agnostic and only supplies the

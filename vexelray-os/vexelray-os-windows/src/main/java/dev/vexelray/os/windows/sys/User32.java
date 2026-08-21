@@ -36,6 +36,8 @@ public final class User32 {
 
     public static final int WS_OVERLAPPEDWINDOW = 0x00CF0000;
     public static final int WS_VISIBLE          = 0x10000000;
+    /** {@code WS_POPUP} — a frameless top-level window: no caption, no borders, no window-manager sizing. */
+    public static final int WS_POPUP            = 0x80000000;
     public static final int CW_USEDEFAULT       = 0x80000000;
 
     public static final int SW_SHOW = 5;
@@ -347,6 +349,209 @@ public final class User32 {
             long ignored = (long) DispatchMessageW.invokeExact(msg);
         } catch (Throwable t) {
             throw NativeException.rethrow("DispatchMessageW", t);
+        }
+    }
+
+    // ---- Client-drawn chrome (Decorations.CLIENT) -----------------------------------------------------------
+    //
+    // The non-client messages a window must answer to draw its own frame while Windows keeps running the frame:
+    // WM_NCCALCSIZE decides how much of the window is client area, WM_NCHITTEST names what is under the pointer,
+    // and the size/move loop messages let a pull-style render loop keep painting while Windows drags the window.
+
+    public static final int WM_MOVE          = 0x0003;
+    public static final int WM_NCCALCSIZE    = 0x0083;
+    public static final int WM_NCHITTEST     = 0x0084;
+    public static final int WM_NCLBUTTONDOWN = 0x00A1;
+    public static final int WM_TIMER         = 0x0113;
+    public static final int WM_ENTERSIZEMOVE = 0x0231;
+    public static final int WM_EXITSIZEMOVE  = 0x0232;
+
+    /** {@code WM_SIZE} wParam: the window was minimized (its client size is 0 and must not be presented to). */
+    public static final int SIZE_MINIMIZED = 1;
+
+    // Hit-test codes returned from WM_NCHITTEST. HTCLIENT is declared above with WM_SETCURSOR.
+    public static final int HTCAPTION     = 2;
+    public static final int HTMAXBUTTON   = 9;
+    public static final int HTLEFT        = 10;
+    public static final int HTRIGHT       = 11;
+    public static final int HTTOP         = 12;
+    public static final int HTTOPLEFT     = 13;
+    public static final int HTTOPRIGHT    = 14;
+    public static final int HTBOTTOM      = 15;
+    public static final int HTBOTTOMLEFT  = 16;
+    public static final int HTBOTTOMRIGHT = 17;
+
+    /** {@code GetSystemMetrics} indices: the resize frame thickness, plus the invisible padding around it. */
+    public static final int SM_CXSIZEFRAME    = 32;
+    public static final int SM_CYSIZEFRAME    = 33;
+    public static final int SM_CXPADDEDBORDER = 92;
+
+    public static final int SW_MAXIMIZE = 3;
+    public static final int SW_MINIMIZE = 6;
+    public static final int SW_RESTORE  = 9;
+
+    public static final int SWP_NOMOVE       = 0x0002;
+    public static final int SWP_FRAMECHANGED = 0x0020;
+
+    /** {@code POINT} — x/y, 8 bytes. */
+    public static final GroupLayout POINT = MemoryLayout.structLayout(
+            JAVA_INT.withName("x"),
+            JAVA_INT.withName("y")
+    ).withName("POINT");
+
+    private static final VarHandle POINT_x = fieldHandle(POINT, "x");
+    private static final VarHandle POINT_y = fieldHandle(POINT, "y");
+
+    private static final MethodHandle GetSystemMetrics = Ffi.downcall(LIB, "GetSystemMetrics",
+            FunctionDescriptor.of(JAVA_INT, JAVA_INT));
+    private static final MethodHandle ScreenToClient = Ffi.downcall(LIB, "ScreenToClient",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle IsZoomed = Ffi.downcall(LIB, "IsZoomed",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle IsIconic = Ffi.downcall(LIB, "IsIconic",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle SetTimer = Ffi.downcall(LIB, "SetTimer",
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS));
+    private static final MethodHandle KillTimer = Ffi.downcall(LIB, "KillTimer",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+    private static final MethodHandle PostMessageW = Ffi.downcall(LIB, "PostMessageW",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG));
+
+    /** A system metric ({@code SM_*}). */
+    public static int getSystemMetrics(int index) {
+        try {
+            return (int) GetSystemMetrics.invokeExact(index);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetSystemMetrics", t);
+        }
+    }
+
+    /** Allocate a {@code POINT} holding {@code (x, y)}. */
+    public static MemorySegment allocPoint(SegmentAllocator allocator, int x, int y) {
+        MemorySegment p = allocator.allocate(POINT);
+        POINT_x.set(p, x);
+        POINT_y.set(p, y);
+        return p;
+    }
+
+    public static int pointX(MemorySegment point) {
+        return (int) POINT_x.get(point);
+    }
+
+    public static int pointY(MemorySegment point) {
+        return (int) POINT_y.get(point);
+    }
+
+    /** Convert a screen-space {@code POINT} in place to the window's client space. */
+    public static void screenToClient(MemorySegment hwnd, MemorySegment point) {
+        try {
+            int ok = (int) ScreenToClient.invokeExact(hwnd, point);
+            if (ok == 0) {
+                throw new NativeException("ScreenToClient failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("ScreenToClient", t);
+        }
+    }
+
+    /** Whether the window is maximized. */
+    public static boolean isZoomed(MemorySegment hwnd) {
+        try {
+            return (int) IsZoomed.invokeExact(hwnd) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("IsZoomed", t);
+        }
+    }
+
+    /** Whether the window is minimized. */
+    public static boolean isIconic(MemorySegment hwnd) {
+        try {
+            return (int) IsIconic.invokeExact(hwnd) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("IsIconic", t);
+        }
+    }
+
+    /** Start (or restart) a window timer of {@code id} firing every {@code elapseMillis}. */
+    public static void setTimer(MemorySegment hwnd, long id, int elapseMillis) {
+        try {
+            long created = (long) SetTimer.invokeExact(hwnd, id, elapseMillis, MemorySegment.NULL);
+            if (created == 0L) {
+                throw new NativeException("SetTimer failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetTimer", t);
+        }
+    }
+
+    /** Stop a window timer. Silent if it was never started — stopping twice is not an error worth raising. */
+    public static void killTimer(MemorySegment hwnd, long id) {
+        try {
+            int ignored = (int) KillTimer.invokeExact(hwnd, id);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("KillTimer", t);
+        }
+    }
+
+    /** Post a message to the window's queue (asynchronous — it is handled by a later pump). */
+    public static void postMessageW(MemorySegment hwnd, int msg, long wParam, long lParam) {
+        try {
+            int ok = (int) PostMessageW.invokeExact(hwnd, msg, wParam, lParam);
+            if (ok == 0) {
+                throw new NativeException("PostMessageW failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("PostMessageW", t);
+        }
+    }
+
+    /**
+     * Tell Windows the window's frame has changed, so it recalculates the non-client area (a fresh
+     * WM_NCCALCSIZE) without moving, sizing, re-stacking or activating the window. This is what makes a
+     * client-drawn frame take effect on a window that has already been created.
+     */
+    public static void frameChanged(MemorySegment hwnd) {
+        try {
+            int ok = (int) SetWindowPos.invokeExact(hwnd, MemorySegment.NULL, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            if (ok == 0) {
+                throw new NativeException("SetWindowPos failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetWindowPos", t);
+        }
+    }
+
+    /** Inset a {@code RECT} in place by {@code dx} horizontally and {@code dy} vertically. */
+    public static void insetRect(MemorySegment rect, int dx, int dy) {
+        RECT_left.set(rect, (int) RECT_left.get(rect) + dx);
+        RECT_top.set(rect, (int) RECT_top.get(rect) + dy);
+        RECT_right.set(rect, (int) RECT_right.get(rect) - dx);
+        RECT_bottom.set(rect, (int) RECT_bottom.get(rect) - dy);
+    }
+
+    /**
+     * View the {@code RECT} at a raw address — for the structs Windows passes by pointer in a message parameter
+     * (the {@code NCCALCSIZE_PARAMS} whose first member is the proposed client rect). Keeping the reinterpret
+     * inside the binding is what stops message handlers from doing pointer arithmetic of their own.
+     */
+    public static MemorySegment rectAt(long address) {
+        return MemorySegment.ofAddress(address).reinterpret(RECT.byteSize());
+    }
+
+    private static final MethodHandle SendMessageW = Ffi.downcall(LIB, "SendMessageW",
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG));
+
+    /**
+     * Send a message and return the window procedure's result, synchronously. Used to ask a window the same
+     * questions Windows asks it — notably {@code WM_NCHITTEST}, which is how a client-drawn frame can be
+     * verified against a live window rather than only against the pure region logic.
+     */
+    public static long sendMessageW(MemorySegment hwnd, int msg, long wParam, long lParam) {
+        try {
+            return (long) SendMessageW.invokeExact(hwnd, msg, wParam, lParam);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SendMessageW", t);
         }
     }
 }

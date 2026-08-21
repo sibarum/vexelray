@@ -33,7 +33,8 @@ vexelray                 parent (pom)
 │    dev.vexelray.shader    ShaderComposer (engine concept -> core IR), ComposedShader (lowers via
 │                           CoreToSpirv to a SPIR-V byte[]), ShaderKey (cache)
 ├─ vexelray-os           OS integration (nested aggregator) — direct Panama bindings, no LWJGL/GLFW
-│    ├─ vexelray-os-api     platform-agnostic API: NativePlatform, NativeWindow, WindowConfig, Ffi helper
+│    ├─ vexelray-os-api     platform-agnostic API: NativePlatform, NativeWindow, WindowConfig, Ffi helper,
+│                           Decorations + HitRegions (application-drawn window chrome)
 │    ├─ vexelray-os-windows WindowsPlatform  (user32/kernel32 + VK_KHR_win32_surface)
 │    ├─ vexelray-os-linux   LinuxPlatform    (libX11 + VK_KHR_xlib_surface)      — skeleton
 │    └─ vexelray-os-macos   MacosPlatform    (AppKit/QuartzCore + VK_EXT_metal_surface) — skeleton

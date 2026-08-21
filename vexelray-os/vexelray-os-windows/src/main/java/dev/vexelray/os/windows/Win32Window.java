@@ -1,10 +1,13 @@
 package dev.vexelray.os.windows;
 
+import dev.vexelray.os.Decorations;
+import dev.vexelray.os.HitRegions;
 import dev.vexelray.os.Key;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
 import dev.vexelray.os.ffi.Ffi;
 import dev.vexelray.os.ffi.NativeException;
+import dev.vexelray.os.windows.sys.Dwmapi;
 import dev.vexelray.os.windows.sys.Gdi32;
 import dev.vexelray.os.windows.sys.Kernel32;
 import dev.vexelray.os.windows.sys.User32;
@@ -32,6 +35,21 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * {@code VkSurfaceKHR} through {@code VK_KHR_win32_surface}. All native access follows the binding convention —
  * downcalls via {@link User32}/{@link Kernel32}, the window procedure as a single {@link Ffi#upcall} bound to the
  * process-lifetime arena, and every struct field reached through a named layout. See {@code docs/native-bindings.md}.
+ *
+ * <p><b>Client-drawn chrome</b> ({@link Decorations#CLIENT}) is three messages, and deliberately nothing more.
+ * The window keeps the ordinary {@code WS_OVERLAPPEDWINDOW} style, so Windows keeps running the frame — snap,
+ * Win+arrow, double-click-to-maximize, the system menu, the work-area clamp when maximized, per-monitor DPI
+ * transitions. What changes is only who paints it, and what the pointer is told it is over:
+ *
+ * <ul>
+ *   <li>{@code WM_NCCALCSIZE} hands the whole window rect to the client area, so the GUI draws where the title
+ *       bar was;</li>
+ *   <li>{@code WM_NCHITTEST} answers from the {@link HitRegions} the application pushes each frame, so the
+ *       window manager still knows which of the application's own pixels are caption and which are content;</li>
+ *   <li>the size/move loop messages pull frames through {@link #setFrameSink}, because Windows drags a window
+ *       inside a nested message loop that would otherwise leave a pull-style render loop suspended — the window
+ *       would freeze for as long as the drag lasted.</li>
+ * </ul>
  */
 public final class Win32Window implements NativeWindow {
 
@@ -50,6 +68,10 @@ public final class Win32Window implements NativeWindow {
 
     private static final FunctionDescriptor WNDPROC_DESC =
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG);
+
+    /** Timer id for the frames pulled during a modal move/resize, and its period (a ~120 Hz ceiling). */
+    private static final long SIZEMOVE_TIMER = 1L;
+    private static final int SIZEMOVE_TIMER_MS = 8;
 
     // ---- VkWin32SurfaceCreateInfoKHR (40 bytes, x64) --------------------------------------------------------
 
@@ -81,23 +103,35 @@ public final class Win32Window implements NativeWindow {
     private final MemorySegment hInstance;
     private final MemorySegment hwnd;
     private final MemorySegment msgBuffer;
+    private final Decorations decorations;
     private int width;
     private int height;
     private volatile boolean shouldClose;
     // Desired client-area cursor; read by the (message-pump-thread) window procedure on WM_SETCURSOR.
     private volatile Cursor desiredCursor = Cursor.ARROW;
+    // Caption/content geometry, republished by the application every frame and read by the window procedure.
+    private volatile HitRegions hitRegions = HitRegions.NONE;
+    // Pulls one frame while Windows owns the loop (modal move/resize).
+    private volatile Runnable frameSink;
+    private boolean rendering;
     private boolean shown;
     private final boolean[] keyDown = new boolean[256];   // indexed by Win32 virtual-key code
 
     public Win32Window(WindowConfig config) {
         this.hInstance = Kernel32.getModuleHandleW(MemorySegment.NULL);
+        this.decorations = config.decorations();
         ensureClassRegistered(hInstance);
 
         try (Arena temp = Arena.ofConfined()) {
             MemorySegment title = temp.allocateFrom(config.title(), StandardCharsets.UTF_16LE);
             // Created hidden (no WS_VISIBLE): Vulkan bring-up runs off screen, then the present loop calls show()
             // once the first frame is ready, so the window never flashes blank/"Not Responding" during init.
-            int style = User32.WS_OVERLAPPEDWINDOW;
+            //
+            // A CLIENT-decorated window keeps the overlapped style on purpose. The frame is what carries the
+            // window-manager behaviour — snap, keyboard move/size, the maximize clamp to the work area — so
+            // making the window a bare popup to be rid of the title bar would throw all of that away and hand us
+            // the job of re-implementing it. The frame stays; it is simply not drawn (see WM_NCCALCSIZE).
+            int style = decorations == Decorations.NONE ? User32.WS_POPUP : User32.WS_OVERLAPPEDWINDOW;
             // An owner makes this an *owned* window (hWndParent on a top-level style is ownership, not child-ness):
             // no taskbar button of its own, always above the owner, raised/minimized/destroyed with it. The whole
             // "many windows, one application" feel is this one argument — nothing else to manage.
@@ -112,6 +146,14 @@ public final class Win32Window implements NativeWindow {
         }
 
         WINDOWS.put(hwnd.address(), this);
+        if (decorations == Decorations.CLIENT) {
+            // Only now can WM_NCCALCSIZE reach this instance — the routing map is keyed by an hwnd that did not
+            // exist until CreateWindowExW returned — so the frame Windows computed during creation is still the
+            // system one. Ask for a recalculation to replace it with ours, and hand the compositor a one-pixel
+            // frame back so the window keeps its shadow, its rounded corners and its system animations.
+            Dwmapi.extendFrameIntoClientArea(hwnd, 0, 0, 1, 0);
+            User32.frameChanged(hwnd);
+        }
         this.msgBuffer = arena.allocate(User32.MSG);
         readClientSize();
 
@@ -147,8 +189,16 @@ public final class Win32Window implements NativeWindow {
         if (window != null) {
             switch (msg) {
                 case User32.WM_SIZE -> {
+                    if (wParam == User32.SIZE_MINIMIZED) {
+                        // A minimized window reports a 0x0 client area. Keeping the last real size is what stops
+                        // the swapchain being rebuilt at zero, and restores the window to the size it had.
+                        return 0;
+                    }
                     window.width = (int) (lParam & 0xFFFF);
                     window.height = (int) ((lParam >> 16) & 0xFFFF);
+                    // A live resize runs inside Windows' own loop: paint from here, or the window shows stale,
+                    // stretched pixels until the user lets go of the edge.
+                    window.runFrameSink();
                     return 0;
                 }
                 case User32.WM_CLOSE, User32.WM_DESTROY -> {
@@ -165,9 +215,48 @@ public final class Win32Window implements NativeWindow {
                 }
                 case User32.WM_SETCURSOR -> {
                     // Only override the client-area cursor; leave the non-client (resize borders, etc.) to Windows.
+                    // Under CLIENT decorations the resize bands and the caption are non-client by hit-test, so
+                    // this still covers exactly the pixels the GUI is answerable for.
                     if ((int) (lParam & 0xFFFF) == User32.HTCLIENT) {
                         User32.setCursor(window.desiredCursor == Cursor.TEXT ? ibeamCursor : arrowCursor);
                         return 1; // TRUE — we handled it, so Windows won't reset the class cursor
+                    }
+                }
+                case User32.WM_NCCALCSIZE -> {
+                    // wParam FALSE asks for a rect conversion only, which the default handling does correctly.
+                    if (window.decorations == Decorations.CLIENT && wParam != 0) {
+                        window.calcClientFrame(hwnd, lParam);
+                        return 0;
+                    }
+                }
+                case User32.WM_NCHITTEST -> {
+                    if (window.decorations == Decorations.CLIENT) {
+                        return window.hitTest(hwnd, lParam);
+                    }
+                }
+                case User32.WM_NCLBUTTONDOWN -> {
+                    // The maximize button is the application's own: it is reported as HTMAXBUTTON only so that
+                    // Windows 11 offers its Snap Layouts flyout on hover. Swallow the press, or the default
+                    // caption-button handling maximizes behind the application's back — the click reaches the GUI
+                    // through the ordinary input path, and the application decides what its button does.
+                    if (window.decorations == Decorations.CLIENT && wParam == User32.HTMAXBUTTON) {
+                        return 0;
+                    }
+                }
+                case User32.WM_ENTERSIZEMOVE -> {
+                    // Windows is about to run a message loop of its own until the drag ends. The host's loop is
+                    // suspended for the duration, so frames have to be pulled from in here instead.
+                    User32.setTimer(hwnd, SIZEMOVE_TIMER, SIZEMOVE_TIMER_MS);
+                    return 0;
+                }
+                case User32.WM_EXITSIZEMOVE -> {
+                    User32.killTimer(hwnd, SIZEMOVE_TIMER);
+                    return 0;
+                }
+                case User32.WM_TIMER -> {
+                    if (wParam == SIZEMOVE_TIMER) {
+                        window.runFrameSink();
+                        return 0;
                     }
                 }
                 default -> { /* fall through */ }
@@ -176,9 +265,119 @@ public final class Win32Window implements NativeWindow {
         return User32.defWindowProcW(hwnd, msg, wParam, lParam);
     }
 
+    /**
+     * Answer {@code WM_NCCALCSIZE} for a client-drawn frame: the client area becomes the whole window rect, so
+     * the proposed rectangle is returned untouched.
+     *
+     * <p>Except when maximized. A maximized window's rect deliberately overhangs the monitor by the frame
+     * thickness — invisible while the frame is the OS's, and a title bar sliced off the top of the screen once it
+     * is the application's. Insetting by that thickness is what puts the client area back on the monitor.
+     */
+    private void calcClientFrame(MemorySegment hwnd, long lParam) {
+        if (!User32.isZoomed(hwnd)) {
+            return;   // client == window: nothing to adjust
+        }
+        int frame = frameThickness();
+        User32.insetRect(User32.rectAt(lParam), frame, frame);
+    }
+
+    /** Answer {@code WM_NCHITTEST} from the regions the application published. */
+    private long hitTest(MemorySegment hwnd, long lParam) {
+        HitRegions regions = hitRegions;
+        int border = regions.resizeBorder() > 0 ? regions.resizeBorder() : frameThickness();
+        int px;
+        int py;
+        try (Arena temp = Arena.ofConfined()) {
+            // Screen coordinates, and signed: a window on a monitor left of or above the primary has negative ones.
+            MemorySegment point = User32.allocPoint(temp,
+                    (short) (lParam & 0xFFFF), (short) ((lParam >> 16) & 0xFFFF));
+            User32.screenToClient(hwnd, point);
+            px = User32.pointX(point);
+            py = User32.pointY(point);
+        }
+        return switch (regions.zone(px, py, width, height, User32.isZoomed(hwnd), border)) {
+            case CAPTION -> User32.HTCAPTION;
+            case MAXIMIZE_BUTTON -> User32.HTMAXBUTTON;
+            case TOP -> User32.HTTOP;
+            case BOTTOM -> User32.HTBOTTOM;
+            case LEFT -> User32.HTLEFT;
+            case RIGHT -> User32.HTRIGHT;
+            case TOP_LEFT -> User32.HTTOPLEFT;
+            case TOP_RIGHT -> User32.HTTOPRIGHT;
+            case BOTTOM_LEFT -> User32.HTBOTTOMLEFT;
+            case BOTTOM_RIGHT -> User32.HTBOTTOMRIGHT;
+            case CLIENT -> User32.HTCLIENT;
+        };
+    }
+
+    /** The system frame thickness — the resize band, plus the invisible padded border Windows adds around it. */
+    private static int frameThickness() {
+        return User32.getSystemMetrics(User32.SM_CXSIZEFRAME) + User32.getSystemMetrics(User32.SM_CXPADDEDBORDER);
+    }
+
+    /**
+     * Pull one frame from inside Windows' loop. Guarded against re-entry, so a frame that outruns the timer
+     * period cannot stack renders inside one another, and skipped while minimized, where there is no client area
+     * to present to.
+     */
+    private void runFrameSink() {
+        Runnable sink = frameSink;
+        if (sink == null || rendering || User32.isIconic(hwnd)) {
+            return;
+        }
+        rendering = true;
+        try {
+            sink.run();
+        } finally {
+            rendering = false;
+        }
+    }
+
     @Override
     public void setCursor(Cursor cursor) {
         this.desiredCursor = cursor == null ? Cursor.ARROW : cursor;
+    }
+
+    @Override
+    public void setHitRegions(HitRegions regions) {
+        this.hitRegions = regions == null ? HitRegions.NONE : regions;
+    }
+
+    @Override
+    public void setFrameSink(Runnable renderOneFrame) {
+        this.frameSink = renderOneFrame;
+    }
+
+    @Override
+    public void minimize() {
+        User32.showWindow(hwnd, User32.SW_MINIMIZE);
+    }
+
+    @Override
+    public void maximize() {
+        User32.showWindow(hwnd, User32.SW_MAXIMIZE);
+    }
+
+    @Override
+    public void restore() {
+        User32.showWindow(hwnd, User32.SW_RESTORE);
+    }
+
+    @Override
+    public boolean isMaximized() {
+        return User32.isZoomed(hwnd);
+    }
+
+    @Override
+    public boolean isMinimized() {
+        return User32.isIconic(hwnd);
+    }
+
+    @Override
+    public void requestClose() {
+        // Posted, not sent: the close travels the same queue the system close button uses, so it is observed by
+        // the next pumpEvents() and the host tears the window down on its own terms, not underneath this call.
+        User32.postMessageW(hwnd, User32.WM_CLOSE, 0L, 0L);
     }
 
     private void readClientSize() {
@@ -323,6 +522,7 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public void close() {
+        frameSink = null;   // nothing may pull a frame while the window is being destroyed
         WINDOWS.remove(hwnd.address());
         User32.destroyWindow(hwnd);
         arena.close();
