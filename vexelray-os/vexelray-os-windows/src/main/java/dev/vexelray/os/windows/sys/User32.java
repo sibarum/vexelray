@@ -386,6 +386,7 @@ public final class User32 {
     public static final int SM_CYSIZEFRAME    = 33;
     public static final int SM_CXPADDEDBORDER = 92;
 
+    public static final int SW_HIDE     = 0;
     public static final int SW_MAXIMIZE = 3;
     public static final int SW_MINIMIZE = 6;
     public static final int SW_RESTORE  = 9;
@@ -416,6 +417,16 @@ public final class User32 {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
     private static final MethodHandle PostMessageW = Ffi.downcall(LIB, "PostMessageW",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG));
+    private static final MethodHandle IsWindowVisible = Ffi.downcall(LIB, "IsWindowVisible",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle EnableWindow = Ffi.downcall(LIB, "EnableWindow",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
+    private static final MethodHandle SetForegroundWindow = Ffi.downcall(LIB, "SetForegroundWindow",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle SetActiveWindow = Ffi.downcall(LIB, "SetActiveWindow",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle BringWindowToTop = Ffi.downcall(LIB, "BringWindowToTop",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
 
     /** A system metric ({@code SM_*}). */
     public static int getSystemMetrics(int index) {
@@ -552,6 +563,45 @@ public final class User32 {
             return (long) SendMessageW.invokeExact(hwnd, msg, wParam, lParam);
         } catch (Throwable t) {
             throw NativeException.rethrow("SendMessageW", t);
+        }
+    }
+
+    /** Whether the window carries {@code WS_VISIBLE} — false while hidden with {@link #SW_HIDE}. */
+    public static boolean isWindowVisible(MemorySegment hwnd) {
+        try {
+            return (int) IsWindowVisible.invokeExact(hwnd) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("IsWindowVisible", t);
+        }
+    }
+
+    /**
+     * Enable or disable input to a window. A disabled window takes no mouse or keyboard input and cannot be
+     * activated — the mechanism behind a modal dialog: disable the owner while the dialog is up, and Windows
+     * itself flashes the dialog when the user clicks the dead window.
+     */
+    public static void enableWindow(MemorySegment hwnd, boolean enabled) {
+        try {
+            int wasDisabled = (int) EnableWindow.invokeExact(hwnd, enabled ? 1 : 0);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("EnableWindow", t);
+        }
+    }
+
+    /**
+     * Bring a window to the front and give it the keyboard. All three calls, because none is sufficient alone:
+     * {@code SetForegroundWindow} is the one Windows may refuse (a process that does not own the foreground
+     * cannot steal it), {@code BringWindowToTop} still raises the window in that case, and
+     * {@code SetActiveWindow} gives the keyboard within this thread's own windows, which is the common case here
+     * — one application activating a window it already owns.
+     */
+    public static void focusWindow(MemorySegment hwnd) {
+        try {
+            int ignoredFg = (int) SetForegroundWindow.invokeExact(hwnd);
+            int ignoredTop = (int) BringWindowToTop.invokeExact(hwnd);
+            MemorySegment ignoredPrev = (MemorySegment) SetActiveWindow.invokeExact(hwnd);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetForegroundWindow", t);
         }
     }
 }

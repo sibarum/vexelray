@@ -106,7 +106,12 @@ public final class Win32Window implements NativeWindow {
     private final Decorations decorations;
     private int width;
     private int height;
-    private volatile boolean shouldClose;
+    // Two facts, not one. WM_CLOSE is a *request* — this window procedure deliberately does not pass it to
+    // DefWindowProc, so nothing is destroyed and the application may still refuse it (cancelClose). WM_DESTROY
+    // is the window actually going away, which no one can refuse. Collapsing them into a single flag is what
+    // makes a veto impossible: the host cannot tell "the user clicked X" from "this window no longer exists".
+    private volatile boolean closeRequested;
+    private volatile boolean destroyed;
     // Desired client-area cursor; read by the (message-pump-thread) window procedure on WM_SETCURSOR.
     private volatile Cursor desiredCursor = Cursor.ARROW;
     // Caption/content geometry, republished by the application every frame and read by the window procedure.
@@ -201,8 +206,14 @@ public final class Win32Window implements NativeWindow {
                     window.runFrameSink();
                     return 0;
                 }
-                case User32.WM_CLOSE, User32.WM_DESTROY -> {
-                    window.shouldClose = true;
+                case User32.WM_CLOSE -> {
+                    // Not forwarded to DefWindowProc: the window stays alive and the host decides. That is what
+                    // gives an application the chance to ask "save first?" before its window disappears.
+                    window.closeRequested = true;
+                    return 0;
+                }
+                case User32.WM_DESTROY -> {
+                    window.destroyed = true;
                     return 0;
                 }
                 case User32.WM_KEYDOWN -> {
@@ -409,12 +420,53 @@ public final class Win32Window implements NativeWindow {
     }
 
     @Override
+    public void hide() {
+        if (!shown) {
+            return;
+        }
+        shown = false;
+        User32.showWindow(hwnd, User32.SW_HIDE);
+    }
+
+    @Override
+    public boolean isVisible() {
+        return shown && User32.isWindowVisible(hwnd);
+    }
+
+    @Override
+    public void focus() {
+        // Restoring first, because a minimized window cannot be "focused" in any sense the user would accept:
+        // the request means put this window in front of me, and a taskbar button is not in front of anything.
+        if (User32.isIconic(hwnd)) {
+            User32.showWindow(hwnd, User32.SW_RESTORE);
+        }
+        if (!shown) {
+            show();
+        }
+        User32.focusWindow(hwnd);
+    }
+
+    @Override
+    public void setEnabled(boolean enabled) {
+        User32.enableWindow(hwnd, enabled);
+    }
+
+    @Override
+    public boolean cancelClose() {
+        if (destroyed) {
+            return false;   // not a request — the window is already gone, and no flag can bring it back
+        }
+        closeRequested = false;
+        return true;
+    }
+
+    @Override
     public boolean pumpEvents() {
         while (User32.peekMessageRemove(msgBuffer)) {
             User32.translateMessage(msgBuffer);
             User32.dispatchMessageW(msgBuffer);
         }
-        return !shouldClose;
+        return !(closeRequested || destroyed);
     }
 
     @Override

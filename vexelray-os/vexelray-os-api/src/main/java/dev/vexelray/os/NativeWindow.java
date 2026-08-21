@@ -54,6 +54,60 @@ public interface NativeWindow extends AutoCloseable {
      */
     void show();
 
+    /**
+     * Hide the window without destroying it: it leaves the screen and the taskbar, and everything it owns — its
+     * surface, its swapchain, the tree it shows — stays alive and mutable. {@link #show()} brings the same window
+     * back, which is what makes a window a <em>place the application returns to</em> rather than something it
+     * builds again. Idempotent, and a no-op where the platform cannot hide a window yet.
+     */
+    default void hide() {
+        // no-op by default
+    }
+
+    /**
+     * Whether the window is currently on screen — false between {@link #hide()} and the next {@link #show()},
+     * and before the first {@code show()}. Platforms without visibility control report the optimistic default.
+     */
+    default boolean isVisible() {
+        return true;
+    }
+
+    /**
+     * Raise this window and give it the keyboard — what a second request to open an already-open window does.
+     * A minimized window is restored first, because "focus it" cannot mean "leave it in the taskbar". No-op
+     * where the platform cannot activate a window yet.
+     *
+     * <p>Window managers are entitled to refuse a foreground steal from a process the user is not currently
+     * working in; a platform does what it can (raise, flash) rather than pretending it succeeded.
+     */
+    default void focus() {
+        // no-op by default
+    }
+
+    /**
+     * Enable or disable input to this window. A disabled window is still drawn but takes no pointer or keyboard
+     * input and cannot be activated — the OS-level half of modality: the dialog's owner is disabled while the
+     * dialog is up, so the block is enforced by the window manager rather than by an application remembering to
+     * ignore events. No-op where the platform cannot disable a window yet.
+     */
+    default void setEnabled(boolean enabled) {
+        // no-op by default
+    }
+
+    /**
+     * Withdraw a close request that {@link #pumpEvents()} has reported, so the window carries on living — the
+     * "you have unsaved changes" veto. Returns whether the window survived: {@code false} means the close was
+     * not a request at all but a destruction already carried out (the owner went away, the session ended), and
+     * the host must let it go. Platforms that cannot distinguish the two report {@code false}, which fails
+     * safe — the window closes, exactly as it did before this method existed.
+     *
+     * <p>Only meaningful between a close being reported and the host tearing the window down. Cancelling a close
+     * the application means to honour simply leaves the window open until it is requested again.
+     */
+    default boolean cancelClose() {
+        return false;
+    }
+
     /** Whether {@code key} is currently held down (updated by {@link #pumpEvents()}). */
     boolean isKeyDown(Key key);
 
