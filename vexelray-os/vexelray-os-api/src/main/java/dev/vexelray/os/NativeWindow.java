@@ -48,6 +48,21 @@ public interface NativeWindow extends AutoCloseable {
     }
 
     /**
+     * Move <em>and</em> size the window's outer rect in one step — the whole of "put it back where it was".
+     *
+     * <p>{@link WindowConfig} covers this at creation, which is the right moment when the bounds are known then.
+     * This is for when they are not: a window an application reopens was configured once, while the bounds worth
+     * restoring are the ones the user last left it at, possibly later in the same session. One call rather than a
+     * move and then a resize is what keeps the correction from being visible as a jump.
+     *
+     * <p>Defaults to moving only, so a platform that has not implemented sizing still lands the window in the
+     * right place rather than ignoring the request entirely.
+     */
+    default void setBounds(int x, int y, int width, int height) {
+        setPosition(x, y);
+    }
+
+    /**
      * Make the window visible. Idempotent. A window is created hidden so that the (potentially slow) Vulkan
      * bring-up runs while nothing is on screen; the present loop calls this once the first frame is ready, so the
      * window appears already painted instead of flashing blank/unresponsive during initialization.

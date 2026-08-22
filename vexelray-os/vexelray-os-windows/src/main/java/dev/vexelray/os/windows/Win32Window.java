@@ -568,6 +568,11 @@ public final class Win32Window implements NativeWindow {
     }
 
     @Override
+    public void setBounds(int x, int y, int width, int height) {
+        User32.setWindowBounds(hwnd, x, y, width, height);
+    }
+
+    @Override
     public long osHandle() {
         return hwnd.address();
     }

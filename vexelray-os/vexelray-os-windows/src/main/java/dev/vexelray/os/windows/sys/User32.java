@@ -177,6 +177,16 @@ public final class User32 {
         return wc;
     }
 
+    /** Allocate a {@code RECT} spanning {@code (x, y)} to {@code (x + w, y + h)}. */
+    public static MemorySegment allocRect(SegmentAllocator allocator, int x, int y, int w, int h) {
+        MemorySegment rect = allocator.allocate(RECT);
+        RECT_left.set(rect, x);
+        RECT_top.set(rect, y);
+        RECT_right.set(rect, x + w);
+        RECT_bottom.set(rect, y + h);
+        return rect;
+    }
+
     /** The {@code left} of a filled {@code RECT} (screen x for GetWindowRect). */
     public static int rectLeft(MemorySegment rect) {
         return (int) RECT_left.get(rect);
@@ -319,6 +329,23 @@ public final class User32 {
         try {
             int ok = (int) SetWindowPos.invokeExact(hwnd, MemorySegment.NULL, x, y, 0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            if (ok == 0) {
+                throw new NativeException("SetWindowPos failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetWindowPos", t);
+        }
+    }
+
+    /**
+     * Move and size the window's outer rect in one {@code SetWindowPos}, without re-stacking or activating.
+     * One call rather than a move plus a resize: two would be two {@code WM_WINDOWPOSCHANGED} rounds, and the
+     * intermediate rect is a visible flicker.
+     */
+    public static void setWindowBounds(MemorySegment hwnd, int x, int y, int width, int height) {
+        try {
+            int ok = (int) SetWindowPos.invokeExact(hwnd, MemorySegment.NULL, x, y, width, height,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
             if (ok == 0) {
                 throw new NativeException("SetWindowPos failed (GetLastError=" + Kernel32.getLastError() + ")");
             }
@@ -564,6 +591,60 @@ public final class User32 {
         } catch (Throwable t) {
             throw NativeException.rethrow("SendMessageW", t);
         }
+    }
+
+    // ---- Monitors -------------------------------------------------------------------------------------------
+
+    /** {@code MonitorFromRect} flag: never fail — a rect on no monitor resolves to the closest one. */
+    public static final int MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+    /** {@code MONITORINFO} — cbSize, the monitor rect, the work rect, flags. 40 bytes. */
+    public static final GroupLayout MONITORINFO = MemoryLayout.structLayout(
+            JAVA_INT.withName("cbSize"),
+            RECT.withName("rcMonitor"),
+            RECT.withName("rcWork"),
+            JAVA_INT.withName("dwFlags")
+    ).withName("MONITORINFO");
+
+    private static final VarHandle MI_cbSize = fieldHandle(MONITORINFO, "cbSize");
+    private static final long MI_RCWORK_OFFSET = MONITORINFO.byteOffset(PathElement.groupElement("rcWork"));
+
+    private static final MethodHandle MonitorFromRect = Ffi.downcall(LIB, "MonitorFromRect",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT));
+    private static final MethodHandle GetMonitorInfoW = Ffi.downcall(LIB, "GetMonitorInfoW",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+
+    /**
+     * The {@code HMONITOR} for a screen {@code RECT}: the monitor it overlaps most, or the nearest one when it
+     * overlaps none. {@code MONITOR_DEFAULTTONEAREST} is why this never returns null — an application restoring
+     * bounds saved on a monitor since unplugged gets the screen that replaced it, not a failure to handle.
+     */
+    public static MemorySegment monitorFromRect(MemorySegment rect) {
+        try {
+            return (MemorySegment) MonitorFromRect.invokeExact(rect, MONITOR_DEFAULTTONEAREST);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("MonitorFromRect", t);
+        }
+    }
+
+    /**
+     * Fill {@code info} (a {@code MONITORINFO}) for {@code hMonitor}, stamping {@code cbSize} first as the call
+     * requires. Returns false if Windows declined — which the caller reports as "cannot say" rather than
+     * throwing, because a work-area query is an improvement on letting the OS place the window, not a
+     * prerequisite for it.
+     */
+    public static boolean getMonitorInfoW(MemorySegment hMonitor, MemorySegment info) {
+        MI_cbSize.set(info, (int) MONITORINFO.byteSize());
+        try {
+            return (int) GetMonitorInfoW.invokeExact(hMonitor, info) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetMonitorInfoW", t);
+        }
+    }
+
+    /** The {@code rcWork} member of a filled {@code MONITORINFO}, as a {@code RECT} view into it. */
+    public static MemorySegment monitorWorkRect(MemorySegment info) {
+        return info.asSlice(MI_RCWORK_OFFSET, RECT.byteSize());
     }
 
     /** Whether the window carries {@code WS_VISIBLE} — false while hidden with {@link #SW_HIDE}. */

@@ -1,6 +1,7 @@
 package dev.vexelray.os;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.ServiceLoader;
 
 /**
@@ -26,6 +27,20 @@ public interface NativePlatform {
 
     /** Create and show a native window. The returned window owns its OS resources until {@link NativeWindow#close()}. */
     NativeWindow createWindow(WindowConfig config);
+
+    /**
+     * The usable area of the monitor containing the screen point {@code (x, y)} — its full rectangle minus the
+     * taskbar or dock — or of the primary monitor when that point is on no monitor at all. That last case is the
+     * whole reason this exists: an application restoring saved window bounds has to ask whether the screen it
+     * saved them on is still there.
+     *
+     * <p>{@link Optional#empty()} means this platform cannot say, and the caller should place the window as it
+     * would have without the query. A platform lacking the binding degrades to the old behaviour rather than to
+     * a wrong answer.
+     */
+    default Optional<WorkArea> workArea(int x, int y) {
+        return Optional.empty();
+    }
 
     /**
      * The one OS platform on the classpath. Throws if none is present (no {@code vexelray-os-<platform>} module
