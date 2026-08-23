@@ -295,7 +295,10 @@ public final class Win32Window implements NativeWindow {
     /** Answer {@code WM_NCHITTEST} from the regions the application published. */
     private long hitTest(MemorySegment hwnd, long lParam) {
         HitRegions regions = hitRegions;
-        int border = regions.resizeBorder() > 0 ? regions.resizeBorder() : frameThickness();
+        // Two thicknesses: what the application asked for over its own dead space, and the system metric, which
+        // is what still applies inside the chrome it declared (see HitRegions.zone).
+        int frame = frameThickness();
+        int border = regions.resizeBorder() > 0 ? regions.resizeBorder() : frame;
         int px;
         int py;
         try (Arena temp = Arena.ofConfined()) {
@@ -306,7 +309,7 @@ public final class Win32Window implements NativeWindow {
             px = User32.pointX(point);
             py = User32.pointY(point);
         }
-        return switch (regions.zone(px, py, width, height, User32.isZoomed(hwnd), border)) {
+        return switch (regions.zone(px, py, width, height, User32.isZoomed(hwnd), border, frame)) {
             case CAPTION -> User32.HTCAPTION;
             case MAXIMIZE_BUTTON -> User32.HTMAXBUTTON;
             case TOP -> User32.HTTOP;

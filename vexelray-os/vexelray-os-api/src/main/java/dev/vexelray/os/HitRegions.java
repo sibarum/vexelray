@@ -22,8 +22,12 @@ import java.util.List;
  *                       window manager as such, which is what lets a platform offer its own window-arrangement
  *                       affordance on hover (Windows 11's Snap Layouts flyout). Clicks still arrive as ordinary
  *                       content clicks — the application decides what its button does.
- * @param resizeBorder   thickness, in pixels, of the resize band inside each edge; {@code 0} asks the platform
- *                       for its own default (the metric the system-drawn frame would use)
+ * @param resizeBorder   thickness, in pixels, of the resize band inside each edge <b>where the application has
+ *                       declared nothing</b> — the dead space its own margins and padding leave around the
+ *                       content. Where a {@code caption}, {@code interactive} or {@code maximizeButton}
+ *                       rectangle covers the edge instead, the platform's own metric applies, so a band widened
+ *                       to reach into a gutter can never eat half a title bar's drag surface or half a close
+ *                       button. {@code 0} asks the platform for its default everywhere.
  */
 public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximizeButton, int resizeBorder) {
 
@@ -75,38 +79,38 @@ public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximi
      *
      * <p>A maximized window has no resize band — its edges belong to the screen, not to a drag.
      *
+     * <p>One band everywhere, which is the conservative reading of {@link #resizeBorder}. The overload taking a
+     * second thickness is what lets an application widen the band over its own dead space without the widening
+     * reaching the chrome it draws.
+     *
      * @param border the resize-band thickness to use, resolving {@link #resizeBorder} {@code == 0} against the
      *               platform's own metric before calling
      */
     public Zone zone(int px, int py, int clientW, int clientH, boolean maximized, int border) {
-        if (!maximized && border > 0) {
-            boolean left = px < border;
-            boolean right = px >= clientW - border;
-            boolean top = py < border;
-            boolean bottom = py >= clientH - border;
-            if (top && left) {
-                return Zone.TOP_LEFT;
-            }
-            if (top && right) {
-                return Zone.TOP_RIGHT;
-            }
-            if (bottom && left) {
-                return Zone.BOTTOM_LEFT;
-            }
-            if (bottom && right) {
-                return Zone.BOTTOM_RIGHT;
-            }
-            if (top) {
-                return Zone.TOP;
-            }
-            if (bottom) {
-                return Zone.BOTTOM;
-            }
-            if (left) {
-                return Zone.LEFT;
-            }
-            if (right) {
-                return Zone.RIGHT;
+        return zone(px, py, clientW, clientH, maximized, border, border);
+    }
+
+    /**
+     * As {@link #zone(int, int, int, int, boolean, int)}, with the wider band applying <b>only where the
+     * application has declared nothing</b>.
+     *
+     * <p>An application whose windows carry a generous gutter can hand that gutter to the window manager: dead
+     * space it draws nothing in becomes resize surface, and the pointer finds an edge a whole margin early
+     * rather than on the two or three pixels a system frame allows. What makes widening safe is that it stops at
+     * the application's own declarations — inside a caption strip or one of its buttons the platform's metric
+     * still applies, which is the band those pixels have today. So the gutter costs nothing that already works:
+     * a title bar keeps all but the top few pixels of its drag surface, and a close button stays a close button
+     * all the way to its edge.
+     *
+     * @param border       the band in undeclared space, resolved as above
+     * @param systemBorder the band inside declared {@code caption}/{@code interactive}/{@code maximizeButton}
+     *                     rectangles — the platform's own frame metric
+     */
+    public Zone zone(int px, int py, int clientW, int clientH, boolean maximized, int border, int systemBorder) {
+        if (!maximized) {
+            Zone edge = edge(px, py, clientW, clientH, declared(px, py) ? systemBorder : border);
+            if (edge != null) {
+                return edge;
             }
         }
         if (maximizeButton != null && maximizeButton.contains(px, py)) {
@@ -123,5 +127,59 @@ public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximi
             }
         }
         return Zone.CLIENT;
+    }
+
+    /** Whether the application declared these pixels its own — a caption strip, or a control drawn on one. */
+    private boolean declared(int px, int py) {
+        if (maximizeButton != null && maximizeButton.contains(px, py)) {
+            return true;
+        }
+        for (Rect r : interactive) {
+            if (r.contains(px, py)) {
+                return true;
+            }
+        }
+        for (Rect r : caption) {
+            if (r.contains(px, py)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Which of the eight edges a point falls in for a band {@code border} thick, or {@code null} for none. */
+    private static Zone edge(int px, int py, int clientW, int clientH, int border) {
+        if (border <= 0) {
+            return null;
+        }
+        boolean left = px < border;
+        boolean right = px >= clientW - border;
+        boolean top = py < border;
+        boolean bottom = py >= clientH - border;
+        if (top && left) {
+            return Zone.TOP_LEFT;
+        }
+        if (top && right) {
+            return Zone.TOP_RIGHT;
+        }
+        if (bottom && left) {
+            return Zone.BOTTOM_LEFT;
+        }
+        if (bottom && right) {
+            return Zone.BOTTOM_RIGHT;
+        }
+        if (top) {
+            return Zone.TOP;
+        }
+        if (bottom) {
+            return Zone.BOTTOM;
+        }
+        if (left) {
+            return Zone.LEFT;
+        }
+        if (right) {
+            return Zone.RIGHT;
+        }
+        return null;
     }
 }

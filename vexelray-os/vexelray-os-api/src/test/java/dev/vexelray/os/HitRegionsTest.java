@@ -15,6 +15,8 @@ class HitRegionsTest {
     private static final int W = 800;
     private static final int H = 600;
     private static final int BORDER = 8;
+    /** An application gutter — the margin a window leaves around its content, and the band it can ask for. */
+    private static final int GUTTER = 16;
 
     /** A 32px title bar across the top, with three 46px caption buttons at its right end. */
     private static HitRegions bar() {
@@ -93,6 +95,52 @@ class HitRegionsTest {
     @Test
     void aZeroBorderDisablesTheResizeBandWithoutDisablingTheCaption() {
         assertEquals(HitRegions.Zone.CAPTION, bar().zone(300, 2, W, H, false, 0));
+    }
+
+    /** The same window, asked for a band as wide as a 16px gutter everywhere the application drew nothing. */
+    private static HitRegions.Zone atWide(int x, int y) {
+        return bar().zone(x, y, W, H, false, GUTTER, BORDER);
+    }
+
+    @Test
+    void aWidenedBandReachesTheWholeGutter() {
+        // The point of it: the dead space a margin leaves is resize surface, so the edge is found a whole gutter
+        // early instead of on the last three pixels.
+        assertEquals(HitRegions.Zone.LEFT, atWide(GUTTER - 1, 300));
+        assertEquals(HitRegions.Zone.RIGHT, atWide(W - GUTTER, 300));
+        assertEquals(HitRegions.Zone.BOTTOM, atWide(300, H - GUTTER));
+        assertEquals(HitRegions.Zone.BOTTOM_LEFT, atWide(GUTTER - 1, H - GUTTER));
+        assertEquals(HitRegions.Zone.BOTTOM_RIGHT, atWide(W - GUTTER, H - GUTTER));
+        // And it stops there: a pixel further in is the application's again.
+        assertEquals(HitRegions.Zone.CLIENT, atWide(GUTTER, 300));
+    }
+
+    @Test
+    void aWidenedBandDoesNotEatTheTitleBar() {
+        // What makes widening safe. Inside the caption the system metric still applies, so a bar 32 tall keeps
+        // all but its top few pixels draggable rather than losing half of itself to a resize band.
+        assertEquals(HitRegions.Zone.TOP, atWide(300, BORDER - 1));
+        assertEquals(HitRegions.Zone.CAPTION, atWide(300, BORDER));
+        assertEquals(HitRegions.Zone.CAPTION, atWide(300, GUTTER));
+        // Including at the left end of the bar, where the wide left band would otherwise run down through it.
+        assertEquals(HitRegions.Zone.CAPTION, atWide(GUTTER - 1, 20));
+    }
+
+    @Test
+    void aWidenedBandDoesNotEatACaptionButton() {
+        // A close button that stops working within a gutter of the corner is worse than no widening at all.
+        assertEquals(HitRegions.Zone.CLIENT, atWide(W - 20, 20));
+        assertEquals(HitRegions.Zone.MAXIMIZE_BUTTON, atWide(W - 70, 20));
+        // The system band over the buttons is untouched, so the top-right corner is still grabbable.
+        assertEquals(HitRegions.Zone.TOP_RIGHT, atWide(W - 4, 3));
+    }
+
+    @Test
+    void oneBandIsWhatTheOldSignatureAsksFor() {
+        // The six-argument form is the same call with both thicknesses equal — nothing that already worked moved.
+        assertEquals(bar().zone(300, 2, W, H, false, BORDER),
+                bar().zone(300, 2, W, H, false, BORDER, BORDER));
+        assertEquals(HitRegions.Zone.TOP, bar().zone(300, GUTTER - 1, W, H, false, GUTTER, GUTTER));
     }
 
     @Test
