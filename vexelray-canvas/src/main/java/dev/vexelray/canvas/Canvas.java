@@ -36,6 +36,11 @@ public final class Canvas {
     private float clipR;
     private final java.util.ArrayDeque<float[]> clipStack = new java.util.ArrayDeque<>();
 
+    // Current translation (px) added to every vertex, and the stack for push/pop. Default = none.
+    private float tx;
+    private float ty;
+    private final java.util.ArrayDeque<float[]> translateStack = new java.util.ArrayDeque<>();
+
     /** A canvas sized to the target it will be drawn into, in pixels. */
     public Canvas(int width, int height) {
         this.width = width;
@@ -60,7 +65,7 @@ public final class Canvas {
         return this;
     }
 
-    /** Reset the draw list for a new frame and clear any clip. */
+    /** Reset the draw list for a new frame and clear any clip or translation. */
     public Canvas begin() {
         count = 0;
         clipStack.clear();
@@ -69,6 +74,41 @@ public final class Canvas {
         clipHw = NO_CLIP;
         clipHh = NO_CLIP;
         clipR = 0f;
+        translateStack.clear();
+        tx = 0f;
+        ty = 0f;
+        return this;
+    }
+
+    /**
+     * Offset every subsequent draw by {@code (dx, dy)} pixels, cumulatively. Balance with
+     * {@link #popTranslate()}.
+     *
+     * <p>Applied where a vertex is written, so it moves the geometry <em>and</em> the screen position the clip
+     * SDF evaluates at — a translated shape is clipped where it is drawn rather than where it was described. The
+     * clip box itself does not move: {@link #pushClip} takes screen coordinates and means them, so a clip pushed
+     * by a container goes on holding that container's children as they travel inside it, which is what makes a
+     * slide-in expressible at all.
+     *
+     * <p>This is the transform a caller cannot substitute for by adjusting the coordinates it passes. That works
+     * only while it owns every coordinate, and it stops the moment any of them are baked: laid-out text carries
+     * absolute glyph and caret positions, so nothing upstream can move a line of text without laying it out
+     * again. Here it is one addition per vertex, and nothing above needs to know.
+     */
+    public Canvas pushTranslate(float dx, float dy) {
+        translateStack.push(new float[]{tx, ty});
+        tx += dx;
+        ty += dy;
+        return this;
+    }
+
+    /** Pop the most recent {@link #pushTranslate}. */
+    public Canvas popTranslate() {
+        if (!translateStack.isEmpty()) {
+            float[] t = translateStack.pop();
+            tx = t[0];
+            ty = t[1];
+        }
         return this;
     }
 
@@ -333,6 +373,10 @@ public final class Canvas {
     private void push(float sx, float sy, Color c, float u, float v, int kind,
                       float localX, float localY, float s0, float s1, float s2, float s3) {
         ensure(CanvasVertex.FLOATS_PER_VERTEX);
+        // The one place the current translation is applied. Both the position and the screen coordinate the clip
+        // is evaluated at move together, so a translated vertex is clipped where it lands.
+        sx += tx;
+        sy += ty;
         int o = count;
         data[o] = ndcX(sx);
         data[o + 1] = ndcY(sy);
