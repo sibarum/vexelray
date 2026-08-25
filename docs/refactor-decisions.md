@@ -337,6 +337,37 @@ part of the model's `id()` — two differently-lit Lamberts must not collide in 
 waits until there is a second light to shape the ABI. Camera position, orientation, and viewport aspect are push
 constants, so turning the camera or resizing the window is a 24-byte upload rather than a recompile.
 
+## 12. One IR-authoring vocabulary, in its own module (D16)
+
+**DECISION (D16, DONE).** `Ir` — the terse helpers for writing `core` IR by hand — had been copied into
+`vexelray-experimental` and `vexelray-surface`, and was starting to drift: the surface copy had grown `zero`,
+`broadcast`, `scale`, and a typed-`call` escape hatch; the experimental copy had `xz` and width-specific
+`mulS2`/`mulS3`. Consolidated into **`vexelray-ir`**, depending on nothing but `vastir`.
+
+Why a module rather than picking one of the two homes: it is genuinely the layer *below* everything that emits a
+shader (surfaces, shading, the SDF technique, the harness), and the alternatives were worse — putting it in
+`vexelray-shader` would force `vexelray-surface` to depend on shader composition it does not use, and leaving it
+in `vexelray-surface` would have `dev.vexelray.surface.Ir` serving the canvas and the harness. The project's own
+principle settles it: *"if 'should this be its own module?' is a reasonable question, the answer is yes."*
+
+Merge decisions: `mulS2`/`mulS3` dropped in favour of the width-agnostic `scale` (they were the same IR, just
+told the width instead of asking the operand); `isConst` dropped as never used; `xz` kept. `Shadings` and
+`ShadingPoint` moved onto it as well, rather than leaving a third copy in the module that *is* the SupirVast
+seam.
+
+**Verified output-neutral.** The generated SPIR-V was hashed before and after across both consumers — the SDF
+composer's fragment and five `Raymarcher` fields, 4 KB to 765 KB — and all six are byte-identical. For a pure
+refactor that is the check worth having: the test suite proves the code still works, the hashes prove it still
+produces *the same thing*.
+
+**Not moved:** `Fold` (the identity-folding constructors) stays package-private in `vexelray-surface`. It has
+exactly one consumer, and its contract — only exact identities, never reassociate — is tied to that use. It
+moves when a second consumer appears, not before.
+
+**Still duplicated, deliberately:** `Fathom`, `CanvasShader`, and `Raymarcher` keep small private helper sets.
+Those are local to substantial classes and folding them in is a separate sweep; `vexelray-canvas` and
+`vexelray-text` would each gain a dependency for a handful of call sites.
+
 ## Open questions (to revisit as phases land)
 
 - **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers may need

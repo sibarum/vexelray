@@ -19,6 +19,11 @@
     </description>
 
     <dependencies>
+        <!-- The core-IR authoring vocabulary (Ir), shared with every other module that emits IR. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-ir</artifactId>
+        </dependency>
         <!-- Engine vocabulary (LightingModel, ShaderStage boundary types folded into composition). -->
         <dependency>
             <groupId>dev.vexelray</groupId>

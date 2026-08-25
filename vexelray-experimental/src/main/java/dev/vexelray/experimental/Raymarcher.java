@@ -17,16 +17,16 @@ import dev.vexelray.shader.ComposedShader;
 
 import java.util.List;
 
-import static dev.vexelray.experimental.Ir.F32;
-import static dev.vexelray.experimental.Ir.V2;
-import static dev.vexelray.experimental.Ir.V3;
-import static dev.vexelray.experimental.Ir.V4;
-import static dev.vexelray.experimental.Ir.add;
-import static dev.vexelray.experimental.Ir.f;
-import static dev.vexelray.experimental.Ir.mul;
-import static dev.vexelray.experimental.Ir.mulS3;
-import static dev.vexelray.experimental.Ir.sub;
-import static dev.vexelray.experimental.Ir.v3;
+import static dev.vexelray.ir.Ir.F32;
+import static dev.vexelray.ir.Ir.V2;
+import static dev.vexelray.ir.Ir.V3;
+import static dev.vexelray.ir.Ir.V4;
+import static dev.vexelray.ir.Ir.add;
+import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.mul;
+import static dev.vexelray.ir.Ir.scale;
+import static dev.vexelray.ir.Ir.sub;
+import static dev.vexelray.ir.Ir.v3;
 
 /**
  * The one ray-march every {@link ShapeField} is rendered through, so a comparison isolates the field. It composes
@@ -82,7 +82,7 @@ public final class Raymarcher {
         LocalVar d = new LocalVar("d", F32);
 
         Region march = Region.of(
-                new Statement.Assign(p, add(read(ro), mulS3(read(rd), read(t)))),
+                new Statement.Assign(p, add(read(ro), scale(read(rd), read(t)))),
                 new Statement.Assign(d, call(sdfFn, read(p))),
                 // Clamp the step so a ray can't leap over a thin feature (overshoot = seam artifacts).
                 new Statement.Assign(t, add(read(t), Expr.MathCall.min(read(d), f(0.4)))),
@@ -99,7 +99,7 @@ public final class Raymarcher {
         // Shade material albedo × diffuse. Material is evaluated once here (at the hit), not per march step.
         LocalVar col = new LocalVar("col", V3);
         Region hit = Region.of(
-                new Statement.DeclareVar(col, mulS3(field.material(read(p)), lit)),
+                new Statement.DeclareVar(col, scale(field.material(read(p)), lit)),
                 new Statement.InterfaceWrite(fragColor, new Expr.VectorConstruct(V4, List.of(
                         new Expr.VectorExtract(read(col), 0), new Expr.VectorExtract(read(col), 1),
                         new Expr.VectorExtract(read(col), 2), f(1.0)))));
@@ -115,7 +115,7 @@ public final class Raymarcher {
                 new Statement.DeclareVar(d, f(0.0)),
                 new Statement.While(new Expr.Binary(BinaryOp.LESS_THAN, read(i),
                         new Expr.ConstInt(Type.int32(), steps)), march),
-                new Statement.Assign(p, add(read(ro), mulS3(read(rd), read(t)))),
+                new Statement.Assign(p, add(read(ro), scale(read(rd), read(t)))),
                 new Statement.Assign(d, call(sdfFn, read(p))),
                 new Statement.If(new Expr.Binary(BinaryOp.LESS_THAN, read(d),
                         add(f(0.008), mul(f(0.001), read(t)))), hit, miss),

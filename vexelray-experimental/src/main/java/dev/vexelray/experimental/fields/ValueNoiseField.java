@@ -4,12 +4,12 @@ import dev.supirvast.vastir.core.Expr;
 import dev.supirvast.vastir.tools.Noise;
 import dev.vexelray.experimental.ShapeField;
 
-import static dev.vexelray.experimental.Ir.f;
-import static dev.vexelray.experimental.Ir.mul;
-import static dev.vexelray.experimental.Ir.mulS2;
-import static dev.vexelray.experimental.Ir.sub;
-import static dev.vexelray.experimental.Ir.xz;
-import static dev.vexelray.experimental.Ir.y;
+import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.mul;
+import static dev.vexelray.ir.Ir.scale;
+import static dev.vexelray.ir.Ir.sub;
+import static dev.vexelray.ir.Ir.xz;
+import static dev.vexelray.ir.Ir.y;
 
 /**
  * A value-noise heightfield ({@link Noise#fbm2} — quintic-interpolated, rotated octaves). Cheap and CPU-evaluable,
@@ -26,7 +26,7 @@ public final class ValueNoiseField implements ShapeField {
     @Override
     public Expr sdf(Expr point) {
         // fbm2 in ~[0,1]; centre and scale to relief, then a heightfield SDF with a conservative Lipschitz factor.
-        Expr h = mul(sub(Noise.fbm2(mulS2(xz(point), f(0.16)), 3), f(0.5)), f(1.5));
+        Expr h = mul(sub(Noise.fbm2(scale(xz(point), f(0.16)), 3), f(0.5)), f(1.5));
         return mul(sub(y(point), h), f(0.4));
     }
 

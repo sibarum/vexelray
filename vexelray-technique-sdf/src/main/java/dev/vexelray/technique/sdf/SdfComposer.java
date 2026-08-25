@@ -18,7 +18,7 @@ import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.shader.ShaderComposer;
 import dev.vexelray.shader.ShadingPoint;
 import dev.vexelray.surface.Field;
-import dev.vexelray.surface.Ir;
+import dev.vexelray.ir.Ir;
 import dev.vexelray.surface.SurfaceCompiler;
 
 import java.nio.ByteBuffer;

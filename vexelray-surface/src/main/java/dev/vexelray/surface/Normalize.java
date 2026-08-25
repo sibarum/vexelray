@@ -1,6 +1,7 @@
 package dev.vexelray.surface;
 
 import dev.supirvast.vastir.core.Expr;
+import dev.vexelray.ir.Ir;
 
 /**
  * Turns an expression whose <em>zero set</em> is a surface into an expression whose <em>value</em> is a usable

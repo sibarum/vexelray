@@ -5,6 +5,7 @@ import dev.supirvast.vastir.core.Function;
 import dev.supirvast.vastir.core.Region;
 import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.type.Type;
+import dev.vexelray.ir.Ir;
 
 import java.util.List;
 

@@ -3,6 +3,7 @@ package dev.vexelray.surface;
 import dev.supirvast.vastir.core.Expr;
 import dev.supirvast.vastir.core.MathFn;
 import dev.supirvast.vastir.type.Type;
+import dev.vexelray.ir.Ir;
 
 import java.util.ArrayList;
 import java.util.List;

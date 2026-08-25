@@ -14,7 +14,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 
-import static dev.vexelray.surface.Ir.POINT;
+import static dev.vexelray.ir.Ir.POINT;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,9 +37,9 @@ class SdfComposerTest {
                         new Surface.Box(2, 1, 3, 0.6, 0.6, 0.6),
                         new Surface.Sphere(2, 1.6, 3, 0.5)),
                 new Surface.Translate(-2, 1, 3,
-                        new Surface.Implicit(dev.vexelray.surface.Ir.sub(
-                                dev.vexelray.surface.Ir.dot(POINT, POINT),
-                                dev.vexelray.surface.Ir.f(1.0))))));
+                        new Surface.Implicit(dev.vexelray.ir.Ir.sub(
+                                dev.vexelray.ir.Ir.dot(POINT, POINT),
+                                dev.vexelray.ir.Ir.f(1.0))))));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package dev.vexelray.surface;
 
 import dev.supirvast.vastir.core.Expr;
+import dev.vexelray.ir.Ir;
 
 /**
  * Arithmetic constructors that fold away identities as they build. Not an optimisation — a necessity: a symbolic

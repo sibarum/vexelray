@@ -26,6 +26,11 @@
     </description>
 
     <dependencies>
+        <!-- The core-IR authoring vocabulary (Ir): constants, vectors, arithmetic, broadcast rules. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-ir</artifactId>
+        </dependency>
         <!-- SupirVast core IR: the Expr algebra surfaces lower into, and the derivative pass operates over. -->
         <dependency>
             <groupId>dev.supirvast</groupId>

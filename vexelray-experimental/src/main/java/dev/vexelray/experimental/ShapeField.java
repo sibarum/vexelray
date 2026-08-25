@@ -2,7 +2,7 @@ package dev.vexelray.experimental;
 
 import dev.supirvast.vastir.core.Expr;
 
-import static dev.vexelray.experimental.Ir.v3;
+import static dev.vexelray.ir.Ir.v3;
 
 /**
  * A candidate way to <em>define a shape</em> as a signed-distance field, for head-to-head comparison in the

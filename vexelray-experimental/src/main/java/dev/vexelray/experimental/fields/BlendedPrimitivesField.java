@@ -4,13 +4,13 @@ import dev.supirvast.vastir.core.Expr;
 import dev.vexelray.experimental.Sdf;
 import dev.vexelray.experimental.ShapeField;
 
-import static dev.vexelray.experimental.Ir.add;
-import static dev.vexelray.experimental.Ir.div;
-import static dev.vexelray.experimental.Ir.f;
-import static dev.vexelray.experimental.Ir.mul;
-import static dev.vexelray.experimental.Ir.mulS3;
-import static dev.vexelray.experimental.Ir.v3;
-import static dev.vexelray.experimental.Ir.y;
+import static dev.vexelray.ir.Ir.add;
+import static dev.vexelray.ir.Ir.div;
+import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.mul;
+import static dev.vexelray.ir.Ir.scale;
+import static dev.vexelray.ir.Ir.v3;
+import static dev.vexelray.ir.Ir.y;
 
 /**
  * V0 of the vexel-world thesis (docs/vexel-world.md): a scene built from a few AABB-bounded SDF primitives —
@@ -74,11 +74,11 @@ public final class BlendedPrimitivesField implements ShapeField {
         Expr wc = weight(canopy(p));
         Expr sum = add(add(add(wg, wr), wt), wc);
         Expr colour = add(add(add(
-                mulS3(v3(GROUND[0], GROUND[1], GROUND[2]), wg),
-                mulS3(v3(ROCK[0], ROCK[1], ROCK[2]), wr)),
-                mulS3(v3(BARK[0], BARK[1], BARK[2]), wt)),
-                mulS3(v3(LEAF[0], LEAF[1], LEAF[2]), wc));
-        return mulS3(colour, div(f(1.0), sum));   // normalise the partition of unity
+                scale(v3(GROUND[0], GROUND[1], GROUND[2]), wg),
+                scale(v3(ROCK[0], ROCK[1], ROCK[2]), wr)),
+                scale(v3(BARK[0], BARK[1], BARK[2]), wt)),
+                scale(v3(LEAF[0], LEAF[1], LEAF[2]), wc));
+        return scale(colour, div(f(1.0), sum));   // normalise the partition of unity
     }
 
     /** Proximity weight for the material soft-max: closer surfaces dominate the blended colour. */

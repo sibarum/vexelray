@@ -51,20 +51,26 @@ Layered modules; dependencies point downward. Nested aggregator folders are defe
 itself hurts (see principles).
 
 ```
+vexelray-ir            Terse vocabulary for authoring core IR by hand: constants, vectors, arithmetic, and
+                       core's type discipline (broadcast, typed zero). Depends on vastir alone.
+      ▲
 vexelray-core          Value vocabulary: Attachment, AttachmentFormat, Target, EngineConfig, Frame,
-                       ResourceManager (iface), GpuBuffer, LightingModel. No Vulkan, no technique concept.
+                       ResourceManager (iface), GpuBuffer, LightingModel. No SupirVast, no Vulkan, no technique.
       ▲
 vexelray-engine-api    THE public API: the pipeline-building DSL (RenderPipeline + builder), the
                        RenderTechnique SPI, Technique/FrameContext, RuntimeManager/VexelEngine ifaces, FrameGraph.
       ▲                         ▲
 vexelray-shader        vexelray-vulkan        Composition seam (SupirVast) · Vulkan+Panama substrate
-      ▲                         ▲              (bindings, instance/device/swapchain, buffers, pipeline wrappers)
+  + Shading/ShaderCache          ▲              (bindings, instance/device/swapchain, buffers, pipeline wrappers)
+      ▲                          │
+vexelray-surface       Surfaces as data -> a marchable distance field, with the Lipschitz analysis and the
+      ▲                symbolic derivative that make an arbitrary implicit safe to march.
       └────────┬────────────────┘
 vexelray-engine        Runtime impl: implements RuntimeManager/VexelEngine, realises a pipeline, owns the frame
                        loop + present targets (windowed swapchain / offscreen), drives techniques.
       ▲
-vexelray-technique-sdf   First technique + its SDF-scene authoring API.   (later: -raster, -splat, …)
-      ▲
+vexelray-technique-sdf   First technique: SdfScene + SdfComposer today, RenderTechnique once the runtime lands.
+      ▲                                                              (later: -raster, -splat, …)
 vexelray-demo (Fathom)   Reference client app. Ships the -Pnative single-binary profile.
 
 vexelray-os  (+ os-windows / os-linux / os-macos)   Direct-OS Panama layer: window + Vulkan surface.

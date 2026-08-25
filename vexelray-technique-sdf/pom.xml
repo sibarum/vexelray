@@ -26,6 +26,11 @@
     </description>
 
     <dependencies>
+        <!-- The core-IR authoring vocabulary (Ir). Reached transitively too, but declared because it is used. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-ir</artifactId>
+        </dependency>
         <!-- Surfaces as data, and their lowering to a marchable distance field. -->
         <dependency>
             <groupId>dev.vexelray</groupId>

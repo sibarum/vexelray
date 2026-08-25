@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-ir</artifactId>
+
+    <description>
+        The terse vocabulary for writing SupirVast `core` IR by hand: constants, vector construction and
+        component access, arithmetic, and the math calls, with the two rules the core algebra imposes handled in
+        one place — a binary operator's operands must share a type (so scalars broadcast), and a zero must be
+        built at a specific type.
+
+        It exists because every module that authors IR needs the same dozen helpers, and each was growing its
+        own copy. Nothing here is specific to surfaces, shading, or 2D: it is the layer below all of them, and
+        depends on nothing but SupirVast's core IR.
+    </description>
+
+    <dependencies>
+        <!-- The IR being authored. This module's only dependency, and deliberately so. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir</artifactId>
+        </dependency>
+    </dependencies>
+</project>

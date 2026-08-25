@@ -1,7 +1,7 @@
 package dev.vexelray.shader;
 
 import dev.supirvast.vastir.core.Expr;
-import dev.supirvast.vastir.type.Type;
+import dev.vexelray.ir.Ir;
 
 /**
  * Everything a {@link Shading} is given about the point being shaded, as {@code core} IR.
@@ -23,9 +23,6 @@ import dev.supirvast.vastir.type.Type;
 public record ShadingPoint(Expr position, Expr normal, Expr view, Expr albedo,
                            Expr roughness, Expr metallic) {
 
-    private static final Type.Float F32 = Type.float32();
-    private static final Type.Vector V3 = new Type.Vector(F32, 3);
-
     public ShadingPoint {
         requireVec3(position, "position");
         requireVec3(normal, "normal");
@@ -41,17 +38,17 @@ public record ShadingPoint(Expr position, Expr normal, Expr view, Expr albedo,
      */
     public static ShadingPoint diffuse(Expr position, Expr normal, Expr view, Expr albedo) {
         return new ShadingPoint(position, normal, view, albedo,
-                new Expr.ConstFloat(F32, 1.0), new Expr.ConstFloat(F32, 0.0));
+                Ir.f(1.0), Ir.f(0.0));
     }
 
     private static void requireVec3(Expr e, String name) {
-        if (e == null || !V3.equals(e.type())) {
+        if (e == null || !Ir.V3.equals(e.type())) {
             throw new IllegalArgumentException(name + " must be a vec3, got " + (e == null ? "null" : e.type()));
         }
     }
 
     private static void requireScalar(Expr e, String name) {
-        if (e == null || !F32.equals(e.type())) {
+        if (e == null || !Ir.F32.equals(e.type())) {
             throw new IllegalArgumentException(name + " must be a float, got " + (e == null ? "null" : e.type()));
         }
     }

@@ -1,10 +1,11 @@
 package dev.vexelray.surface;
 
 import dev.supirvast.vastir.core.Expr;
+import dev.vexelray.ir.Ir;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static dev.vexelray.surface.Ir.POINT;
+import static dev.vexelray.ir.Ir.POINT;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;

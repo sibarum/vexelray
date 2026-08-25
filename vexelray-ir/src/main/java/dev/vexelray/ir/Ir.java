@@ -1,4 +1,4 @@
-package dev.vexelray.surface;
+package dev.vexelray.ir;
 
 import dev.supirvast.vastir.core.BinaryOp;
 import dev.supirvast.vastir.core.Expr;
@@ -10,15 +10,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Terse {@code core}-IR authoring vocabulary — the shared bottom layer for surface lowering, the derivative
- * pass, and normalisation. Everything emits fresh IR per call and nothing here is stateful, so an expression
- * built through these helpers is a pure value with structural equality (which is what lets a whole surface serve
- * as its own cache key).
+ * Terse authoring vocabulary for SupirVast {@code core} IR — the shared bottom layer for every module here that
+ * emits a shader. Everything returns fresh IR per call and nothing is stateful, so an expression built through
+ * these helpers is a pure value with structural equality (which is what lets a whole scene serve as its own
+ * shader-cache key).
  *
- * <p>Two rules that the {@code core} algebra imposes and that callers keep tripping over, handled here:
- * a binary operator's operands must have the <em>same</em> type (there is no vector-times-scalar primitive, so
- * scalars are broadcast — see {@link #scale}), and a "zero" must be built at a specific type (see {@link #zero}),
- * which the derivative pass needs constantly.
+ * <p>Two rules the {@code core} algebra imposes, handled here so that call sites do not each rediscover them:
+ * <ul>
+ *   <li>a binary operator's operands must have the <b>same type</b> — there is no vector-times-scalar
+ *       primitive, so a scalar reaches a vector by broadcast ({@link #scale}, {@link #broadcast});</li>
+ *   <li>a <b>zero must be built at a specific type</b> ({@link #zero}), which any pass that folds constants
+ *       needs constantly.</li>
+ * </ul>
+ *
+ * <p>Everything is expression-level. Statements, regions, and functions are assembled by whoever is composing;
+ * this module deliberately knows nothing about shaders, surfaces, shading, or 2D.
  */
 public final class Ir {
 
@@ -27,16 +33,25 @@ public final class Ir {
     public static final Type.Vector V3 = new Type.Vector(F32, 3);
     public static final Type.Vector V4 = new Type.Vector(F32, 4);
 
-    /** The distinguished sample point every surface is a function of: {@code sdf(vec3 p)}'s parameter. */
+    /**
+     * The distinguished sample point a field is a function of: the first parameter of {@code f(vec3 p)}.
+     *
+     * <p>A convention rather than a mechanism, but a load-bearing one — the derivative pass differentiates with
+     * respect to exactly this expression, and domain transforms substitute for it.
+     */
     public static final Expr POINT = new Expr.Param(0, V3);
 
     private Ir() {
     }
 
-    // --- constants ---
+    // --- constants and construction ---
 
     public static Expr f(double v) {
         return new Expr.ConstFloat(F32, v);
+    }
+
+    public static Expr v2(double a, double b) {
+        return new Expr.VectorConstruct(V2, List.of(f(a), f(b)));
     }
 
     public static Expr v2(Expr a, Expr b) {
@@ -51,10 +66,7 @@ public final class Ir {
         return new Expr.VectorConstruct(V3, List.of(x, y, z));
     }
 
-    /**
-     * The additive identity at {@code type} — scalar {@code 0.0} or a vector of them. The derivative pass leans on
-     * this for every constant subexpression, and the type must match exactly or lowering rejects the operand pair.
-     */
+    /** The additive identity at {@code type} — a scalar {@code 0.0}, or a vector of them. */
     public static Expr zero(Type type) {
         if (type instanceof Type.Vector vec) {
             List<Expr> components = new ArrayList<>(vec.count());
@@ -133,6 +145,11 @@ public final class Ir {
         return new Expr.VectorExtract(v, 2);
     }
 
+    /** The {@code xz} slice of a {@code vec3} — the ground plane, and the domain of a heightfield. */
+    public static Expr xz(Expr v) {
+        return v2(x(v), z(v));
+    }
+
     // --- math ---
 
     public static Expr length(Expr v) {
@@ -175,10 +192,5 @@ public final class Ir {
     /** A {@code MathFn} call at an explicit result type, for the cases the static factories do not cover. */
     public static Expr call(MathFn fn, Type type, Expr... args) {
         return new Expr.MathCall(fn, type, List.of(args));
-    }
-
-    /** True when {@code e} is a float constant equal to {@code v} — lets passes fold away trivial operands. */
-    public static boolean isConst(Expr e, double v) {
-        return e instanceof Expr.ConstFloat c && c.value() == v;
     }
 }

@@ -1,10 +1,7 @@
 package dev.vexelray.shader;
 
-import dev.supirvast.vastir.core.BinaryOp;
 import dev.supirvast.vastir.core.Expr;
-import dev.supirvast.vastir.type.Type;
-
-import java.util.List;
+import dev.vexelray.ir.Ir;
 
 /**
  * Built-in {@link Shading} models — the IR-emitting counterparts to
@@ -18,9 +15,6 @@ import java.util.List;
  * keep, and this class gains a model that reads it — none of which changes the {@link Shading} interface.
  */
 public final class Shadings {
-
-    private static final Type.Float F32 = Type.float32();
-    private static final Type.Vector V3 = new Type.Vector(F32, 3);
 
     private Shadings() {
     }
@@ -89,31 +83,14 @@ public final class Shadings {
 
         @Override
         public Expr shade(ShadingPoint point, Bindings bindings) {
-            Expr toLight = vec3(dirX, dirY, dirZ);
-            Expr diffuse = Expr.MathCall.max(Expr.MathCall.dot(point.normal(), toLight), f(0.0));
-            // Bound, not inlined: the broadcast below uses this three times, and everything reachable from
-            // point.normal() would come with it — six calls into the distance field, per channel.
-            Expr lit = bindings.bind("lit", Expr.MathCall.clamp(
-                    binary(BinaryOp.ADD, binary(BinaryOp.MUL, diffuse, f(intensity)), f(ambient)),
-                    f(0.0), f(1.0)));
-            return binary(BinaryOp.MUL, point.albedo(), broadcast(lit));
+            Expr toLight = Ir.v3(dirX, dirY, dirZ);
+            Expr diffuse = Ir.max(Ir.dot(point.normal(), toLight), Ir.f(0.0));
+            // Bound, not inlined. Ir.scale broadcasts this into three colour channels, and everything reachable
+            // from point.normal() would be copied along with it — six calls into the distance field, per channel.
+            Expr lit = bindings.bind("lit", Ir.clamp(
+                    Ir.add(Ir.mul(diffuse, Ir.f(intensity)), Ir.f(ambient)), Ir.f(0.0), Ir.f(1.0)));
+            return Ir.scale(point.albedo(), lit);
         }
     }
 
-    private static Expr f(double v) {
-        return new Expr.ConstFloat(F32, v);
-    }
-
-    private static Expr vec3(double x, double y, double z) {
-        return new Expr.VectorConstruct(V3, List.of(f(x), f(y), f(z)));
-    }
-
-    /** {@code vec3 * scalar} is not a {@code core} primitive; a scalar reaches a vector by broadcast. */
-    private static Expr broadcast(Expr scalar) {
-        return new Expr.VectorConstruct(V3, List.of(scalar, scalar, scalar));
-    }
-
-    private static Expr binary(BinaryOp op, Expr a, Expr b) {
-        return new Expr.Binary(op, a, b);
-    }
 }

@@ -19,6 +19,9 @@
     </description>
 
     <modules>
+        <!-- The terse vocabulary for authoring SupirVast core IR by hand. Depends on nothing but vastir; the
+             layer below every module that emits a shader. -->
+        <module>vexelray-ir</module>
         <!-- Binding-agnostic engine vocabulary: pipeline config, resources, lighting, runtime interfaces.
              No SupirVast, no Vulkan. Everything else compiles against this. -->
         <module>vexelray-core</module>
@@ -71,6 +74,11 @@
     <dependencyManagement>
         <dependencies>
             <!-- Reactor-internal modules: children reference these without a version. -->
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-ir</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-core</artifactId>

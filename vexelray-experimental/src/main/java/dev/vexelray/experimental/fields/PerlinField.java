@@ -4,12 +4,12 @@ import dev.supirvast.vastir.core.Expr;
 import dev.supirvast.vastir.tools.Noise;
 import dev.vexelray.experimental.ShapeField;
 
-import static dev.vexelray.experimental.Ir.f;
-import static dev.vexelray.experimental.Ir.mul;
-import static dev.vexelray.experimental.Ir.mulS2;
-import static dev.vexelray.experimental.Ir.sub;
-import static dev.vexelray.experimental.Ir.xz;
-import static dev.vexelray.experimental.Ir.y;
+import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.mul;
+import static dev.vexelray.ir.Ir.scale;
+import static dev.vexelray.ir.Ir.sub;
+import static dev.vexelray.ir.Ir.xz;
+import static dev.vexelray.ir.Ir.y;
 
 /**
  * A gradient (Perlin) heightfield ({@link Noise#fbmPerlin2} — random gradients per grid node, zero at nodes). The
@@ -25,7 +25,7 @@ public final class PerlinField implements ShapeField {
 
     @Override
     public Expr sdf(Expr point) {
-        Expr h = mul(Noise.fbmPerlin2(mulS2(xz(point), f(0.16)), 3), f(2.0));
+        Expr h = mul(Noise.fbmPerlin2(scale(xz(point), f(0.16)), 3), f(2.0));
         return mul(sub(y(point), h), f(0.30));
     }
 

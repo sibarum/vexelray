@@ -4,15 +4,15 @@ import dev.supirvast.vastir.core.Expr;
 import dev.supirvast.vastir.tools.Noise;
 import dev.vexelray.experimental.ShapeField;
 
-import static dev.vexelray.experimental.Ir.add;
-import static dev.vexelray.experimental.Ir.div;
-import static dev.vexelray.experimental.Ir.f;
-import static dev.vexelray.experimental.Ir.mul;
-import static dev.vexelray.experimental.Ir.mulS2;
-import static dev.vexelray.experimental.Ir.sub;
-import static dev.vexelray.experimental.Ir.v2;
-import static dev.vexelray.experimental.Ir.xz;
-import static dev.vexelray.experimental.Ir.y;
+import static dev.vexelray.ir.Ir.add;
+import static dev.vexelray.ir.Ir.div;
+import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.mul;
+import static dev.vexelray.ir.Ir.scale;
+import static dev.vexelray.ir.Ir.sub;
+import static dev.vexelray.ir.Ir.v2;
+import static dev.vexelray.ir.Ir.xz;
+import static dev.vexelray.ir.Ir.y;
 
 /**
  * The same Perlin heightfield as {@link PerlinField}, but with a <em>gradient-normalised</em> distance:
@@ -35,7 +35,7 @@ public final class PerlinAnalyticField implements ShapeField {
 
     /** The signed height h(xz) — same field as {@link PerlinField}, factored out so we can sample its gradient. */
     private static Expr height(Expr xzPoint) {
-        return mul(Noise.fbmPerlin2(mulS2(xzPoint, f(FREQ)), 3), f(AMP));
+        return mul(Noise.fbmPerlin2(scale(xzPoint, f(FREQ)), 3), f(AMP));
     }
 
     @Override

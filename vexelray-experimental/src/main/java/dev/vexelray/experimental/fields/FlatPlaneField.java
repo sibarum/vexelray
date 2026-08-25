@@ -1,7 +1,7 @@
 package dev.vexelray.experimental.fields;
 
 import dev.supirvast.vastir.core.Expr;
-import dev.vexelray.experimental.Ir;
+import dev.vexelray.ir.Ir;
 import dev.vexelray.experimental.ShapeField;
 
 /**

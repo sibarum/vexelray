@@ -2,13 +2,13 @@ package dev.vexelray.experimental;
 
 import dev.supirvast.vastir.core.Expr;
 
-import static dev.vexelray.experimental.Ir.add;
-import static dev.vexelray.experimental.Ir.div;
-import static dev.vexelray.experimental.Ir.f;
-import static dev.vexelray.experimental.Ir.mul;
-import static dev.vexelray.experimental.Ir.mulS3;
-import static dev.vexelray.experimental.Ir.sub;
-import static dev.vexelray.experimental.Ir.v3;
+import static dev.vexelray.ir.Ir.add;
+import static dev.vexelray.ir.Ir.div;
+import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.mul;
+import static dev.vexelray.ir.Ir.scale;
+import static dev.vexelray.ir.Ir.sub;
+import static dev.vexelray.ir.Ir.v3;
 
 /**
  * Primitive signed-distance functions and combinators, as {@code core} IR — the atoms of a bounded-primitive
@@ -33,7 +33,7 @@ public final class Sdf {
         Expr ba = v3(bx - ax, by - ay, bz - az);
         Expr pa = sub(p, a);
         Expr h = Expr.MathCall.clamp(div(Expr.MathCall.dot(pa, ba), Expr.MathCall.dot(ba, ba)), f(0.0), f(1.0));
-        return sub(Expr.MathCall.length(sub(pa, mulS3(ba, h))), f(r));
+        return sub(Expr.MathCall.length(sub(pa, scale(ba, h))), f(r));
     }
 
     /**
