@@ -265,6 +265,49 @@ literal per-pair `smin` (non-associative). Key open problem: **faithful prefilte
 engineering is. Plan: prototype V0→V3 in `vexelray-experimental` as `ShapeField`s before committing; it lands
 eventually as a `RenderTechnique` atop the Phase 2 runtime. See the doc's §7 for the staged plan.
 
+## 10. Surface compiler — surfaces as data, normalized to fields (D14)
+
+**DECISION (D14, DOCUMENTED → WIP).** Accept a *surface expression* as data and compile it into the SDF render
+path at runtime. Design doc: [`surface-compiler.md`](surface-compiler.md); new module `vexelray-surface`.
+
+The key finding, and the reason this is worth a module rather than a helper: **the compiler already exists**
+(`ShapeField` is an AST, `Raymarcher.fragmentSpirv` lowers it in-process, `ShaderComposer` reserves the SDF
+composer seat, `ShaderKey` is the cache identity). What does not exist is the ability to accept an expression
+that is **not already a distance field** — and every surface a human types is such an expression. So the module
+is a *normalization* pass, not a codegen pass:
+
+- **`Surface`** is a sealed record tree, so structural equality — and therefore `ShaderKey` collapse — is free,
+  and a surface serializes through the existing `supir` text form.
+- **Lipschitz tracking during lowering.** Each node states its own bound; the gradient division is inserted only
+  where a subtree cannot vouch for itself. Consequence, and the acceptance test: a hand-authored scene expressed
+  as a `Surface` must lower to **byte-identical SPIR-V** — generality costs nothing when it is not used.
+- **Forward-mode symbolic AD over `Expr`**, exhaustive over the sealed record set. `grad f` is itself `core` IR,
+  so it lowers to both backends and render==sim survives into user-authored geometry — a typed-in surface is
+  immediately CPU-queryable for collision with no second implementation.
+- **`SmoothUnion` is N-ary from the start**, not a binary fold, so D13's non-associativity is not re-introduced
+  by a tree that makes deep left-folds easy to build by accident.
+
+**Alternative rejected:** generate GLSL/HLSL text from the surface. Faster to a first picture, but it forfeits
+the CPU backend (so render==sim dies exactly where it is most valuable) and violates the standing rule that
+render-path code is authored as core IR, never as per-backend copies.
+
+**Known limitation of the first stage:** `f / max(|grad f|, eps)` is a local correction, not a proof — it is
+safe where the gradient does not collapse ahead of the ray. Interval/affine arithmetic (staged next) is what
+actually proves a march is hole-free, and it is the *same* pass the vexel world model needs for prefiltered
+node bounds — which is the strategic argument for the ordering.
+
+**S0 landed** (`vexelray-surface`, 38 tests): the tree, the lowering with Lipschitz tracking, the derivative
+pass, normalisation, and the input/output limits. Two findings from measuring it that changed the design:
+
+- **The derivative's size multiplier is not a constant.** Flat fields differentiate at 6–16x, but the
+  duplication *compounds* through nesting — ~4x per nested `normalize`, so 35 nodes becomes 51,736 at depth
+  four. Consequence: the planned "single pass carrying three partials" fixes only the 3x seed factor. The
+  compounding comes from rules using a sub-tangent more than once, and the actual fix is to bind each tangent to
+  a `LocalVar` and emit the gradient as a function body rather than a pure expression tree.
+- **Bounding compiler input does not bound compiler work.** `SurfaceLimits` originally capped only the incoming
+  tree, which the above walks straight through. It now caps the lowered output as well. Found by measurement,
+  not by review — the input-only version looked obviously sufficient.
+
 ## Open questions (to revisit as phases land)
 
 - **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers may need

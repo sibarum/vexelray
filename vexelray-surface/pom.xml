@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-surface</artifactId>
+
+    <description>
+        Surfaces as data. A Surface is a sealed record tree — bounded primitives, transforms, combinators, and an
+        Implicit escape hatch holding an arbitrary expression — that lowers to SupirVast `core` IR. The module's
+        real work is the analysis that comes with the lowering: a surface expression is generally NOT a signed
+        distance field, and sphere-tracing one directly punches holes through it. Lowering therefore tracks a
+        Lipschitz bound per subtree and inserts a gradient normalisation (from a forward-mode symbolic derivative
+        of the IR) exactly where a subtree cannot vouch for itself — so hand-authored SDF scenes lower to what
+        they always did, and only arbitrary implicits pay. See docs/surface-compiler.md.
+
+        No Vulkan, no shader composition: this module produces IR and bounds. Composing that into a ray-march
+        fragment is the SDF ShaderComposer's job (staged next).
+    </description>
+
+    <dependencies>
+        <!-- SupirVast core IR: the Expr algebra surfaces lower into, and the derivative pass operates over. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir</artifactId>
+        </dependency>
+    </dependencies>
+</project>

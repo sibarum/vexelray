@@ -27,6 +27,9 @@
         <module>vexelray-engine-api</module>
         <!-- Runtime shader generation: engine descriptions -> SupirVast core IR -> SPIR-V. The SupirVast seam. -->
         <module>vexelray-shader</module>
+        <!-- Surfaces as data: a Surface record tree lowered to core IR, with the Lipschitz analysis that turns an
+             arbitrary implicit expression into a marchable distance field. See docs/surface-compiler.md. -->
+        <module>vexelray-surface</module>
         <!-- Build-time MSDF atlas generator (Maven plugin). Listed before vexelray-text, which uses it. -->
         <module>vexelray-msdf-maven-plugin</module>
         <!-- MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, and the MSDF shader as core IR. -->
@@ -78,6 +81,11 @@
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-shader</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-surface</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
