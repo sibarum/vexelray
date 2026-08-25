@@ -11,11 +11,17 @@ package dev.vexelray.lighting;
  * (multi-light energy-conserving PBR) as it likes without the others paying for it — the code that isn't chosen
  * is never emitted.
  *
- * <p>The IR-emitting method is intentionally absent from this first-cut interface: its exact shape (the shading
- * context it reads — interpolated normal, view vector, light list, sampled material channels — and the
- * {@code core.Expr}/{@code core.Region} it returns) is being designed against real material composition and
- * will land with the first concrete composer. For now a model is identified and described so pipelines can be
- * configured, cached ({@link dev.vexelray.shader.ShaderKey}), and swapped.
+ * <p><b>The IR-emitting method is deliberately not here — it is one layer up.</b> This module is
+ * binding-agnostic and carries no SupirVast dependency, so it cannot name an {@code Expr} at all. The shading
+ * method therefore lives on {@code dev.vexelray.shader.Shading}, which extends this interface and adds
+ * {@code Expr shade(ShadingPoint)}; {@code ShadingPoint} is the context it reads (position, normal, view
+ * direction, albedo, and PBR channels), and it is written to be filled equally by a ray-marcher's
+ * finite-difference normal or a rasteriser's interpolated one, so a model serves both.
+ *
+ * <p>What that split buys: a pipeline can be <em>configured</em> from here — a model identified, described,
+ * cached ({@link dev.vexelray.shader.ShaderKey}), and swapped — without the configuring layer depending on the
+ * shader IR. A composer, which does, requires the {@code Shading} half. A model that implements only this
+ * interface can be named in a configuration but not compiled into one.
  */
 public interface LightingModel {
 

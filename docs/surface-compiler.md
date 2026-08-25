@@ -151,6 +151,28 @@ IR, they can be differentially tested against each other, which is the only way 
 
 ---
 
+### 4.1 Duplication is the recurring enemy, at every layer
+
+Worth stating on its own, because it has now bitten three times in three different disguises:
+
+- **D12**: the field inlined at all eight of its sample sites → 22 MB of SPIR-V. Fixed by emitting it once as a
+  called function.
+- **§2.1**: the derivative re-emitting its primal per seed and per rule, compounding through nesting → 1478x at
+  depth four. Fix staged as S0.5.
+- **S1**: `Shading.shade` originally returned a bare `Expr`. Lambert broadcasts its diffuse term into three
+  colour channels, and the surface normal is reachable from it — so the normal's six field calls were emitted
+  three times. Eight samples per pixel became twenty, silently, in code written the same afternoon as the
+  paragraph warning about exactly this.
+
+The root cause is the same each time: `core` expressions are immutable value trees and **nothing downstream does
+common-subexpression elimination**, so a repeated expression is repeated *work*, and the operands in question
+are field evaluations rather than registers. The general remedy is let-binding. S1 applies it at the interface:
+`shade` receives a `Bindings`, and the composer binds the normal before shading ever sees it. S0.5 applies the
+same remedy inside the derivative. Any future IR-emitting interface in this codebase should take a `Bindings`
+from the start rather than learn this a fourth time.
+
+---
+
 ## 5. render == sim, extended to user-authored geometry
 
 The same `Expr` lowers to Truffle. So a surface typed into a text box is **immediately queryable on the CPU** —
@@ -212,8 +234,11 @@ render time, CPU-eval cost, and fidelity against a high-step reference. That is 
   soft-min checked for conservatism and order-independence.
 - **S0.5 — let-bound gradients.** Bind tangents to `LocalVar`s and emit `grad f` as a function body, turning
   §2.1's compounding into addition. Promoted out of "someday" by the measurements above.
-- **S1 — the composer.** `SdfComposer implements ShaderComposer<Surface>`, folding in a `LightingModel`;
-  `ShaderKey` caching wired for real.
+- **S1 — the composer. DONE.** `vexelray-technique-sdf`: `SdfComposer implements ShaderComposer<SdfScene>`,
+  emitting the `Fullscreen` vertex plus a ray-march fragment, with the field as one called `float sdf(vec3)`.
+  `ShaderCache` wired for real. The generated SPIR-V is checked by `spirv-val` in the test suite. Along the way
+  `LightingModel` finally got its IR-emitting half — as `Shading` in `vexelray-shader`, because
+  `vexelray-core` carries no SupirVast dependency and so cannot name an `Expr` (§4.1).
 - **S2 — harness parity.** A `Surface`-backed `ShapeField`; the four proofs of §6.
 - **S3 — interval / affine pass.** Empty-space skipping; shared with the vexel work.
 - **S4 — interpreted mode and hot swap.** The editing loop; differentially tested against specialized mode.

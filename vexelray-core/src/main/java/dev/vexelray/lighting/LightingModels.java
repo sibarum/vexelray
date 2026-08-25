@@ -1,9 +1,13 @@
 package dev.vexelray.lighting;
 
 /**
- * Built-in {@link LightingModel}s. Each is a marker/description today (the runtime shader-generation milestone
- * is API-design-only); the IR each emits lands with the first material composer. Custom models implement
- * {@link LightingModel} directly.
+ * Built-in {@link LightingModel}s as <em>descriptions</em> — identity and light usage, for configuring and
+ * keying a pipeline from a layer that has no SupirVast dependency.
+ *
+ * <p>The compilable counterparts live in {@code dev.vexelray.shader.Shadings}, which returns models that also
+ * emit their shading IR. Reach for those when composing a shader; reach for these when naming a model in a
+ * configuration. {@code cookTorrance()} is still description-only on both sides — it is intended to compose onto
+ * SupirVast's {@code vastir-pbr} rather than re-derive the BRDF here.
  */
 public final class LightingModels {
 

@@ -308,10 +308,40 @@ pass, normalisation, and the input/output limits. Two findings from measuring it
   tree, which the above walks straight through. It now caps the lowered output as well. Found by measurement,
   not by review — the input-only version looked obviously sufficient.
 
+## 11. The lighting model's IR half, and the SDF composer (D15)
+
+**DECISION (D15, DONE).** `vexelray-technique-sdf` stood up with `SdfComposer implements
+ShaderComposer<SdfScene>` — the seat `ShaderComposer`'s javadoc reserved for "an SDF composer turns a
+signed-distance scene into a fullscreen fragment". `ShaderCache` (keyed on `ShaderKey`) is wired for real, so
+the "shader cache" open question below is closed. Generated SPIR-V is gated through `spirv-val` in the tests.
+
+**`LightingModel` gets its IR method — one layer up, not where it was promised.** The interface has been
+holding a placeholder: *"the IR-emitting method is intentionally absent … and will land with the first concrete
+composer."* It cannot land there: `vexelray-core` is deliberately SupirVast-free and so cannot name an `Expr`.
+Resolution — `dev.vexelray.shader.Shading extends LightingModel` adds `Expr shade(ShadingPoint, Bindings)`, with
+`ShadingPoint` (position, normal, view, albedo, roughness, metallic) written to be filled equally by a marcher's
+finite-difference normal or a rasteriser's interpolated one. Core keeps configuration; the shader seam keeps
+composition. A model implementing only `LightingModel` can be named in a pipeline but not compiled into one,
+which is the honest state of `cookTorrance()` today.
+
+**`shade` takes a `Bindings`, and that is not incidental.** Written first as a bare `Expr`-returning method, the
+Lambert model broadcast its diffuse term into three colour channels; the surface normal is reachable from that
+term, so the normal's six field calls were emitted three times and a pixel went from 8 field samples to 20.
+Same root cause as D12 and as the derivative blow-up in D14 — `core` expressions are value trees and nothing
+downstream does CSE. `Bindings` lets a model bind a value once; the composer also binds the normal before
+shading sees it. Now pinned by a test asserting exactly 8 `OpFunctionCall`s. **Any future IR-emitting interface
+here should take a `Bindings` from the start.**
+
+*Also decided:* a directional light is a parameter of the model, not a scene resource, so its parameters are
+part of the model's `id()` — two differently-lit Lamberts must not collide in the shader cache. A light *buffer*
+waits until there is a second light to shape the ABI. Camera position, orientation, and viewport aspect are push
+constants, so turning the camera or resizing the window is a 24-byte upload rather than a recompile.
+
 ## Open questions (to revisit as phases land)
 
 - **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers may need
   per-frame-slot copies. Deferred until Phase 2 makes frames-in-flight real (today: 1 in flight).
 - **Depth buffer creation.** `GraphicsPipeline`/`OffscreenRenderer` are colour-only today; the shared depth
   attachment (§4 "depth is always present") is new work in Phase 1/2.
-- **Shader cache.** `ShaderComposer.keyFor` exists but is unused; wiring the cache is Phase 3 polish.
+- ~~**Shader cache.** `ShaderComposer.keyFor` exists but is unused; wiring the cache is Phase 3 polish.~~
+  **Closed by D15** — `ShaderCache` in `vexelray-shader`, keyed on `ShaderKey`, in use by the SDF composer.
