@@ -113,11 +113,27 @@ public final class VertexBuffer implements AutoCloseable {
 
     /** Overwrite the buffer's contents with {@code vertices} (must not exceed the buffer's capacity). */
     public void update(float[] vertices) {
-        if (vertices.length > capacityFloats) {
-            throw new IllegalArgumentException("vertex data (" + vertices.length + " floats) exceeds capacity ("
+        update(vertices, vertices.length);
+    }
+
+    /**
+     * Overwrite the buffer's contents with the first {@code floats} of {@code vertices}.
+     *
+     * <p>The length is passed separately from the array's own so that a caller holding more data than will fit
+     * can decide what to do about it rather than being thrown at mid-frame. {@link #capacityFloats()} is how it
+     * finds out in advance.
+     */
+    public void update(float[] vertices, int floats) {
+        if (floats > capacityFloats || floats > vertices.length) {
+            throw new IllegalArgumentException("vertex data (" + floats + " floats) exceeds capacity ("
                     + capacityFloats + ")");
         }
-        MemorySegment.copy(vertices, 0, mapped, JAVA_FLOAT, 0, vertices.length);
+        MemorySegment.copy(vertices, 0, mapped, JAVA_FLOAT, 0, floats);
+    }
+
+    /** How many floats this buffer holds — what a caller checks against instead of discovering by exception. */
+    public long capacityFloats() {
+        return capacityFloats;
     }
 
     /** The {@code VkBuffer} handle to bind at vertex-input binding 0. */
