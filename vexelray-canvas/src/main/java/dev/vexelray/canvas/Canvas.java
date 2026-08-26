@@ -23,6 +23,9 @@ public final class Canvas {
     /** Effectively-infinite half-extent for the default (unclipped) clip box. */
     private static final float NO_CLIP = 1e9f;
 
+    /** The identity of the image tint's multiply — "show the texture as it is", not a colour choice. */
+    private static final Color UNTINTED = Color.WHITE;
+
     private int width;
     private int height;
     private float[] data = new float[CanvasVertex.FLOATS_PER_VERTEX * 6 * 64];
@@ -355,12 +358,22 @@ public final class Canvas {
      */
     public Canvas image(float x, float y, float w, float h, float radius, Object image,
                         float u0, float v0, float u1, float v1, Color tint) {
+        return image(x, y, w, h, radius, radius, image, u0, v0, u1, v1, tint);
+    }
+
+    /**
+     * As the single-radius overload, with independent top and bottom corner radii — the same per-vertical-half
+     * selection the shape family uses, so an image in a tab-shaped box rounds the way the box does.
+     */
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, Object image,
+                        float u0, float v0, float u1, float v1, Color tint) {
         float halfW = w / 2f;
         float halfH = h / 2f;
-        float r = clampRadius(radius, halfW, halfH);
+        float rTop = clampRadius(radiusTop, halfW, halfH);
+        float rBottom = clampRadius(radiusBottom, halfW, halfH);
         activeImage = image;
         try {
-            imageQuad(x + halfW, y + halfH, halfW, halfH, r, u0, v0, u1, v1, tint);
+            imageQuad(x + halfW, y + halfH, halfW, halfH, rTop, rBottom, u0, v0, u1, v1, tint);
         } finally {
             activeImage = null;
         }
@@ -370,7 +383,21 @@ public final class Canvas {
     /** {@link #image(float, float, float, float, float, Object, float, float, float, float, Color)} showing the
      *  whole texture, square-cornered and untinted — what a viewport wants. */
     public Canvas image(float x, float y, float w, float h, Object image) {
-        return image(x, y, w, h, 0f, image, 0f, 0f, 1f, 1f, Color.WHITE);
+        return image(x, y, w, h, 0f, image, 0f, 0f, 1f, 1f, UNTINTED);
+    }
+
+    /**
+     * The whole texture across a rounded box at {@code alpha}, otherwise untinted — the <b>viewport</b> overload.
+     *
+     * <p>Takes an alpha rather than a {@link Color} because there is no colour decision to make here: the tint
+     * multiplies the texel, so untinted <em>is</em> opaque white, and that is a fact about the multiply rather
+     * than a shade anyone would theme. A caller that names a colour to mean "leave it alone" is stating a palette
+     * choice it does not have, which is precisely what a themed GUI must not do.
+     */
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, Object image,
+                        float alpha) {
+        return image(x, y, w, h, radiusTop, radiusBottom, image, 0f, 0f, 1f, 1f,
+                alpha >= 1f ? UNTINTED : Color.withAlpha(UNTINTED, alpha));
     }
 
     /**
@@ -440,7 +467,7 @@ public final class Canvas {
      * edges land exactly on {@code (u0,v0)-(u1,v1)}. The overhang samples outside the region, but its coverage is
      * zero there, so nothing it reads survives the multiply.
      */
-    private void imageQuad(float cx, float cy, float halfW, float halfH, float radius,
+    private void imageQuad(float cx, float cy, float halfW, float halfH, float rTop, float rBottom,
                            float u0, float v0, float u1, float v1, Color color) {
         float ex = halfW + PAD;
         float ey = halfH + PAD;
@@ -451,17 +478,17 @@ public final class Canvas {
         float uMax = u1 + PAD * du;
         float vMin = v0 - PAD * dv;
         float vMax = v1 + PAD * dv;
-        imageVert(cx, cy, -ex, -ey, uMin, vMin, halfW, halfH, radius, color);
-        imageVert(cx, cy, ex, -ey, uMax, vMin, halfW, halfH, radius, color);
-        imageVert(cx, cy, ex, ey, uMax, vMax, halfW, halfH, radius, color);
-        imageVert(cx, cy, -ex, -ey, uMin, vMin, halfW, halfH, radius, color);
-        imageVert(cx, cy, ex, ey, uMax, vMax, halfW, halfH, radius, color);
-        imageVert(cx, cy, -ex, ey, uMin, vMax, halfW, halfH, radius, color);
+        imageVert(cx, cy, -ex, -ey, uMin, vMin, halfW, halfH, rTop, rBottom, color);
+        imageVert(cx, cy, ex, -ey, uMax, vMin, halfW, halfH, rTop, rBottom, color);
+        imageVert(cx, cy, ex, ey, uMax, vMax, halfW, halfH, rTop, rBottom, color);
+        imageVert(cx, cy, -ex, -ey, uMin, vMin, halfW, halfH, rTop, rBottom, color);
+        imageVert(cx, cy, ex, ey, uMax, vMax, halfW, halfH, rTop, rBottom, color);
+        imageVert(cx, cy, -ex, ey, uMin, vMax, halfW, halfH, rTop, rBottom, color);
     }
 
     private void imageVert(float cx, float cy, float lx, float ly, float u, float v,
-                           float halfW, float halfH, float radius, Color c) {
-        push(cx + lx, cy + ly, c, u, v, CanvasVertex.KIND_IMAGE, lx, ly, halfW, halfH, radius, radius);
+                           float halfW, float halfH, float rTop, float rBottom, Color c) {
+        push(cx + lx, cy + ly, c, u, v, CanvasVertex.KIND_IMAGE, lx, ly, halfW, halfH, rTop, rBottom);
     }
 
     private void glyphVert(float sx, float sy, float u, float v, float screenPxRange, Color c) {
