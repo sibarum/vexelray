@@ -211,13 +211,45 @@ public sealed interface Surface {
      * correction, not a proof (docs/surface-compiler.md §7); interval arithmetic is what will eventually
      * guarantee it.
      */
-    record Implicit(Expr f) implements Surface {
+    record Implicit(Expr f, double lipschitzBound) implements Surface {
+
+        /**
+         * An implicit whose bound is unknown, so the compiler derives one pointwise from the expression's own
+         * gradient. Correct for anything, and only locally correct — see the class note above.
+         */
+        public Implicit(Expr f) {
+            this(f, Field.UNKNOWN);
+        }
+
         public Implicit {
             requireNonNull(f);
             if (!Ir.F32.equals(f.type())) {
                 throw new IllegalArgumentException("an implicit surface must be a scalar float expression, got "
                         + f.type());
             }
+            if (Double.isNaN(lipschitzBound) || lipschitzBound <= 0) {
+                throw new IllegalArgumentException("lipschitz bound must be positive, got " + lipschitzBound);
+            }
+        }
+
+        /**
+         * An implicit with a <em>known global</em> Lipschitz bound — every {@code |grad f| <= bound} everywhere.
+         *
+         * <p>Strictly better than the derived form when you have it, in three ways at once. It is safe
+         * <em>globally</em> rather than locally, so the field cannot overshoot anywhere. It puts no derivative
+         * in the shader at all, where the pointwise form multiplies the expression six- to sixteen-fold. And it
+         * is one divide.
+         *
+         * <p>{@code sin(x)+sin(y)+sin(z)} is the standing example: its gradient is
+         * {@code (cos x, cos y, cos z)}, so the bound is exactly {@code sqrt(3)}. Derived pointwise instead, the
+         * same surface overshoots by 3496x at the cell centres, where all three cosines vanish at once and the
+         * epsilon floor takes over.
+         */
+        public static Implicit bounded(Expr f, double lipschitzBound) {
+            if (!Double.isFinite(lipschitzBound)) {
+                throw new IllegalArgumentException("a known bound must be finite, got " + lipschitzBound);
+            }
+            return new Implicit(f, lipschitzBound);
         }
     }
 

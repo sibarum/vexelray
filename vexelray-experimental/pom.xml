@@ -38,6 +38,11 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-ir</artifactId>
         </dependency>
+        <!-- Surfaces as data, so the harness can render a Surface through the same shared Raymarcher. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-surface</artifactId>
+        </dependency>
         <!-- Runtime shader composition: brings vastir + vastir-tools transitively (Fullscreen, Noise, lowering). -->
         <dependency>
             <groupId>dev.vexelray</groupId>

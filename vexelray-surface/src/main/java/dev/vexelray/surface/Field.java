@@ -53,6 +53,15 @@ public record Field(Expr distance, double lipschitz) {
     }
 
     /**
+     * This field's distance expression evaluated at some other point expression — the field relocated into a
+     * caller's frame. Lets a compiled surface be dropped into IR that was authored around a different variable,
+     * which is how it reaches the research harness and anything else that names its own sample point.
+     */
+    public Expr at(Expr point) {
+        return Substitute.point(distance, point);
+    }
+
+    /**
      * This field as a standalone {@code float sdf(vec3)} function — the form both backends consume: the fragment
      * shader calls it (once, rather than inlining the field at all eight of its use sites — D12), and the CPU
      * side lowers the same function to query the same surface. One definition, two targets: render == sim.

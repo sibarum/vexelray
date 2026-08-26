@@ -115,7 +115,11 @@ public final class SurfaceCompiler {
             // The one case that cannot vouch for itself. Normalise in the surface's own frame first, then move it
             // into the caller's — see Substitute for why that order is not interchangeable.
             case Surface.Implicit i -> {
-                Field normalised = Normalize.lipschitz(i.f());
+                // A known global bound is both safer and cheaper than a derived one: safe everywhere rather than
+                // locally, and one divide rather than a symbolic gradient several times the size of the field.
+                Field normalised = Double.isFinite(i.lipschitzBound())
+                        ? Normalize.byConstant(i.f(), i.lipschitzBound())
+                        : Normalize.lipschitz(i.f());
                 yield new Field(Substitute.point(normalised.distance(), p), normalised.lipschitz());
             }
         };
