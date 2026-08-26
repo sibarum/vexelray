@@ -58,10 +58,20 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         return List.of(ShaderStage.VERTEX, ShaderStage.FRAGMENT);
     }
 
+    /**
+     * The pair, and the {@code WithUv} half of that first line is load-bearing. {@link Fullscreen} offers two
+     * fullscreen-triangle vertex stages: one that writes only {@code gl_Position}, and one that also emits the
+     * {@code vUv} varying. The ray-march fragment reads {@code vUv} — it is where the pixel's screen position
+     * comes from, and so the only thing that makes one ray differ from another — so it must be paired with the
+     * second. Paired with the first, the input is simply never written: every pixel marches the same ray, the
+     * frame comes out a single flat colour, and nothing anywhere reports an error, because a stage whose input
+     * nothing writes is still perfectly valid SPIR-V and passes {@code spirv-val} on its own.
+     */
     @Override
     public List<ComposedShader> compose(SdfScene scene) {
         return List.of(
-                new ComposedShader(ShaderStage.VERTEX, Fullscreen.triangleVertexSpirv(), Fullscreen.ENTRY_POINT),
+                new ComposedShader(ShaderStage.VERTEX, Fullscreen.triangleVertexWithUvSpirv(),
+                        Fullscreen.ENTRY_POINT),
                 new ComposedShader(ShaderStage.FRAGMENT, fragmentSpirv(scene), Fullscreen.ENTRY_POINT));
     }
 

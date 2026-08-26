@@ -57,6 +57,32 @@ class SdfComposerTest {
     }
 
     @Test
+    @DisplayName("the vertex stage writes the varying the fragment reads")
+    void stagesAgreeOnTheirInterface() {
+        // The bug this pins rendered every frame a single flat colour, and nothing reported it.
+        //
+        // Fullscreen offers two vertex stages: triangleVertexSpirv, which writes only gl_Position, and
+        // triangleVertexWithUvSpirv, which also emits vUv. The march fragment reads vUv -- it is where a
+        // pixel's screen position comes from, and so the only thing making one ray differ from another.
+        // Paired with the first, the fragment's input is never written by anything: every pixel marches the
+        // identical ray and the frame comes out one colour, uniformly.
+        //
+        // spirv-val cannot catch this and never will. It validates a module, and BOTH modules are valid --
+        // a shader input that no earlier stage writes is legal SPIR-V, its value merely undefined. The defect
+        // lives in the gap between two individually correct things, which is why the check has to be made
+        // here, across the pair, rather than left to the validator that already runs below.
+        NativeTools tools = new NativeTools();
+        Assumptions.assumeTrue(tools.isAvailable(), "spirv-tools not bundled for this platform");
+        List<ComposedShader> shaders = composer.compose(scene());
+        String vertex = tools.disassemble(shaders.get(0).spirv());
+        String fragment = tools.disassemble(shaders.get(1).spirv());
+        assertTrue(fragment.contains("%_ptr_Input_v2float Input"),
+                "the fragment is expected to read a vec2 varying; if that changed, so must this test");
+        assertTrue(vertex.contains("%_ptr_Output_v2float Output"),
+                "the vertex stage writes no vec2 varying, so the fragment's is undefined:\n" + vertex);
+    }
+
+    @Test
     @DisplayName("the generated SPIR-V passes spirv-val")
     void generatedSpirvIsValid() {
         // The real check. Everything else here inspects bytes we produced ourselves; this asks Khronos's own
