@@ -88,7 +88,19 @@ public final class SurfaceCompiler {
                         Math.max(from.lipschitz(), remove.lipschitz()));
             }
 
-            case Surface.SmoothUnion s -> smoothUnion(s, p);
+            case Surface.SmoothUnion s -> softBlend(s.sharpness(), lowerAll(s.of(), p), Blend.SOFT_MIN);
+
+            case Surface.SmoothIntersection s ->
+                    softBlend(s.sharpness(), lowerAll(s.of(), p), Blend.SOFT_MAX);
+
+            // Carving is intersecting with the inverse, and negation leaves a field 1-Lipschitz — so this needs
+            // no rule of its own beyond flipping the sign of what is being removed.
+            case Surface.SmoothDifference s -> {
+                Field from = lower(s.from(), p);
+                Field remove = lower(s.remove(), p);
+                Field inverted = new Field(Ir.neg(remove.distance()), remove.lipschitz());
+                yield softBlend(s.sharpness(), List.of(from, inverted), Blend.SOFT_MAX);
+            }
 
             case Surface.Shell s -> {
                 Field inner = lower(s.of(), p);
@@ -121,40 +133,73 @@ public final class SurfaceCompiler {
         return new Field(distance, lipschitz);
     }
 
+    /** Which end of the range a {@link #softBlend} rounds off. */
+    private enum Blend {
+        /** Soft-min: a union whose seams become fillets. Sits at or below {@code min}. */
+        SOFT_MIN(-1.0),
+        /** Soft-max: an intersection whose rims become fillets. Sits at or above {@code max}. */
+        SOFT_MAX(1.0);
+
+        final double sign;
+
+        Blend(double sign) {
+            this.sign = sign;
+        }
+
+        Expr extremum(Expr a, Expr b) {
+            return this == SOFT_MIN ? Ir.min(a, b) : Ir.max(a, b);
+        }
+    }
+
     /**
-     * The N-ary exponential soft-min, in its numerically stable form:
-     * {@code m - log(sum exp(-k*(d - m)))/k}, where {@code m} is the plain minimum.
+     * The N-ary exponential soft-min / soft-max, in its numerically stable form:
+     * {@code m + s*log(sum exp(s*k*(d - m)))/k}, where {@code m} is the plain extremum and {@code s} is
+     * {@code -1} for a soft-min or {@code +1} for a soft-max.
      *
-     * <p>Subtracting {@code m} before exponentiating is not a nicety. Written directly as
-     * {@code -log(sum exp(-k*d))/k}, the exponent grows without bound as a point moves inside the geometry — at
-     * {@code k = 8} a depth of 12 already overflows 32-bit float, and the field returns infinity in exactly the
-     * region a camera inside the world is looking at. Shifted, every exponent is {@code <= 0} and the sum is
-     * bounded by the number of children.
+     * <p>Subtracting {@code m} before exponentiating is not a nicety. Written directly, the exponent grows
+     * without bound as a point moves deep into (or far from) the geometry — at {@code k = 8} a depth of 12
+     * already overflows 32-bit float, and the field returns infinity in exactly the region a camera inside the
+     * world is looking at. Shifted, every exponent is {@code <= 0} and the sum is bounded by the child count.
+     *
+     * <p><b>Why both directions stay safe to march.</b> A soft-min is {@code <= min} and a soft-max is
+     * {@code >= max}, so only one of them is bounded by the hard operator it softens — but that was never what
+     * made either conservative. What does is that both are 1-Lipschitz: the gradient of a log-sum-exp is a
+     * convex combination of its terms' gradients, so it can be no longer than the longest of them. A
+     * 1-Lipschitz field never reports more than the true distance to its own zero set, which is the surface
+     * actually being drawn — a rounder one than the hard operator would have given.
      */
-    private static Field smoothUnion(Surface.SmoothUnion surface, Expr p) {
-        List<Field> fields = new java.util.ArrayList<>(surface.of().size());
+    private static Field softBlend(double k, List<Field> fields, Blend blend) {
         double lipschitz = Field.EXACT;
-        for (Surface child : surface.of()) {
-            Field field = lower(child, p);
-            fields.add(field);
+        for (Field field : fields) {
             lipschitz = Math.max(lipschitz, field.lipschitz());
         }
 
-        Expr minimum = fields.get(0).distance();
+        Expr extremum = fields.get(0).distance();
         for (int i = 1; i < fields.size(); i++) {
-            minimum = Ir.min(minimum, fields.get(i).distance());
+            extremum = blend.extremum(extremum, fields.get(i).distance());
         }
         if (fields.size() == 1) {
-            return new Field(minimum, lipschitz);
+            return new Field(extremum, lipschitz);
         }
 
-        double k = surface.sharpness();
         Expr sum = null;
         for (Field field : fields) {
-            Expr term = Expr.MathCall.exp(Ir.mul(Ir.f(-k), Ir.sub(field.distance(), minimum)));
+            Expr term = Expr.MathCall.exp(Ir.mul(Ir.f(blend.sign * k), Ir.sub(field.distance(), extremum)));
             sum = sum == null ? term : Ir.add(sum, term);
         }
-        return new Field(Ir.sub(minimum, Ir.div(Expr.MathCall.log(sum), Ir.f(k))), lipschitz);
+        Expr correction = Ir.div(Expr.MathCall.log(sum), Ir.f(k));
+        return new Field(blend == Blend.SOFT_MIN
+                ? Ir.sub(extremum, correction)
+                : Ir.add(extremum, correction), lipschitz);
+    }
+
+    /** Lower every child against the same point. */
+    private static List<Field> lowerAll(List<Surface> children, Expr p) {
+        List<Field> fields = new java.util.ArrayList<>(children.size());
+        for (Surface child : children) {
+            fields.add(lower(child, p));
+        }
+        return fields;
     }
 
     /** Exact box: distance to the nearest face outside, the largest signed face distance inside. */

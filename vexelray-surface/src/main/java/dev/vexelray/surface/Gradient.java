@@ -46,6 +46,12 @@ public final class Gradient {
 
     private static final double LN2 = 0.6931471805599453;
 
+    /**
+     * Floor on a divisor that vanishes where a vector does. Small enough to leave the derivative untouched
+     * anywhere the vector has real length, large enough that a zero vector yields zero rather than NaN.
+     */
+    private static final double DEGENERATE = 1e-12;
+
     private Gradient() {
     }
 
@@ -196,19 +202,31 @@ public final class Gradient {
                         Fold.isZero(tb) ? Ir.zero(type) : Ir.call(MathFn.CROSS, type, a.get(0), tb));
             }
             case LENGTH -> {
+                // d|v| = dot(v, tv)/|v|, with the divisor floored.
+                //
+                // Not a formality: |v| is exactly zero over whole regions of real fields, not just at isolated
+                // points. The standard box SDF is length(max(q, 0)) + ..., and max(q, 0) is identically zero
+                // everywhere inside the box — so the unguarded form returns 0/0 = NaN across the entire
+                // interior, and a ray that enters is lost rather than merely mis-stepped. Where the operand is
+                // constant-zero in a neighbourhood the derivative genuinely is zero, which is what the floor
+                // yields, so this is the correct answer and not only the safe one.
                 Expr v = a.get(0);
                 Expr tv = tangent(v, seed);
-                yield Fold.isZero(tv) ? Ir.f(0.0) : Fold.div(Ir.dot(v, tv), Ir.length(v));
+                yield Fold.isZero(tv) ? Ir.f(0.0)
+                        : Fold.div(Ir.dot(v, tv), Ir.max(Ir.length(v), Ir.f(DEGENERATE)));
             }
             case NORMALIZE -> {
-                // d(v/|v|) = (tv - v * dot(v, tv) / dot(v, v)) / |v|
+                // d(v/|v|) = (tv - v * dot(v, tv) / dot(v, v)) / |v|, floored as above. normalize(0) is already
+                // undefined in the primal, so this only avoids turning a finite input into a NaN derivative.
                 Expr v = a.get(0);
                 Expr tv = tangent(v, seed);
                 if (Fold.isZero(tv)) {
                     yield Ir.zero(type);
                 }
-                Expr radial = Fold.scale(v, Ir.div(Ir.dot(v, tv), Ir.dot(v, v)));
-                yield Fold.scale(Ir.sub(tv, radial), Ir.div(Ir.f(1.0), Ir.length(v)));
+                Expr radial = Fold.scale(v, Ir.div(Ir.dot(v, tv),
+                        Ir.max(Ir.dot(v, v), Ir.f(DEGENERATE * DEGENERATE))));
+                yield Fold.scale(Ir.sub(tv, radial),
+                        Ir.div(Ir.f(1.0), Ir.max(Ir.length(v), Ir.f(DEGENERATE))));
             }
 
             // --- elementary functions: chain rule ---

@@ -103,9 +103,14 @@ public record SurfaceLimits(int maxNodes, int maxDepth, int maxCompiledNodes) {
                 walk(d.from(), depth + 1, counter);
                 walk(d.remove(), depth + 1, counter);
             }
+            case Surface.SmoothDifference d -> {
+                walk(d.from(), depth + 1, counter);
+                walk(d.remove(), depth + 1, counter);
+            }
             case Surface.Union u -> u.of().forEach(child -> walk(child, depth + 1, counter));
             case Surface.Intersection i -> i.of().forEach(child -> walk(child, depth + 1, counter));
             case Surface.SmoothUnion s -> s.of().forEach(child -> walk(child, depth + 1, counter));
+            case Surface.SmoothIntersection s -> s.of().forEach(child -> walk(child, depth + 1, counter));
             case Surface.Implicit i -> walkExpr(i.f(), depth + 1, counter);
         }
     }

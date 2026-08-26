@@ -143,6 +143,46 @@ public sealed interface Surface {
         }
     }
 
+    /**
+     * An intersection whose edges are filleted instead of creased — the N-ary <b>soft-max</b>,
+     * {@code m + log(sum exp(k*(d - m)))/k}, the exact mirror of {@link SmoothUnion}.
+     *
+     * <p>Where a hard {@link Intersection} leaves a sharp rim wherever two solids' boundaries cross, this rounds
+     * it, taking a little material off. Note the direction: soft-max is {@code >= max}, so it reports
+     * <em>more</em> distance than the hard intersection — which sounds like the overshoot that puts holes in a
+     * render, and is not. Conservatism does not come from being under {@code max}; it comes from the field being
+     * 1-Lipschitz, and a soft-max of 1-Lipschitz fields is one too (its gradient is a convex combination of
+     * theirs, so it cannot be longer than the longest). A 1-Lipschitz field never reports more than the true
+     * distance to its own zero set, which is exactly the surface being drawn.
+     *
+     * @param sharpness larger is crisper; as it grows the fillet approaches a hard {@link Intersection}
+     */
+    record SmoothIntersection(double sharpness, List<Surface> of) implements Surface {
+        public SmoothIntersection {
+            requirePositive(sharpness, "sharpness");
+            of = requireNonEmpty(of);
+        }
+    }
+
+    /**
+     * {@code from} with {@code remove} carved out, the cut filleted where it meets the surface — the difference
+     * that usually makes CSG read as moulded rather than sliced.
+     *
+     * <p>Exactly {@link SmoothIntersection} of {@code from} with the inverse of {@code remove}, since a hard
+     * {@link Difference} is already {@code max(from, -remove)} and negating a 1-Lipschitz field leaves it
+     * 1-Lipschitz. Binary for the same reason {@code Difference} is: to subtract several things, remove their
+     * {@link Union} rather than nesting differences.
+     *
+     * @param sharpness larger is crisper; as it grows the fillet approaches a hard {@link Difference}
+     */
+    record SmoothDifference(double sharpness, Surface from, Surface remove) implements Surface {
+        public SmoothDifference {
+            requirePositive(sharpness, "sharpness");
+            requireNonNull(from);
+            requireNonNull(remove);
+        }
+    }
+
     /** The hollow shell of {@code of}, {@code thickness} thick — {@code |d| - thickness}. */
     record Shell(double thickness, Surface of) implements Surface {
         public Shell {
@@ -193,6 +233,10 @@ public sealed interface Surface {
 
     static Surface smoothUnion(double sharpness, Surface... of) {
         return new SmoothUnion(sharpness, List.of(of));
+    }
+
+    static Surface smoothIntersection(double sharpness, Surface... of) {
+        return new SmoothIntersection(sharpness, List.of(of));
     }
 
     private static void requireNonNull(Surface s) {

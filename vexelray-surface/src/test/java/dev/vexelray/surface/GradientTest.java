@@ -120,6 +120,29 @@ class GradientTest {
     }
 
     @Test
+    @DisplayName("a vector that vanishes over a whole region differentiates to zero, not NaN")
+    void degenerateLengthsDoNotProduceNaN() {
+        // length(max(q, 0)) is the outside term of the standard box SDF, and max(q, 0) is identically zero
+        // everywhere INSIDE the box — so an unguarded d|v| = dot(v,tv)/|v| returns 0/0 across the entire
+        // interior. Not an isolated singularity that a march would step over: a region, in which a ray is lost
+        // rather than mis-stepped. Where the operand is constant-zero in a neighbourhood, zero is also the
+        // mathematically correct derivative.
+        Expr boxOutsideTerm = Ir.length(Ir.max(
+                Ir.sub(Ir.abs(POINT), Ir.v3(1, 1, 1)), Ir.v3(0, 0, 0)));
+        Expr gradient = Gradient.of(boxOutsideTerm);
+        for (double[] p : new double[][]{{0, 0, 0}, {0.5, -0.25, 0.1}, {-0.9, 0.9, -0.9}}) {
+            double[] g = Eval.vecAt(gradient, p[0], p[1], p[2]);
+            for (double component : g) {
+                assertTrue(Double.isFinite(component),
+                        "gradient was " + component + " inside the box at " + List.of(p[0], p[1], p[2]));
+            }
+        }
+        // Outside, where the vector is genuinely non-zero, the guard must not have changed the answer.
+        double[] outside = Eval.vecAt(gradient, 2.0, 0.0, 0.0);
+        assertEquals(1.0, outside[0], 1e-9);
+    }
+
+    @Test
     @DisplayName("what cannot be differentiated is refused, not guessed at")
     void refusesUndifferentiableExpressions() {
         // A local-variable read has no derivative available to a pure-expression pass: the pass cannot see what

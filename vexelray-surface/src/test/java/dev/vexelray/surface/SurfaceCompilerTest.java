@@ -167,6 +167,92 @@ class SurfaceCompilerTest {
     }
 
     @Test
+    @DisplayName("smooth intersection reports MORE than a hard one, and is still safe to march")
+    void smoothIntersectionExceedsMaxButStaysLipschitz() {
+        // Soft-max is >= max, so a smooth intersection reports more distance than the hard operator it softens.
+        // That looks like the overshoot that puts holes in a render, and is not: conservatism never came from
+        // being under max, it comes from the field being 1-Lipschitz, which bounds it by the true distance to
+        // its own (rounder) zero set. Both halves of that are checked here.
+        Surface a = new Surface.Sphere(-0.3, 0, 0, 1);
+        Surface b = new Surface.Box(0.3, 0, 0, 0.8, 0.8, 0.8);
+        Expr smooth = SurfaceCompiler.compile(Surface.smoothIntersection(4.0, a, b)).distance();
+        Expr hard = SurfaceCompiler.compile(Surface.intersection(a, b)).distance();
+        for (double[] p : SAMPLES) {
+            assertTrue(Eval.at(smooth, p[0], p[1], p[2]) >= Eval.at(hard, p[0], p[1], p[2]) - 1e-12,
+                    "soft-max should sit at or above max at " + List.of(p[0], p[1], p[2]));
+        }
+        assertGradientNeverExceedsOne(smooth, "smooth intersection");
+    }
+
+    @Test
+    @DisplayName("every combinator keeps the gradient at or under one — the promise Field.EXACT makes")
+    void combinatorsStayOneLipschitz() {
+        // This is the property the compiler asserts by marking a field EXACT, checked directly rather than
+        // trusted: a field whose gradient never exceeds 1 never reports more distance than there is, so a
+        // sphere-tracer stepping by it cannot pass through the surface.
+        //
+        // Implicit is deliberately absent. Its normalisation is a local correction, not a proof, so it is the
+        // one node that can exceed this — see docs/surface-compiler.md §7. Including it here would either fail
+        // or quietly weaken the tolerance until it passed.
+        Surface a = new Surface.Sphere(-0.3, 0.1, 0, 1);
+        Surface b = new Surface.Box(0.3, 0, 0.1, 0.8, 0.9, 0.7);
+        Surface c = new Surface.Capsule(-1, -0.5, 0, 1, 0.6, 0.4, 0.35);
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.union(a, b, c)).distance(), "union");
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.intersection(a, b)).distance(),
+                "intersection");
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(new Surface.Difference(a, b)).distance(),
+                "difference");
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.smoothUnion(4.0, a, b, c)).distance(),
+                "smooth union");
+        assertGradientNeverExceedsOne(
+                SurfaceCompiler.compile(Surface.smoothIntersection(4.0, a, b)).distance(), "smooth intersection");
+        assertGradientNeverExceedsOne(
+                SurfaceCompiler.compile(new Surface.SmoothDifference(4.0, a, b)).distance(), "smooth difference");
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(
+                new Surface.Scale(1.7, new Surface.Shell(0.05, new Surface.Round(0.1, b)))).distance(),
+                "scale/shell/round");
+    }
+
+    @Test
+    @DisplayName("as sharpness grows, the smooth operators converge on the hard ones they soften")
+    void smoothOperatorsApproachTheirHardForm() {
+        Surface a = new Surface.Sphere(-0.3, 0, 0, 1);
+        Surface b = new Surface.Box(0.3, 0, 0, 0.8, 0.8, 0.8);
+        Expr hardIntersection = SurfaceCompiler.compile(Surface.intersection(a, b)).distance();
+        Expr hardDifference = SurfaceCompiler.compile(new Surface.Difference(a, b)).distance();
+        Expr sharpIntersection = SurfaceCompiler.compile(Surface.smoothIntersection(400.0, a, b)).distance();
+        Expr sharpDifference = SurfaceCompiler.compile(new Surface.SmoothDifference(400.0, a, b)).distance();
+        for (double[] p : SAMPLES) {
+            assertEquals(Eval.at(hardIntersection, p[0], p[1], p[2]),
+                    Eval.at(sharpIntersection, p[0], p[1], p[2]), 0.01);
+            assertEquals(Eval.at(hardDifference, p[0], p[1], p[2]),
+                    Eval.at(sharpDifference, p[0], p[1], p[2]), 0.01);
+        }
+    }
+
+    @Test
+    @DisplayName("smooth intersection is order-free too, and keeps its exponents negative")
+    void smoothIntersectionIsOrderFreeAndStable() {
+        Surface a = new Surface.Sphere(-0.3, 0, 0, 1);
+        Surface b = new Surface.Box(0.3, 0, 0, 0.8, 0.8, 0.8);
+        Surface c = new Surface.Sphere(0, 0.4, 0, 1.1);
+        Expr abc = SurfaceCompiler.compile(Surface.smoothIntersection(4.0, a, b, c)).distance();
+        Expr cba = SurfaceCompiler.compile(Surface.smoothIntersection(4.0, c, b, a)).distance();
+        for (double[] p : SAMPLES) {
+            assertEquals(Eval.at(abc, p[0], p[1], p[2]), Eval.at(cba, p[0], p[1], p[2]), 1e-12);
+        }
+        // Shifted by the max rather than the min this time, but the same guard: every exponent at or below zero,
+        // so a point far outside the geometry cannot overflow a 32-bit float.
+        List<Expr> exponents = new ArrayList<>();
+        collectExpArguments(SurfaceCompiler.compile(Surface.smoothIntersection(8.0,
+                new Surface.Sphere(-4, 0, 0, 1), new Surface.Sphere(4, 0, 0, 1))).distance(), exponents);
+        assertTrue(exponents.size() >= 2);
+        for (Expr exponent : exponents) {
+            assertTrue(Eval.at(exponent, 0, 20, 0) <= 0.0, "exponent far outside would overflow a float");
+        }
+    }
+
+    @Test
     @DisplayName("a small implicit that expands enormously is caught on the way out, not just on the way in")
     void compiledSizeIsBoundedToo() {
         // Gradient duplication compounds through nesting — each nested normalize multiplies the derivative by
@@ -205,6 +291,25 @@ class SurfaceCompilerTest {
         assertThrows(IllegalArgumentException.class, () -> new Surface.Plane(0, 0, 0, 1));
         assertThrows(IllegalArgumentException.class, () -> new Surface.SmoothUnion(0, List.of()));
         assertThrows(IllegalArgumentException.class, () -> new Surface.Implicit(POINT));   // vec3, not a scalar
+    }
+
+    /**
+     * Assert {@code |grad d| <= 1} over a grid — the definition of a field that cannot overshoot. Uses the
+     * symbolic derivative rather than finite differences so the check is exact away from kinks.
+     */
+    private static void assertGradientNeverExceedsOne(Expr distance, String what) {
+        Expr gradient = Gradient.of(distance);
+        for (double x = -2.1; x <= 2.1; x += 0.37) {
+            for (double y = -2.1; y <= 2.1; y += 0.41) {
+                for (double z = -2.1; z <= 2.1; z += 0.43) {
+                    double[] g = Eval.vecAt(gradient, x, y, z);
+                    double magnitude = Math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                    assertTrue(magnitude <= 1.0 + 1e-6,
+                            what + ": |grad| = " + magnitude + " at " + List.of(x, y, z)
+                                    + " — this field would overshoot and put holes in the render");
+                }
+            }
+        }
     }
 
     /** A tree deeper than the tight limit used above. */
