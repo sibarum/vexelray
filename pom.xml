@@ -40,7 +40,8 @@
         <module>vexelray-msdf-maven-plugin</module>
         <!-- MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, and the MSDF shader as core IR. -->
         <module>vexelray-text</module>
-        <!-- 2D Canvas API: immediate-mode unified-batched geometry (shapes + text) and its uber-shader as core IR. -->
+        <!-- 2D Canvas API: immediate-mode unified-batched geometry (shapes, text, sampled images) and its
+             uber-shader as core IR. An image is the same rounded box, so a marched scene composites as one. -->
         <module>vexelray-canvas</module>
         <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
              An aggregator grouping (vexelray-os-api + vexelray-os-{windows,linux,macos}). -->

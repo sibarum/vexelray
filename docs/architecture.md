@@ -162,7 +162,7 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 | Runtime ownership | instance/device/swapchain/present, frame loop (1 frame in flight) | RuntimeManager/VexelEngine facade; frames-in-flight; resize-robust |
 | Present targets | windowed swapchain + headless offscreen→PNG | both behind one `Target`; screenshot/record built in |
 | Render techniques | SDF raymarch (path, not yet modular) | SDF, polygon raster, Gaussian splats — as modules, composable |
-| Composition / hybrid | single technique | N techniques sharing one colour+**depth** target (cross-occlusion) |
+| Composition / hybrid | single technique per pass; a pass's output **sampled into another** — `SampledColorTarget` → `Canvas.image` (a marched region inside a 2D frame) | N techniques sharing one colour+**depth** target (cross-occlusion) |
 | Shaders | runtime SDF composed as `core` IR → SPIR-V | full technique-authored shaders; a reusable SDF-scene layer |
 | Render == sim | SDF evaluated CPU + GPU from one IR; sphere-trace collision | physics/queries against the render field; GPU/CPU placement |
 | Resources | ad hoc per class | `ResourceManager` impl; pooled/suballocated memory |
@@ -177,7 +177,14 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 
 Working end to end on Windows/RTX: window + swapchain, offscreen readback, runtime-composed SDF shaders, a live
 first-person raymarched scene with WASD, CPU/GPU render==sim collision, and SDF "sprites" (round-extruded 2D
-glyphs). The **next architectural move** is the technique refactor in §3–4: stand up `vexelray-engine-api`
+glyphs). The `Canvas` now also **samples**: `CanvasVertex.KIND_IMAGE` is the same analytic rounded box run
+through a texel read from a second descriptor set, and a frame divides into `Canvas.Run` spans that say where
+the binding layer rebinds it. A canvas that drew no images is still exactly one run and one draw. With
+`SampledColorTarget.renderInto` able to host a fullscreen march (optional vertex buffer, fragment push
+constants), a scene rendered by one pipeline composites into a 2D frame drawn by another — which is what a
+GUI viewport is made of.
+
+The **next architectural move** is the technique refactor in §3–4: stand up `vexelray-engine-api`
 (SPI + pipeline DSL, retiring the sealed `Pass`), a real runtime in `vexelray-engine`, wrap the SDF path as
 `vexelray-technique-sdf`, and move `Fathom` onto the front-door API. See [`fathom-demo`](../) progress and the
 commit history for the current state.
