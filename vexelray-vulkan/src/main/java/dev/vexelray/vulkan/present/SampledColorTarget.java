@@ -19,6 +19,7 @@ import static dev.vexelray.vulkan.vk.Ffm.sa;
 import static dev.vexelray.vulkan.vk.Ffm.si;
 import static dev.vexelray.vulkan.vk.Ffm.sl;
 import static java.lang.foreign.ValueLayout.ADDRESS;
+import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
@@ -343,6 +344,24 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
      */
     public void renderInto(GraphicsPipeline pipeline, long vertexBuffer, long descriptorSet, int vertexCount,
                            float cr, float cg, float cb, float ca) {
+        renderInto(pipeline, vertexBuffer, descriptorSet, vertexCount, null, cr, cg, cb, ca);
+    }
+
+    /**
+     * As {@link #renderInto(GraphicsPipeline, long, long, int, float, float, float, float)}, with two additions
+     * that together make this the <b>viewport</b> path rather than only the "draw 2D onto a surface" one:
+     * {@code vertexBuffer} may be 0, for a pipeline whose vertex stage synthesises its geometry from
+     * {@code gl_VertexIndex} (the fullscreen triangle every ray-march draws), and {@code push} — when non-null —
+     * is written as fragment push constants before the draw, which is how a march receives its camera.
+     *
+     * <p>So a scene marches into this target, the target is sampled by the GUI's canvas, and a viewport is a box
+     * that samples. What the calculator demo could not do was exactly this: composite a marched region into a
+     * window that also holds a legend and a status bar.
+     *
+     * @param push fragment push-constant bytes, or null for a pipeline that declares none
+     */
+    public void renderInto(GraphicsPipeline pipeline, long vertexBuffer, long descriptorSet, int vertexCount,
+                           byte[] push, float cr, float cg, float cb, float ca) {
         MemorySegment dev = device.handle();
         MethodHandle vkCreateCommandPool = device.command("vkCreateCommandPool", C4);
         MethodHandle vkDestroyCommandPool = device.command("vkDestroyCommandPool", D_LONG);
@@ -364,6 +383,8 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
         MethodHandle vkQueueSubmit = device.command("vkQueueSubmit",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
+        MethodHandle vkCmdPushConstants = device.command("vkCmdPushConstants",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment poolInfo = arena.allocate(COMMAND_POOL_CREATE_INFO);
@@ -408,12 +429,22 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
                 invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
                         0, 1, pSet, 0, MemorySegment.NULL);
             }
-            if (vertexBuffer != 0 && vertexCount > 0) {
+            if (push != null && push.length > 0) {
+                MemorySegment pPush = arena.allocate(push.length);
+                MemorySegment.copy(push, 0, pPush, JAVA_BYTE, 0, push.length);
+                invokeVoid(vkCmdPushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
+                        push.length, pPush);
+            }
+            // A vertex buffer is optional: a fullscreen triangle synthesises its own positions from
+            // gl_VertexIndex, which is what a ray-marched viewport draws.
+            if (vertexBuffer != 0) {
                 MemorySegment pVb = arena.allocate(JAVA_LONG);
                 pVb.set(JAVA_LONG, 0, vertexBuffer);
                 MemorySegment pOff = arena.allocate(JAVA_LONG);
                 pOff.set(JAVA_LONG, 0, 0L);
                 invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
+            }
+            if (vertexCount > 0) {
                 invokeVoid(vkCmdDraw, cmd, vertexCount, 1, 0, 0);
             }
             invokeVoid(vkCmdEndRenderPass, cmd);
