@@ -338,6 +338,34 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     }
 
     /**
+     * A pipeline that draws into <em>this</em> target — the piece a client application cannot build for itself.
+     *
+     * <p>{@link GraphicsPipeline}'s constructors take a {@link VulkanDevice}, and an application that got its
+     * target from {@code GuiApp.viewport} has no way to reach one: the device is deliberately not public, for
+     * the reason that method's own documentation gives. But the three things such a pipeline must agree with
+     * are all held here — the device, the render pass, and the pixel dimensions — so building it is this
+     * class's business rather than the caller's, and none of them can be got wrong by a caller who never sees
+     * them.
+     *
+     * <p>The defaults are a ray-march's: empty vertex input (the fullscreen triangle synthesises its positions
+     * from {@code gl_VertexIndex}), no descriptor sets, a fixed viewport at this target's size, and
+     * {@code pushConstantBytes} declared on the fragment stage — which is where
+     * {@link #renderInto(GraphicsPipeline, long, long, int, byte[], float, float, float, float)} writes them.
+     * A pipeline needing anything else can still be built directly by whoever holds a device.
+     *
+     * <p>The result is the caller's to {@link GraphicsPipeline#close()}, unlike the target itself: a pipeline is
+     * per-scene and a target is per-viewport, and a scene changes when an expression is retyped while the
+     * viewport it is shown in does not.
+     *
+     * @param pushConstantBytes size of the fragment push-constant block, or 0 for a pipeline that declares none
+     */
+    public GraphicsPipeline pipelineFor(byte[] vertexSpirv, String vertexEntry,
+                                        byte[] fragmentSpirv, String fragmentEntry, int pushConstantBytes) {
+        return new GraphicsPipeline(device, renderPass.handle(), width, height,
+                vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry, pushConstantBytes);
+    }
+
+    /**
      * Draw {@code vertexCount} vertices from {@code vertexBuffer} (with {@code descriptorSet} bound at set 0, e.g.
      * a font atlas) into this target, clearing to {@code (cr,cg,cb,ca)} first. One-time command buffer; after it
      * completes the image is in {@code SHADER_READ_ONLY} and can be sampled via {@link #descriptorSet()}.
