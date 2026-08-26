@@ -41,6 +41,27 @@ public final class Canvas {
     private float ty;
     private final java.util.ArrayDeque<float[]> translateStack = new java.util.ArrayDeque<>();
 
+    // --- image runs (see #runs) ---
+    private final List<Run> runs = new java.util.ArrayList<>();
+    private Object runImage;        // the image bound for the run currently open (null = none)
+    private int runStartVertex;     // first vertex of the open run
+    private Object activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
+
+    /**
+     * A contiguous span of the vertex buffer that shares one bound image.
+     *
+     * <p>The batch is still <b>one vertex buffer built in submission order</b> — a run never reorders anything, it
+     * only says where the binding layer must rebind set 1 before carrying on. {@code image == null} means "no image
+     * in this span": the binding layer binds its placeholder, and shapes and glyphs ignore it. A canvas that drew
+     * no images is therefore exactly one null run, which is exactly the single draw call it always was.
+     *
+     * @param firstVertex index of this run's first vertex
+     * @param vertexCount how many vertices it covers
+     * @param image       the caller's opaque image handle, or {@code null} for the placeholder
+     */
+    public record Run(int firstVertex, int vertexCount, Object image) {
+    }
+
     /** A canvas sized to the target it will be drawn into, in pixels. */
     public Canvas(int width, int height) {
         this.width = width;
@@ -77,6 +98,10 @@ public final class Canvas {
         translateStack.clear();
         tx = 0f;
         ty = 0f;
+        runs.clear();
+        runImage = null;
+        runStartVertex = 0;
+        activeImage = null;
         return this;
     }
 
@@ -316,6 +341,51 @@ public final class Canvas {
 
     // --- output ---------------------------------------------------------------------------------------------
 
+    /**
+     * Draw {@code image} into the rounded box {@code (x,y,w,h)}, showing the texture region {@code (u0,v0)-(u1,v1)}
+     * and modulated by {@code tint}. {@code image} is an opaque handle — this module knows nothing about textures;
+     * the binding layer maps the handle to whatever it binds at {@link CanvasShader#IMAGE_SET}.
+     *
+     * <p>Coverage is the same rounded-box SDF every other primitive uses, so an image rounds, antialiases, clips
+     * and translates identically — and a marched viewport is a box like any other. Pass {@link Color#WHITE} to show
+     * the texture unmodified.
+     *
+     * <p>Consecutive draws of the <em>same</em> handle stay in one run; alternating between two handles costs a run
+     * each time, so draw an image's worth of images together where the picture allows it.
+     */
+    public Canvas image(float x, float y, float w, float h, float radius, Object image,
+                        float u0, float v0, float u1, float v1, Color tint) {
+        float halfW = w / 2f;
+        float halfH = h / 2f;
+        float r = clampRadius(radius, halfW, halfH);
+        activeImage = image;
+        try {
+            imageQuad(x + halfW, y + halfH, halfW, halfH, r, u0, v0, u1, v1, tint);
+        } finally {
+            activeImage = null;
+        }
+        return this;
+    }
+
+    /** {@link #image(float, float, float, float, float, Object, float, float, float, float, Color)} showing the
+     *  whole texture, square-cornered and untinted — what a viewport wants. */
+    public Canvas image(float x, float y, float w, float h, Object image) {
+        return image(x, y, w, h, 0f, image, 0f, 0f, 1f, 1f, Color.WHITE);
+    }
+
+    /**
+     * The runs this frame's vertices divide into, in submission order — see {@link Run}. Never empty for a canvas
+     * that drew anything; a canvas that drew no images returns exactly one run covering everything.
+     */
+    public List<Run> runs() {
+        List<Run> out = new java.util.ArrayList<>(runs);
+        int open = vertexCount() - runStartVertex;
+        if (open > 0) {
+            out.add(new Run(runStartVertex, open, runImage));
+        }
+        return out;
+    }
+
     /** Number of vertices accumulated. */
     public int vertexCount() {
         return count / CanvasVertex.FLOATS_PER_VERTEX;
@@ -364,6 +434,36 @@ public final class Canvas {
         push(sx, sy, c, u, v, kind, lx, ly, halfW, halfH, rTop, rBottom);
     }
 
+    /**
+     * Emit an image quad centred at {@code (cx,cy)} px. Like {@link #shape}, the quad extends {@code PAD} px past
+     * the box so the AA falloff isn't clipped; the UV is extrapolated linearly over that overhang, so the box's own
+     * edges land exactly on {@code (u0,v0)-(u1,v1)}. The overhang samples outside the region, but its coverage is
+     * zero there, so nothing it reads survives the multiply.
+     */
+    private void imageQuad(float cx, float cy, float halfW, float halfH, float radius,
+                           float u0, float v0, float u1, float v1, Color color) {
+        float ex = halfW + PAD;
+        float ey = halfH + PAD;
+        // Local -> UV: the box spans -halfW..halfW, which must map to u0..u1.
+        float du = (u1 - u0) / (2f * halfW);
+        float dv = (v1 - v0) / (2f * halfH);
+        float uMin = u0 - PAD * du;
+        float uMax = u1 + PAD * du;
+        float vMin = v0 - PAD * dv;
+        float vMax = v1 + PAD * dv;
+        imageVert(cx, cy, -ex, -ey, uMin, vMin, halfW, halfH, radius, color);
+        imageVert(cx, cy, ex, -ey, uMax, vMin, halfW, halfH, radius, color);
+        imageVert(cx, cy, ex, ey, uMax, vMax, halfW, halfH, radius, color);
+        imageVert(cx, cy, -ex, -ey, uMin, vMin, halfW, halfH, radius, color);
+        imageVert(cx, cy, ex, ey, uMax, vMax, halfW, halfH, radius, color);
+        imageVert(cx, cy, -ex, ey, uMin, vMax, halfW, halfH, radius, color);
+    }
+
+    private void imageVert(float cx, float cy, float lx, float ly, float u, float v,
+                           float halfW, float halfH, float radius, Color c) {
+        push(cx + lx, cy + ly, c, u, v, CanvasVertex.KIND_IMAGE, lx, ly, halfW, halfH, radius, radius);
+    }
+
     private void glyphVert(float sx, float sy, float u, float v, float screenPxRange, Color c) {
         push(sx, sy, c, u, v, CanvasVertex.KIND_GLYPH, 0f, 0f, screenPxRange, 0f, 0f, 0f);
     }
@@ -373,6 +473,17 @@ public final class Canvas {
     private void push(float sx, float sy, Color c, float u, float v, int kind,
                       float localX, float localY, float s0, float s1, float s2, float s3) {
         ensure(CanvasVertex.FLOATS_PER_VERTEX);
+        // The one place a run boundary can open. Every vertex belongs to the image that was active when it was
+        // pushed (null for shapes and glyphs), so a change of image closes the open run and starts the next one —
+        // in submission order, which is the whole reason the runs can be drawn back-to-back and still layer right.
+        if (activeImage != runImage) {
+            int open = vertexCount() - runStartVertex;
+            if (open > 0) {
+                runs.add(new Run(runStartVertex, open, runImage));
+            }
+            runImage = activeImage;
+            runStartVertex = vertexCount();
+        }
         // The one place the current translation is applied. Both the position and the screen coordinate the clip
         // is evaluated at move together, so a translated vertex is clipped where it lands.
         sx += tx;

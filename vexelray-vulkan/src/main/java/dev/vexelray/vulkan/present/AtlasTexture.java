@@ -33,7 +33,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * Expose {@link #descriptorSetLayout()} to build a {@link GraphicsPipeline} against, and {@link #descriptorSet()}
  * to bind before drawing. Linear filtering is required for correct SDF interpolation.
  */
-public final class AtlasTexture implements AutoCloseable {
+public final class AtlasTexture implements SampledImage, AutoCloseable {
 
     private static final FunctionDescriptor C4 = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS);
     private static final FunctionDescriptor D_LONG = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);
@@ -174,6 +174,17 @@ public final class AtlasTexture implements AutoCloseable {
     private final MethodHandle vkDestroySampler;
     private final MethodHandle vkDestroyDescriptorSetLayout;
     private final MethodHandle vkDestroyDescriptorPool;
+
+    /**
+     * A 1x1 opaque-white texture — what gets bound at the image set for spans that draw no image.
+     *
+     * <p>A descriptor set layout is part of a pipeline layout, so it is not optional: something valid has to be
+     * bound at every set the pipeline declares, whether or not this frame reads it. White with alpha 1 is the
+     * identity for the image kind's multiply, so binding it is also harmless if a vertex ever does read it.
+     */
+    public static AtlasTexture placeholder(VulkanDevice device) {
+        return new AtlasTexture(device, 1, 1, new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF});
+    }
 
     public AtlasTexture(VulkanDevice device, int width, int height, byte[] rgba) {
         this.device = device;

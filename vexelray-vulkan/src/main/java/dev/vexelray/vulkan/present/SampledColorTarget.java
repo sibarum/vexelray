@@ -32,7 +32,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * and {@link #descriptorSet()} can be bound by any later pipeline to sample it — an overlay composited over the
  * swapchain, or a 2D panel mapped onto geometry inside the 3D scene.
  */
-public final class SampledColorTarget implements AutoCloseable {
+public final class SampledColorTarget implements SampledImage, AutoCloseable {
 
     private static final FunctionDescriptor C4 = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS);
     private static final FunctionDescriptor D_LONG = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);

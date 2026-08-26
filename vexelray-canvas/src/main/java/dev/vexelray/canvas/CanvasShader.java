@@ -30,9 +30,13 @@ import java.util.List;
  *   <li><b>glyph</b> ({@link CanvasVertex#KIND_GLYPH}) — MSDF: median of the atlas texel, converted to coverage
  *       with a per-vertex {@code screenPxRange} ({@code shape.x}). Colour and range are per-vertex, so mixed text
  *       sizes and colours coexist in one draw.</li>
+ *   <li><b>image</b> ({@link CanvasVertex#KIND_IMAGE}) — the shape SDF's coverage multiplied by a texel from the
+ *       image sampler, tinted by the vertex colour. This is how a marched viewport, a decoded PNG, or an icon
+ *       enters the batch: as a rounded box that samples.</li>
  * </ul>
  *
  * The atlas is a combined image sampler at set 0, binding 0 (bound even for shape-only canvases; shapes ignore it).
+ * The image sampler is set 1, binding 0 — see {@link #IMAGE_SET}.
  */
 public final class CanvasShader {
 
@@ -43,6 +47,18 @@ public final class CanvasShader {
 
     public static final int ATLAS_SET = 0;
     public static final int ATLAS_BINDING = 0;
+
+    /**
+     * The image sampler — a <b>second</b> descriptor set, not a second binding in the first.
+     *
+     * <p>The atlas is bound once per window and never changes; an image changes per {@link CanvasVertex#KIND_IMAGE}
+     * run. Splitting them by set is what lets the atlas stay bound across every run while set 1 is rebound between
+     * them, instead of allocating a fresh two-binding set per image that re-points at the same atlas each time.
+     * A canvas with no images binds a 1x1 opaque-white placeholder here, so the layout is uniform and the pipeline
+     * never learns whether this frame had images in it.
+     */
+    public static final int IMAGE_SET = 1;
+    public static final int IMAGE_BINDING = 0;
 
     private CanvasShader() {
     }
@@ -134,6 +150,7 @@ public final class CanvasShader {
         InterfaceVar vClipRs = InterfaceVar.input("vClipRs", CanvasVertex.LOC_CLIPRS, V4);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, V4);
         Texture atlas = new Texture("uAtlas", ATLAS_SET, ATLAS_BINDING);
+        Texture image = new Texture("uImage", IMAGE_SET, IMAGE_BINDING);
 
         Expr color = new Expr.InterfaceRead(vColor);
         Expr rgb = new Expr.VectorConstruct(V3, List.of(x(color), y(color), z(color)));
@@ -219,8 +236,18 @@ public final class CanvasShader {
                 add(mul(spr, sub(median, f(0.5))), f(0.5)), f(0.0), f(1.0));
         Expr glyphOut = new Expr.VectorConstruct(V4, List.of(x(rgb), y(rgb), z(rgb), mul(alpha, glyphCov)));
 
-        // Dispatch: kind < 0.5 shape, < 1.5 glyph, < 2.5 shadow, < 3.5 stroke, else lit.
+        // KIND_IMAGE — the shape SDF's own coverage, multiplied by a texel from the image sampler and tinted by
+        // the vertex colour. Straight-alpha texel: its alpha multiplies coverage, so a transparent PNG and a
+        // rounded corner compose rather than fight. A white opaque tint is the identity, which is what a viewport
+        // wants; anything else modulates, which is what an icon wants.
+        Expr texel = new Expr.SampleTexture(image, uv);
+        Expr imageOut = new Expr.VectorConstruct(V4, List.of(
+                mul(x(rgb), x(texel)), mul(y(rgb), y(texel)), mul(z(rgb), z(texel)),
+                mul(mul(alpha, shapeCov), w(texel))));
+
+        // Dispatch: kind < 0.5 shape, < 1.5 glyph, < 2.5 shadow, < 3.5 stroke, < 4.5 lit, else image.
         Expr kind = new Expr.InterfaceRead(vKind);
+        Region imageRegion = Region.of(new Statement.InterfaceWrite(fragColor, imageOut));
         Region litRegion = Region.of(new Statement.InterfaceWrite(fragColor, litOut));
         Region strokeRegion = Region.of(new Statement.InterfaceWrite(fragColor, strokeOut));
         Region shadowRegion = Region.of(new Statement.InterfaceWrite(fragColor, shadowOut));
@@ -230,7 +257,8 @@ public final class CanvasShader {
                 new Statement.If(lt(kind, 0.5), shapeRegion, Region.of(
                         new Statement.If(lt(kind, 1.5), glyphRegion, Region.of(
                                 new Statement.If(lt(kind, 2.5), shadowRegion, Region.of(
-                                        new Statement.If(lt(kind, 3.5), strokeRegion, litRegion))))))),
+                                        new Statement.If(lt(kind, 3.5), strokeRegion, Region.of(
+                                                new Statement.If(lt(kind, 4.5), litRegion, imageRegion))))))))),
                 new Statement.ReturnVoid());
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
         return new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));

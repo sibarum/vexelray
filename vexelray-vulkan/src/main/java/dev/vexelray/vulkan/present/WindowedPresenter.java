@@ -9,6 +9,7 @@ import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.GroupLayout;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
+import java.util.List;
 import java.lang.invoke.MethodHandle;
 
 import static dev.vexelray.vulkan.vk.Ffm.check;
@@ -112,6 +113,19 @@ public final class WindowedPresenter implements AutoCloseable {
     private int vertexCount = 3;
     private long vertexBuffer = 0;      // 0 = no vertex buffer (fullscreen triangle from gl_VertexIndex)
     private long descriptorSet = 0;     // 0 = no descriptor set to bind
+    private volatile List<Run> runs = List.of();   // empty = one draw of the whole buffer, no set 1
+
+    /**
+     * One span of the vertex buffer drawn with {@code descriptorSet1} bound at set 1 — the presenter's view of a
+     * {@code Canvas.Run}. The vertex buffer, the pipeline and set 0 are bound once for the frame; only set 1 is
+     * rebound between runs, so a frame of N images is one bind + N rebinds + N+1 draws rather than N pipelines.
+     *
+     * @param descriptorSet1 the set to bind at index 1 before this span (never 0 — pass the placeholder's)
+     * @param firstVertex    index of the span's first vertex
+     * @param vertexCount    how many vertices it covers
+     */
+    public record Run(long descriptorSet1, int firstVertex, int vertexCount) {
+    }
 
     /**
      * Switch from the default fullscreen draw to a vertex-buffer draw: bind {@code vertexBuffer} at binding 0 and,
@@ -128,9 +142,28 @@ public final class WindowedPresenter implements AutoCloseable {
     /**
      * Set the number of vertices to draw for subsequent frames — call from the per-frame callback after refilling
      * a dynamic vertex buffer (immediate-mode UI rebuilt each frame).
+     *
+     * <p>Clears any {@link #setRuns runs}: a caller that sets a plain vertex count is drawing one span, and leaving
+     * last frame's runs standing would draw the new buffer through the old frame's split.
      */
     public void setVertexCount(int vertexCount) {
         this.vertexCount = vertexCount;
+        this.runs = List.of();
+    }
+
+    /**
+     * Draw this frame as a sequence of {@link Run}s instead of one span — the multi-image path. Call from the
+     * per-frame callback after refilling the vertex buffer, in place of {@link #setVertexCount}.
+     *
+     * <p>An empty list draws nothing, which is the honest reading of a frame with no vertices in it.
+     */
+    public void setRuns(List<Run> runs) {
+        this.runs = List.copyOf(runs);
+        int total = 0;
+        for (Run r : this.runs) {
+            total = Math.max(total, r.firstVertex() + r.vertexCount());
+        }
+        this.vertexCount = total;
     }
 
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
@@ -299,7 +332,27 @@ public final class WindowedPresenter implements AutoCloseable {
             invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
                     pushConstantBytes, s.pushSeg);
         }
-        invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
+        List<Run> frameRuns = runs;
+        if (frameRuns.isEmpty()) {
+            invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
+        } else {
+            // Rebind set 1 only when the run actually changes it. Runs are contiguous and in submission order, so
+            // drawing them back to back is the same picture the single draw would have made — the split is a
+            // binding concern, never a layering one.
+            long bound = 0;
+            for (Run r : frameRuns) {
+                if (r.vertexCount() <= 0) {
+                    continue;
+                }
+                if (r.descriptorSet1() != bound) {
+                    bound = r.descriptorSet1();
+                    s.pDescriptorSet1.set(JAVA_LONG, 0, bound);
+                    invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
+                            1, 1, s.pDescriptorSet1, 0, MemorySegment.NULL);
+                }
+                invokeVoid(draw, cmd, r.vertexCount(), 1, r.firstVertex(), 0);
+            }
+        }
         invokeVoid(endRp, cmd);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
 
@@ -336,6 +389,7 @@ public final class WindowedPresenter implements AutoCloseable {
         final MemorySegment pVertexBuffers = a.allocate(JAVA_LONG);
         final MemorySegment pVertexOffsets = a.allocate(JAVA_LONG);
         final MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
+        final MemorySegment pDescriptorSet1 = a.allocate(JAVA_LONG);
         final MemorySegment pViewport = a.allocate(VIEWPORT);
         final MemorySegment pScissor = a.allocate(RECT2D);
         final MemorySegment clear = a.allocate(JAVA_FLOAT, 4);

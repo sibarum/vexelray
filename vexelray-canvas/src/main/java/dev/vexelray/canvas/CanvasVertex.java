@@ -9,9 +9,9 @@ import java.util.List;
  * <pre>
  *   loc0 pos   vec2   clip-space position
  *   loc1 color vec4   straight RGBA
- *   loc2 uv    vec2   atlas UV (glyphs); effect params for shape kinds (see below)
- *   loc3 kind  float  {@link #KIND_SHAPE}, {@link #KIND_GLYPH}, {@link #KIND_SHADOW}, {@link #KIND_STROKE}
- *                     or {@link #KIND_LIT}
+ *   loc2 uv    vec2   atlas UV (glyphs); image UV ({@link #KIND_IMAGE}); effect params for shape kinds (see below)
+ *   loc3 kind  float  {@link #KIND_SHAPE}, {@link #KIND_GLYPH}, {@link #KIND_SHADOW}, {@link #KIND_STROKE},
+ *                     {@link #KIND_LIT} or {@link #KIND_IMAGE}
  *   loc4 local vec2   shape-local pixel coord, box-centre origin (shapes); unused for glyphs
  *   loc5 shape vec4   shapes: (halfW, halfH, cornerRadiusTop, cornerRadiusBottom) px — the radius is selected
  *                     per vertical half, so a tab is (r, 0); AA is the system constant 1px, baked in the shader.
@@ -51,6 +51,18 @@ public final class CanvasVertex {
      * (top brighter, bottom darker). Two SDF evaluations, no normals, no textures.
      */
     public static final int KIND_LIT = 4;
+
+    /**
+     * Sampled image: the same rounded-box SDF as {@link #KIND_SHAPE} for coverage, multiplied by a texel read from
+     * the <em>image</em> sampler (set 1, binding 0) at {@code uv}, tinted by {@code color}. The rounded box is what
+     * makes this an Anybox primitive rather than a special case — an image is a box that happens to know its own
+     * colour, so it clips, rounds, and antialiases exactly like every other box, and batches in the same stream.
+     *
+     * <p>Because the image sampler is a <em>different descriptor set</em> from the atlas, a canvas holding images
+     * is drawn as several draws sharing one vertex buffer — see {@link Canvas#runs()}. Shapes and glyphs never
+     * sample it, so a canvas with no images is still exactly one run and one draw.
+     */
+    public static final int KIND_IMAGE = 5;
 
     public static final int FLOATS_PER_VERTEX = 23;
     public static final int STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;

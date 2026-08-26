@@ -9,6 +9,7 @@ import java.lang.foreign.GroupLayout;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
+import java.util.List;
 
 import static dev.vexelray.vulkan.vk.Ffm.check;
 import static dev.vexelray.vulkan.vk.Ffm.gi;
@@ -130,6 +131,32 @@ public final class OffscreenDraw {
      */
     public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
                                 long vertexBuffer, long descriptorSet, int vertexCount,
+                                float cr, float cg, float cb, float ca) {
+        return toRgba(device, renderPass, pipeline, width, height, vertexBuffer, descriptorSet, 0L, vertexCount,
+                cr, cg, cb, ca);
+    }
+
+    /**
+     * As {@link #toRgba(VulkanDevice, long, GraphicsPipeline, int, int, long, long, int, float, float, float, float)},
+     * additionally binding {@code descriptorSet1} at set 1 when non-zero — for a pipeline whose layout declares two
+     * sets, such as the Canvas pipeline's atlas + image pair. Both are bound in one call, so a pipeline expecting
+     * two sets never records a draw with only one of them live.
+     */
+    public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
+                                long vertexBuffer, long descriptorSet, long descriptorSet1, int vertexCount,
+                                float cr, float cg, float cb, float ca) {
+        return toRgba(device, renderPass, pipeline, width, height, vertexBuffer, descriptorSet,
+                List.of(new WindowedPresenter.Run(descriptorSet1, 0, vertexCount)), cr, cg, cb, ca);
+    }
+
+    /**
+     * As the single-span overload, but drawing the buffer as a sequence of {@link WindowedPresenter.Run}s — the
+     * headless twin of {@code WindowedPresenter.setRuns}, so a tree holding images captures to PNG exactly as it
+     * presents to a window. Sharing the run type with the presenter is the point: the two paths cannot drift into
+     * disagreeing about what a frame is.
+     */
+    public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
+                                long vertexBuffer, long descriptorSet, List<WindowedPresenter.Run> runs,
                                 float cr, float cg, float cb, float ca) {
         MemorySegment dev = device.handle();
         long pixelBytes = (long) width * height * 4;
@@ -282,13 +309,26 @@ public final class OffscreenDraw {
                 invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
                         0, 1, pSet, 0, MemorySegment.NULL);
             }
-            if (vertexBuffer != 0 && vertexCount > 0) {
+            if (vertexBuffer != 0) {
                 MemorySegment pVb = arena.allocate(JAVA_LONG);
                 pVb.set(JAVA_LONG, 0, vertexBuffer);
                 MemorySegment pOff = arena.allocate(JAVA_LONG);
                 pOff.set(JAVA_LONG, 0, 0L);
                 invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
-                invokeVoid(vkCmdDraw, cmd, vertexCount, 1, 0, 0);
+                MemorySegment pSet1 = arena.allocate(JAVA_LONG);
+                long bound = 0;
+                for (WindowedPresenter.Run r : runs) {
+                    if (r.vertexCount() <= 0) {
+                        continue;
+                    }
+                    if (r.descriptorSet1() != 0 && r.descriptorSet1() != bound) {
+                        bound = r.descriptorSet1();
+                        pSet1.set(JAVA_LONG, 0, bound);
+                        invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline.pipelineLayout(), 1, 1, pSet1, 0, MemorySegment.NULL);
+                    }
+                    invokeVoid(vkCmdDraw, cmd, r.vertexCount(), 1, r.firstVertex(), 0);
+                }
             }
             invokeVoid(vkCmdEndRenderPass, cmd);
 
