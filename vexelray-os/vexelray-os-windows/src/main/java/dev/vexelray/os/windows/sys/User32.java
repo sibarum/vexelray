@@ -386,6 +386,7 @@ public final class User32 {
     // and the size/move loop messages let a pull-style render loop keep painting while Windows drags the window.
 
     public static final int WM_MOVE          = 0x0003;
+    public static final int WM_GETMINMAXINFO = 0x0024;
     public static final int WM_NCCALCSIZE    = 0x0083;
     public static final int WM_NCHITTEST     = 0x0084;
     public static final int WM_NCLBUTTONDOWN = 0x00A1;
@@ -395,6 +396,7 @@ public final class User32 {
 
     /** {@code WM_SIZE} wParam: the window was minimized (its client size is 0 and must not be presented to). */
     public static final int SIZE_MINIMIZED = 1;
+
 
     // Hit-test codes returned from WM_NCHITTEST. HTCLIENT is declared above with WM_SETCURSOR.
     public static final int HTCAPTION     = 2;
@@ -429,6 +431,62 @@ public final class User32 {
 
     private static final VarHandle POINT_x = fieldHandle(POINT, "x");
     private static final VarHandle POINT_y = fieldHandle(POINT, "y");
+
+    /**
+     * {@code MINMAXINFO} — five {@code POINT}s, 40 bytes, passed by pointer in {@code WM_GETMINMAXINFO}'s
+     * lParam. Only {@code ptMinTrackSize} is ever written from here: the rest is Windows' own answer, and
+     * overwriting {@code ptMaxSize} or {@code ptMaxPosition} is how a window loses its maximize geometry.
+     */
+    private static final GroupLayout MINMAXINFO = MemoryLayout.structLayout(
+            POINT.withName("ptReserved"),
+            POINT.withName("ptMaxSize"),
+            POINT.withName("ptMaxPosition"),
+            POINT.withName("ptMinTrackSize"),
+            POINT.withName("ptMaxTrackSize")
+    ).withName("MINMAXINFO");
+
+    private static final VarHandle MMI_minTrackX = minTrackField("x");
+    private static final VarHandle MMI_minTrackY = minTrackField("y");
+
+    private static VarHandle minTrackField(String axis) {
+        VarHandle vh = MINMAXINFO.varHandle(
+                PathElement.groupElement("ptMinTrackSize"),
+                PathElement.groupElement(axis));
+        return MethodHandles.insertCoordinates(vh, 1, 0L).withInvokeExactBehavior();
+    }
+
+    /**
+     * Write {@code ptMinTrackSize} into the {@code MINMAXINFO} at {@code address} — the smallest outer size the
+     * window manager will let a drag reach. Sizes are pixels of the window rect, the same rect
+     * {@link #getWindowRect} reports.
+     *
+     * <p>Zero on either axis leaves that axis as Windows computed it, so a caller may bound one dimension
+     * without having to invent a number for the other.
+     */
+    public static void setMinTrackSize(long address, int width, int height) {
+        MemorySegment info = MemorySegment.ofAddress(address).reinterpret(MINMAXINFO.byteSize());
+        if (width > 0) {
+            MMI_minTrackX.set(info, width);
+        }
+        if (height > 0) {
+            MMI_minTrackY.set(info, height);
+        }
+    }
+
+    /** A zeroed {@code MINMAXINFO}, for asking a live window the question Windows asks it. */
+    public static MemorySegment allocMinMaxInfo(SegmentAllocator allocator) {
+        return allocator.allocate(MINMAXINFO);
+    }
+
+    /** {@code ptMinTrackSize.x} of a filled {@code MINMAXINFO}. */
+    public static int minTrackWidth(MemorySegment info) {
+        return (int) MMI_minTrackX.get(info);
+    }
+
+    /** {@code ptMinTrackSize.y} of a filled {@code MINMAXINFO}. */
+    public static int minTrackHeight(MemorySegment info) {
+        return (int) MMI_minTrackY.get(info);
+    }
 
     private static final MethodHandle GetSystemMetrics = Ffi.downcall(LIB, "GetSystemMetrics",
             FunctionDescriptor.of(JAVA_INT, JAVA_INT));

@@ -104,6 +104,10 @@ public final class Win32Window implements NativeWindow {
     private final MemorySegment hwnd;
     private final MemorySegment msgBuffer;
     private final Decorations decorations;
+    // The smallest outer rect a drag may reach, answered on WM_GETMINMAXINFO. Read on the message-pump thread
+    // and written once at construction, so final rather than volatile.
+    private final int minWidth;
+    private final int minHeight;
     private int width;
     private int height;
     // Two facts, not one. WM_CLOSE is a *request* — this window procedure deliberately does not pass it to
@@ -125,6 +129,8 @@ public final class Win32Window implements NativeWindow {
     public Win32Window(WindowConfig config) {
         this.hInstance = Kernel32.getModuleHandleW(MemorySegment.NULL);
         this.decorations = config.decorations();
+        this.minWidth = config.minWidth();
+        this.minHeight = config.minHeight();
         ensureClassRegistered(hInstance);
 
         try (Arena temp = Arena.ofConfined()) {
@@ -231,6 +237,17 @@ public final class Win32Window implements NativeWindow {
                     if ((int) (lParam & 0xFFFF) == User32.HTCLIENT) {
                         User32.setCursor(window.desiredCursor == Cursor.TEXT ? ibeamCursor : arrowCursor);
                         return 1; // TRUE — we handled it, so Windows won't reset the class cursor
+                    }
+                }
+                case User32.WM_GETMINMAXINFO -> {
+                    // Asked before every sizing operation, and the only place a minimum can be enforced: the
+                    // window manager owns the drag, so a size refused after the fact is one the user already
+                    // saw. Windows fills the struct first and only ptMinTrackSize is overwritten -- the maximize
+                    // geometry in the other members is its answer and has to stay its answer.
+                    if (window.minWidth > 0 || window.minHeight > 0) {
+                        User32.defWindowProcW(hwnd, msg, wParam, lParam);
+                        User32.setMinTrackSize(lParam, window.minWidth, window.minHeight);
+                        return 0;
                     }
                 }
                 case User32.WM_NCCALCSIZE -> {

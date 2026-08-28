@@ -16,6 +16,14 @@ package dev.vexelray.os;
  * stays true under {@link Decorations#CLIENT}: the frame is still there and still sized, it is simply drawn by
  * the application, so bounds saved from a system-framed window restore unchanged into a client-framed one.
  *
+ * <p><b>The smallest it may be dragged.</b> {@code minWidth}/{@code minHeight} bound the outer rect the same way
+ * {@code width}/{@code height} give it, and the <em>window manager</em> enforces them: the drag simply stops.
+ * That is a different promise from a GUI's own smallest layout, which decides what the UI is laid out on when
+ * the window is smaller than it can represent, and shows part of it. Both are worth having and they answer
+ * different questions — one stops the window shrinking, the other decides what happens when it does anyway
+ * (a maximized-then-restored window, a display mode change, a call to {@link NativeWindow#resize}).
+ * {@link #NO_MINIMUM} leaves the platform's own metric, which is what every window had before this existed.
+ *
  * @param title       the window title
  * @param width       requested width (outer rect)
  * @param height      requested height (outer rect)
@@ -24,12 +32,17 @@ package dev.vexelray.os;
  * @param x           screen x of the outer top-left, or {@link #UNPOSITIONED} for OS placement
  * @param y           screen y of the outer top-left, or {@link #UNPOSITIONED} for OS placement
  * @param decorations who draws the frame (see {@link Decorations})
+ * @param minWidth    smallest outer width the user may drag to, or {@link #NO_MINIMUM}
+ * @param minHeight   smallest outer height the user may drag to, or {@link #NO_MINIMUM}
  */
 public record WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
-                           Decorations decorations) {
+                           Decorations decorations, int minWidth, int minHeight) {
 
     /** "Let the OS place it" — the default for {@link #x}/{@link #y}. */
     public static final int UNPOSITIONED = Integer.MIN_VALUE;
+
+    /** "Whatever the platform allows" — the default for {@link #minWidth}/{@link #minHeight}. */
+    public static final int NO_MINIMUM = 0;
 
     public WindowConfig {
         if (title == null) {
@@ -37,6 +50,10 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
         }
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("window size must be positive, got " + width + "x" + height);
+        }
+        if (minWidth < 0 || minHeight < 0) {
+            throw new IllegalArgumentException("a minimum size cannot be negative, got "
+                    + minWidth + "x" + minHeight);
         }
         if (decorations == null) {
             decorations = Decorations.SYSTEM;
@@ -53,6 +70,12 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
         this(title, width, height, resizable, owner, x, y, Decorations.SYSTEM);
     }
 
+    /** The eight-argument form kept for callers that set everything but a minimum size. */
+    public WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
+                        Decorations decorations) {
+        this(title, width, height, resizable, owner, x, y, decorations, NO_MINIMUM, NO_MINIMUM);
+    }
+
     /** A resizable window with the given title and size. */
     public static WindowConfig of(String title, int width, int height) {
         return new WindowConfig(title, width, height, true);
@@ -60,16 +83,27 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
 
     /** This window as a satellite of {@code ownerHandle} (see the class doc for what ownership means). */
     public WindowConfig ownedBy(long ownerHandle) {
-        return new WindowConfig(title, width, height, resizable, ownerHandle, x, y, decorations);
+        return new WindowConfig(title, width, height, resizable, ownerHandle, x, y, decorations,
+                minWidth, minHeight);
     }
 
     /** This window placed at screen {@code (x, y)} instead of OS placement. */
     public WindowConfig at(int x, int y) {
-        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations);
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight);
     }
 
     /** This window with the given frame ownership — {@link Decorations#CLIENT} to draw the chrome yourself. */
     public WindowConfig decorations(Decorations decorations) {
-        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations);
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight);
+    }
+
+    /** This window with a smallest outer size the window manager will let the user drag it to. */
+    public WindowConfig minSize(int minWidth, int minHeight) {
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight);
+    }
+
+    /** Whether a minimum was asked for at all. */
+    public boolean hasMinimum() {
+        return minWidth > NO_MINIMUM || minHeight > NO_MINIMUM;
     }
 }

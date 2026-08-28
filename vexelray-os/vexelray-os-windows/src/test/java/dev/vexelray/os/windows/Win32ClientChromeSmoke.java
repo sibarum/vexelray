@@ -27,6 +27,9 @@ public final class Win32ClientChromeSmoke {
     private static final int H = 360;
     private static final int BAR_H = 32;
     private static final int BUTTON_W = 46;
+    /** Comfortably above Windows' own metric, so an answer of exactly these came from the config. */
+    private static final int MIN_W = 320;
+    private static final int MIN_H = 240;
 
     private static int failures;
 
@@ -34,7 +37,8 @@ public final class Win32ClientChromeSmoke {
         NativePlatform platform = NativePlatform.current();
         WindowConfig config = new WindowConfig("VexelRay chrome smoke", W, H, true)
                 .at(200, 200)
-                .decorations(Decorations.CLIENT);
+                .decorations(Decorations.CLIENT)
+                .minSize(MIN_W, MIN_H);
 
         try (NativeWindow window = platform.createWindow(config)) {
             window.pumpEvents();
@@ -70,7 +74,24 @@ public final class Win32ClientChromeSmoke {
             check("restore took", window.isMaximized(), false);
             check("restored to the size it had", window.outerWidth(), W);
 
-            // 4. requestClose travels the ordinary route, so the pump reports it.
+            // 4. WM_GETMINMAXINFO: how small the window manager will let this window be dragged, and the only
+            // place it can be told -- a drag runs inside Windows' own loop, so a size refused after the fact is
+            // one the user has already seen. Asked the same way the hit test is, by sending the real message.
+            try (java.lang.foreign.Arena temp = java.lang.foreign.Arena.ofConfined()) {
+                MemorySegment info = User32.allocMinMaxInfo(temp);
+                User32.sendMessageW(MemorySegment.ofAddress(window.osHandle()),
+                        User32.WM_GETMINMAXINFO, 0L, info.address());
+                check("the minimum width was answered", User32.minTrackWidth(info), MIN_W);
+                check("the minimum height was answered", User32.minTrackHeight(info), MIN_H);
+            }
+            // And the consequence, which is what the minimum is for: a resize below it is clamped, and clamped
+            // by the window manager rather than by anything here.
+            window.setBounds(200, 200, MIN_W / 2, MIN_H / 2);
+            window.pumpEvents();
+            check("a resize below it is clamped", window.outerWidth(), MIN_W);
+            check("on both axes", window.outerHeight(), MIN_H);
+
+            // 5. requestClose travels the ordinary route, so the pump reports it.
             window.requestClose();
             check("close is observed by the pump", window.pumpEvents(), false);
         }
