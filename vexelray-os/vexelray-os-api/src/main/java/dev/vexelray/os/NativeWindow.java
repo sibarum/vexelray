@@ -17,6 +17,38 @@ public interface NativeWindow extends AutoCloseable {
     /** Pump the OS event queue once. Returns {@code false} once the window has been asked to close. */
     boolean pumpEvents();
 
+    /**
+     * Block until an OS event arrives or {@code timeoutNanos} elapses; {@link Long#MAX_VALUE} to wait
+     * indefinitely.
+     *
+     * <p>What a render-on-demand loop needs and {@link #pumpEvents()} cannot provide: peek drains
+     * whatever is there, this waits for there to be something. A loop with only the former has no
+     * choice but to redraw continuously, so a still window costs a core.
+     *
+     * <p>Spurious returns are permitted. The caller pumps afterwards regardless, finds nothing, and
+     * comes back — so an implementation may always be conservative and never has to be exact.
+     *
+     * <p><b>Defaults to returning immediately</b>, which leaves the caller spinning exactly as it does
+     * without this method. A platform that has not implemented it therefore keeps working and merely
+     * keeps burning what it burns today; the alternative default — blocking — would freeze it.
+     */
+    default void waitEvents(long timeoutNanos) {
+    }
+
+    /**
+     * End a {@link #waitEvents(long)} early. Safe from any thread, and the only method here that is.
+     *
+     * <p>Called when work arrives for a loop that has gone to sleep: a worker thread's mutation, a
+     * background load finishing, a click handler starting an animation. Without it a loop that blocked
+     * indefinitely has nothing but OS input to wake it, and a window whose own program has something to
+     * show it stays frozen until the user happens to move the pointer over it.
+     *
+     * <p>Defaults to a no-op, which is only safe in company: a platform whose {@link #waitEvents} also
+     * defaults never sleeps, so there is never a sleep to end. Implement both or neither.
+     */
+    default void postWake() {
+    }
+
     // ---- Outer bounds, for persisting and restoring window placement. The rect these describe is the same one
     // WindowConfig's width/height/x/y request, so save-then-recreate round-trips exactly (a client-rect size fed
     // back as an outer size would shrink the window by its frame on every launch). Defaults are for platforms

@@ -44,6 +44,22 @@ public final class User32 {
 
     public static final int PM_REMOVE = 0x0001;
 
+    // MsgWaitForMultipleObjectsEx, for a loop that would rather block than spin. QS_ALLINPUT is every
+    // queue class, so the wait ends on anything the window would have pumped anyway.
+    public static final int QS_ALLINPUT = 0x04FF;
+    /**
+     * Count input that arrived <em>before</em> the wait began as a reason to return.
+     *
+     * <p>Load-bearing rather than an optimisation. Without it the call reports only input that becomes
+     * available after entering the wait, so anything posted in the window between the last
+     * {@link #peekMessageRemove} and the wait is not new — and the loop sleeps through the very event
+     * it was about to handle. That is a hang whose frequency depends on timing, which is the worst kind.
+     */
+    public static final int MWMO_INPUTAVAILABLE = 0x0004;
+    public static final int INFINITE = 0xFFFFFFFF;
+
+    /** {@code WM_NULL} — dispatched and discarded, which is exactly what a bare wakeup wants. */
+    public static final int WM_NULL    = 0x0000;
     public static final int WM_DESTROY = 0x0002;
     public static final int WM_SIZE    = 0x0005;
     public static final int WM_CLOSE   = 0x0010;
@@ -502,6 +518,9 @@ public final class User32 {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
     private static final MethodHandle PostMessageW = Ffi.downcall(LIB, "PostMessageW",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG));
+    private static final MethodHandle MsgWaitForMultipleObjectsEx =
+            Ffi.downcall(LIB, "MsgWaitForMultipleObjectsEx",
+                    FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
     private static final MethodHandle IsWindowVisible = Ffi.downcall(LIB, "IsWindowVisible",
             FunctionDescriptor.of(JAVA_INT, ADDRESS));
     private static final MethodHandle EnableWindow = Ffi.downcall(LIB, "EnableWindow",
@@ -590,6 +609,25 @@ public final class User32 {
     }
 
     /** Post a message to the window's queue (asynchronous — it is handled by a later pump). */
+    /**
+     * Block until a message is available or {@code timeoutMillis} elapses. {@link #INFINITE} to wait
+     * indefinitely.
+     *
+     * <p>The other half of {@link #peekMessageRemove}: peek drains what is there, this waits for there
+     * to be something. A loop with only the former has no choice but to spin.
+     *
+     * <p>Spurious returns are permitted and harmless — the caller pumps, finds nothing, and comes back.
+     * Never assume a return means a message arrived.
+     */
+    public static void msgWaitForInput(int timeoutMillis) {
+        try {
+            int ignored = (int) MsgWaitForMultipleObjectsEx.invokeExact(
+                    0, MemorySegment.NULL, timeoutMillis, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("MsgWaitForMultipleObjectsEx", t);
+        }
+    }
+
     public static void postMessageW(MemorySegment hwnd, int msg, long wParam, long lParam) {
         try {
             int ok = (int) PostMessageW.invokeExact(hwnd, msg, wParam, lParam);

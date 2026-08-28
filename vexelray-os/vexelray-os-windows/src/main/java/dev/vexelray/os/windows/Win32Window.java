@@ -490,6 +490,42 @@ public final class Win32Window implements NativeWindow {
     }
 
     @Override
+    public void waitEvents(long timeoutNanos) {
+        if (destroyed || closeRequested || timeoutNanos <= 0) {
+            // A window on its way out must not be waited on: the loop has one more pass to make and
+            // nothing left to wake it. A zero budget means the caller wanted this frame now.
+            return;
+        }
+        User32.msgWaitForInput(millisFor(timeoutNanos));
+    }
+
+    /**
+     * The timeout in whole milliseconds, which is the only resolution Win32 offers here.
+     *
+     * <p>Rounded <b>down</b>, and never to zero for a positive budget. Down because waking early costs
+     * one wasted pass and waking late costs a missed deadline, and the whole value of the budget is
+     * that it is never late. Never zero because a sub-millisecond budget rounded to zero turns a wait
+     * into a spin — the one outcome this method exists to avoid.
+     */
+    static int millisFor(long timeoutNanos) {
+        if (timeoutNanos == Long.MAX_VALUE) {
+            return User32.INFINITE;
+        }
+        long millis = timeoutNanos / 1_000_000L;
+        return (int) Math.min(Math.max(millis, 1L), Integer.MAX_VALUE - 1L);
+    }
+
+    @Override
+    public void postWake() {
+        if (destroyed || closeRequested) {
+            return;
+        }
+        // WM_NULL is dispatched and discarded, so this ends the wait and changes nothing else. Posting
+        // is thread-safe on Win32 by design; sending would not be.
+        User32.postMessageW(hwnd, User32.WM_NULL, 0, 0);
+    }
+
+    @Override
     public long createVulkanSurface(long vkInstance, MemorySegment vkGetInstanceProcAddr) {
         MemorySegment instance = MemorySegment.ofAddress(vkInstance);
         MethodHandle getProcAddr = Ffi.downcall(vkGetInstanceProcAddr,
