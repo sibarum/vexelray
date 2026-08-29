@@ -518,6 +518,8 @@ public final class User32 {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
     private static final MethodHandle PostMessageW = Ffi.downcall(LIB, "PostMessageW",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG));
+    private static final MethodHandle GetForegroundWindow = Ffi.downcall(LIB, "GetForegroundWindow",
+            FunctionDescriptor.of(ADDRESS));
     private static final MethodHandle MsgWaitForMultipleObjectsEx =
             Ffi.downcall(LIB, "MsgWaitForMultipleObjectsEx",
                     FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
@@ -609,6 +611,16 @@ public final class User32 {
     }
 
     /** Post a message to the window's queue (asynchronous — it is handled by a later pump). */
+    /** Whether {@code hwnd} is the foreground window - the one the user is typing into. */
+    public static boolean isForeground(MemorySegment hwnd) {
+        try {
+            MemorySegment fg = (MemorySegment) GetForegroundWindow.invokeExact();
+            return fg.equals(hwnd);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetForegroundWindow", t);
+        }
+    }
+
     /**
      * Block until a message is available or {@code timeoutMillis} elapses. {@link #INFINITE} to wait
      * indefinitely.

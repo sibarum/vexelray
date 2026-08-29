@@ -49,6 +49,22 @@ public interface NativeWindow extends AutoCloseable {
     default void postWake() {
     }
 
+    /**
+     * Whether this window is the one the user is currently working in.
+     *
+     * <p>What lets a host spend its idle budget where it will be noticed. A focused window is worth
+     * keeping a floor under — a few frames a second, so that anything nobody thought to wake for is
+     * <em>late</em> rather than lost — while an unfocused one is worth parking outright, because nobody
+     * is waiting on it.
+     *
+     * <p>Defaults to {@code true}, and the direction is deliberate: a platform that cannot tell is
+     * treated as always focused, so it keeps its floor and stays responsive. Guessing the other way
+     * would park a window the user is looking at, which is the failure this exists to prevent.
+     */
+    default boolean isFocused() {
+        return true;
+    }
+
     // ---- Outer bounds, for persisting and restoring window placement. The rect these describe is the same one
     // WindowConfig's width/height/x/y request, so save-then-recreate round-trips exactly (a client-rect size fed
     // back as an outer size would shrink the window by its frame on every launch). Defaults are for platforms

@@ -516,6 +516,11 @@ public final class Win32Window implements NativeWindow {
     }
 
     @Override
+    public boolean isFocused() {
+        return !destroyed && User32.isForeground(hwnd);
+    }
+
+    @Override
     public void postWake() {
         if (destroyed || closeRequested) {
             return;
