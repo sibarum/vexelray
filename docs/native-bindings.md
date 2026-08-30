@@ -410,7 +410,8 @@ it needs no Vulkan-binding dependency, only the loader pointer and the extension
 ### 7.3 Window icons on a new platform
 
 `Icon` is straight-alpha ARGB at one or more sizes and names no OS, so a platform's whole job is to realise it.
-Three things are worth knowing before writing that code:
+The application-facing side of the feature — what to supply, what it is not, and what Windows does with it — is
+**[docs/window-icons.md](window-icons.md)**. Three things are worth knowing before writing the platform code:
 
 - **The icon belongs to the window, not the process** — which is why `WindowConfig.icon` and
   `NativeWindow.setIcon` exist at all, and why `NativePlatform.setApplicationIcon` is a VexelRay-level default
