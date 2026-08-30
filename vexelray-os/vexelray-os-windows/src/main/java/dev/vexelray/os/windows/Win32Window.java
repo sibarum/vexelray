@@ -2,6 +2,7 @@ package dev.vexelray.os.windows;
 
 import dev.vexelray.os.Decorations;
 import dev.vexelray.os.HitRegions;
+import dev.vexelray.os.Icon;
 import dev.vexelray.os.Key;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
@@ -61,6 +62,9 @@ public final class Win32Window implements NativeWindow {
 
     /** hwnd address → window, so the shared window procedure can route messages to the right instance. */
     private static final Map<Long, Win32Window> WINDOWS = new ConcurrentHashMap<>();
+
+    /** The process-wide mark, worn by every window that did not ask for one of its own. */
+    private static volatile Icon applicationIcon;
 
     // Predefined system cursors, loaded once and shared (process-lifetime; the OS owns them).
     private static MemorySegment arrowCursor = MemorySegment.NULL;
@@ -126,6 +130,12 @@ public final class Win32Window implements NativeWindow {
     private boolean shown;
     private final boolean[] keyDown = new boolean[256];   // indexed by Win32 virtual-key code
 
+    // This window's own mark, or null to follow the application's. The two HICONs realising it are handles this
+    // window owns: Windows only borrows what WM_SETICON hands it, so replacing or closing has to destroy them.
+    private volatile Icon icon;
+    private MemorySegment bigIcon = MemorySegment.NULL;
+    private MemorySegment smallIcon = MemorySegment.NULL;
+
     public Win32Window(WindowConfig config) {
         this.hInstance = Kernel32.getModuleHandleW(MemorySegment.NULL);
         this.decorations = config.decorations();
@@ -166,6 +176,10 @@ public final class Win32Window implements NativeWindow {
             User32.frameChanged(hwnd);
         }
         this.msgBuffer = arena.allocate(User32.MSG);
+        this.icon = config.icon();
+        // Before show(), so the window is never on screen under the wrong mark: an icon corrected afterwards is
+        // a visible flicker in the taskbar, and on a slow start-up not a brief one.
+        applyIcon();
         readClientSize();
 
         // Appear immediately, painted with the class background brush, and pump once so the OS actually erases the
@@ -530,6 +544,86 @@ public final class Win32Window implements NativeWindow {
         User32.postMessageW(hwnd, User32.WM_NULL, 0, 0);
     }
 
+    // ---- Icons ----------------------------------------------------------------------------------------------
+
+    @Override
+    public void setIcon(Icon icon) {
+        this.icon = icon;
+        applyIcon();
+    }
+
+    /**
+     * Set the process-wide default and push it to every window still following it. A window that chose its own
+     * mark is deliberately skipped: the default is what fills in behind a choice, so changing it must not
+     * overwrite one.
+     */
+    static void setApplicationIcon(Icon icon) {
+        applicationIcon = icon;
+        for (Win32Window window : WINDOWS.values()) {
+            if (window.icon == null) {
+                window.applyIcon();
+            }
+        }
+    }
+
+    /**
+     * Realise the effective icon as two {@code HICON}s and hand them to the window.
+     *
+     * <p>Two, because Windows keeps two slots and asks for them in different places: {@code ICON_SMALL} is the
+     * caption and the small taskbar views, {@code ICON_BIG} is Alt-Tab and the large ones. Filling only one
+     * leaves the other to be derived — Windows scales the big icon down for the caption, and a mark drawn for 32
+     * pixels rarely survives the reduction to 16, which is exactly what {@link Icon#bestFor} exists to avoid.
+     *
+     * <p>The sizes come from {@code GetSystemMetrics} rather than from 16 and 32, because on a scaled display
+     * they are not 16 and 32.
+     *
+     * <p>Synchronized, and the only method here that needs to be: the two handles are the one piece of mutable
+     * native state a window owns, and {@link #setApplicationIcon} may reach a window from a thread that is not
+     * the one calling {@link #setIcon}. Destroying a handle twice, or losing one, is what the lock prevents.
+     */
+    private synchronized void applyIcon() {
+        if (destroyed) {
+            return;
+        }
+        Icon effective = icon != null ? icon : applicationIcon;
+        MemorySegment newBig = effective == null ? MemorySegment.NULL
+                : createHicon(effective.bestFor(User32.getSystemMetrics(User32.SM_CXICON)));
+        MemorySegment newSmall = effective == null ? MemorySegment.NULL
+                : createHicon(effective.bestFor(User32.getSystemMetrics(User32.SM_CXSMICON)));
+
+        // Hand the new ones over before destroying the old ones. The other order leaves the window pointing at a
+        // destroyed handle for as long as the two calls take, which is a window Windows may well paint in.
+        User32.sendMessageW(hwnd, User32.WM_SETICON, User32.ICON_BIG, newBig.address());
+        User32.sendMessageW(hwnd, User32.WM_SETICON, User32.ICON_SMALL, newSmall.address());
+        User32.destroyIcon(bigIcon);
+        User32.destroyIcon(smallIcon);
+        bigIcon = newBig;
+        smallIcon = newSmall;
+    }
+
+    /** One size of an {@link Icon} as an {@code HICON}: colour bitmap, mask, icon, and the scaffolding freed. */
+    private static MemorySegment createHicon(Icon.Image image) {
+        MemorySegment color = Gdi32.createArgbBitmap(image.width(), image.height(), image.argb());
+        MemorySegment mask = MemorySegment.NULL;
+        try {
+            mask = Gdi32.createMaskBitmap(image.width(), image.height());
+            return User32.createIconIndirect(color, mask);
+        } finally {
+            // CreateIconIndirect copies both, so they are scaffolding either way — and on the failure path they
+            // are scaffolding for an icon that was never built. Freed the same way in both cases.
+            Gdi32.deleteObject(color);
+            Gdi32.deleteObject(mask);
+        }
+    }
+
+    /** Release the two {@code HICON}s, on the way out. Idempotent: the fields are cleared as they go. */
+    private synchronized void destroyIcons() {
+        User32.destroyIcon(bigIcon);
+        User32.destroyIcon(smallIcon);
+        bigIcon = MemorySegment.NULL;
+        smallIcon = MemorySegment.NULL;
+    }
+
     @Override
     public long createVulkanSurface(long vkInstance, MemorySegment vkGetInstanceProcAddr) {
         MemorySegment instance = MemorySegment.ofAddress(vkInstance);
@@ -643,6 +737,8 @@ public final class Win32Window implements NativeWindow {
         frameSink = null;   // nothing may pull a frame while the window is being destroyed
         WINDOWS.remove(hwnd.address());
         User32.destroyWindow(hwnd);
+        // After the window is gone, not before: the icons are still what it is drawn with until then.
+        destroyIcons();
         arena.close();
     }
 }

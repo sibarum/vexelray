@@ -171,6 +171,23 @@ public interface NativeWindow extends AutoCloseable {
         return false;
     }
 
+    /**
+     * Change the mark this window wears, replacing whatever {@link WindowConfig#icon()} or
+     * {@link NativePlatform#setApplicationIcon} gave it. Takes effect immediately, everywhere the window is
+     * represented — caption, task switcher, taskbar.
+     *
+     * <p>Creation covers the common case; this is for the rest, and the rest is real work rather than an
+     * afterthought. A window whose icon says what is <em>in</em> it has to change it when the content does: the
+     * document type after a "save as", the project after the user opens another one, a build turning red. That
+     * is the same argument as a window title, which no one would expect to fix at creation.
+     *
+     * <p>{@code null} restores the application icon. Platforms that cannot set an icon yet keep whatever the OS
+     * gave them, which is what every window had before this existed.
+     */
+    default void setIcon(Icon icon) {
+        // no-op by default
+    }
+
     /** Whether {@code key} is currently held down (updated by {@link #pumpEvents()}). */
     boolean isKeyDown(Key key);
 

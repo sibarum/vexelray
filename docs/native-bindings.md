@@ -407,6 +407,25 @@ it needs no Vulkan-binding dependency, only the loader pointer and the extension
 4. Register the provider in `META-INF/services/dev.vexelray.os.NativePlatform`.
 5. Add `reachability-metadata.json`; build in CI on that OS.
 
+### 7.3 Window icons on a new platform
+
+`Icon` is straight-alpha ARGB at one or more sizes and names no OS, so a platform's whole job is to realise it.
+Three things are worth knowing before writing that code:
+
+- **The icon belongs to the window, not the process** — which is why `WindowConfig.icon` and
+  `NativeWindow.setIcon` exist at all, and why `NativePlatform.setApplicationIcon` is a VexelRay-level default
+  that a platform pushes down to each window rather than an OS call. On Windows it is two `WM_SETICON`s; on X11
+  the `_NET_WM_ICON` property, which takes every size in one array; on macOS `NSWindow` has no icon of its own
+  for a non-document window, so the honest implementation sets `NSApp.applicationIconImage` for the application
+  icon and leaves the per-window call a no-op rather than pretending.
+- **Pick a size, do not resample.** Ask the OS what size it wants (`GetSystemMetrics`, or the scale factor) and
+  hand it `Icon.bestFor(that)`. Scaling in the engine throws away the reason an icon carries several sizes.
+- **Straight alpha, and the platform converts.** Windows wants a 32-bit DIB with an explicit alpha mask (a
+  device-dependent bitmap silently drops the channel and the icon gains a halo); a compositor that wants
+  premultiplied pixels gets them multiplied on that platform's side of the seam, never in `Icon`.
+
+Not implementing it is a supported state: every method defaults to a no-op, and a window keeps the OS default.
+
 ---
 
 ## 8. Anti-patterns — banned (the "no magic" list)

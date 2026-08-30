@@ -3,6 +3,7 @@ package dev.vexelray.os.windows.sys;
 import dev.vexelray.os.ffi.Ffi;
 import dev.vexelray.os.ffi.NativeException;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.GroupLayout;
 import java.lang.foreign.MemoryLayout;
@@ -700,6 +701,78 @@ public final class User32 {
             throw NativeException.rethrow("SendMessageW", t);
         }
     }
+
+    // ---- Icons ----------------------------------------------------------------------------------------------
+
+    /** {@code WM_SETICON} — hand a window an {@code HICON}; {@code wParam} says which of its two slots. */
+    public static final int WM_SETICON = 0x0080;
+    /** {@code ICON_SMALL} — the caption and the taskbar's small views. */
+    public static final int ICON_SMALL = 0;
+    /** {@code ICON_BIG} — Alt-Tab and the taskbar's large views. */
+    public static final int ICON_BIG = 1;
+
+    /** {@code SM_CXICON} — the width Windows wants a large icon to be, on this display, at this scale. */
+    public static final int SM_CXICON = 11;
+    /** {@code SM_CXSMICON} — the same for a small icon. */
+    public static final int SM_CXSMICON = 49;
+
+    /** {@code ICONINFO} — fIcon, hotspot, then the mask and colour bitmaps. 32 bytes on x64. */
+    public static final GroupLayout ICONINFO = MemoryLayout.structLayout(
+            JAVA_INT.withName("fIcon"),
+            JAVA_INT.withName("xHotspot"),
+            JAVA_INT.withName("yHotspot"),
+            MemoryLayout.paddingLayout(4),
+            ADDRESS.withName("hbmMask"),
+            ADDRESS.withName("hbmColor")
+    ).withName("ICONINFO");
+
+    private static final VarHandle II_fIcon    = fieldHandle(ICONINFO, "fIcon");
+    private static final VarHandle II_hbmMask  = fieldHandle(ICONINFO, "hbmMask");
+    private static final VarHandle II_hbmColor = fieldHandle(ICONINFO, "hbmColor");
+
+    private static final MethodHandle CreateIconIndirect = Ffi.downcall(LIB, "CreateIconIndirect",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle DestroyIcon = Ffi.downcall(LIB, "DestroyIcon",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+
+    /**
+     * Build an {@code HICON} from a colour bitmap and its mask. Both bitmaps are copied into the icon, so the
+     * caller deletes them afterwards and the returned handle stands alone.
+     *
+     * @return the {@code HICON}; the caller owns it and must {@link #destroyIcon} it
+     */
+    public static MemorySegment createIconIndirect(MemorySegment colorBitmap, MemorySegment maskBitmap) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment info = temp.allocate(ICONINFO);
+            II_fIcon.set(info, 1);   // TRUE — an icon, not a cursor; the hotspot fields are then ignored
+            II_hbmMask.set(info, maskBitmap);
+            II_hbmColor.set(info, colorBitmap);
+            MemorySegment icon;
+            try {
+                icon = (MemorySegment) CreateIconIndirect.invokeExact(info);
+            } catch (Throwable t) {
+                throw NativeException.rethrow("CreateIconIndirect", t);
+            }
+            if (icon.equals(MemorySegment.NULL)) {
+                throw new NativeException("CreateIconIndirect failed (GetLastError="
+                        + Kernel32.getLastError() + ")");
+            }
+            return icon;
+        }
+    }
+
+    /** Release an {@code HICON} created by {@link #createIconIndirect}. Null-safe. */
+    public static void destroyIcon(MemorySegment icon) {
+        if (icon.equals(MemorySegment.NULL)) {
+            return;
+        }
+        try {
+            int ignored = (int) DestroyIcon.invokeExact(icon);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("DestroyIcon", t);
+        }
+    }
+
 
     // ---- Monitors -------------------------------------------------------------------------------------------
 

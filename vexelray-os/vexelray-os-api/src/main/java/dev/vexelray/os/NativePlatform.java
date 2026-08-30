@@ -29,6 +29,32 @@ public interface NativePlatform {
     NativeWindow createWindow(WindowConfig config);
 
     /**
+     * Set the mark every window of this process wears unless it asked for its own — the application icon.
+     *
+     * <p>Two levels rather than one, because applications genuinely have both: nearly every window should look
+     * like the application, and the few that should not (a tool palette, a preferences window, a second
+     * document of a different type) should be able to say so without every other window repeating the default.
+     * A window's own {@link WindowConfig#icon()} or {@link NativeWindow#setIcon} always wins; this fills in
+     * behind them.
+     *
+     * <p>Applies to windows already open as well as to windows opened later, so an application may set it once
+     * at startup or change it mid-session (a theme switch, a per-profile mark) and have every window that never
+     * chose for itself follow along. Passing {@code null} clears it back to whatever the OS gives an
+     * application that names no icon.
+     *
+     * <p><b>Not the executable icon.</b> What a file browser shows for the program on disk, and what a pinned
+     * taskbar shortcut shows before the program runs, are properties of the packaged binary — resources linked
+     * into the {@code .exe}, an {@code .app} bundle's {@code Icns} — and no running process can change them.
+     * This is the icon of the running application, which is the one an engine can honestly offer.
+     *
+     * <p>Defaults to a no-op, so a platform that has not implemented icons keeps the OS default rather than
+     * failing on a cosmetic request.
+     */
+    default void setApplicationIcon(Icon icon) {
+        // no-op by default
+    }
+
+    /**
      * The usable area of the monitor containing the screen point {@code (x, y)} — its full rectangle minus the
      * taskbar or dock — or of the primary monitor when that point is on no monitor at all. That last case is the
      * whole reason this exists: an application restoring saved window bounds has to ask whether the screen it

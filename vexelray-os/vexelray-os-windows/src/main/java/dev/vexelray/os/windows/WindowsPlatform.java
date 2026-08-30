@@ -1,5 +1,6 @@
 package dev.vexelray.os.windows;
 
+import dev.vexelray.os.Icon;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.Platform;
@@ -34,6 +35,18 @@ public final class WindowsPlatform implements NativePlatform {
     @Override
     public NativeWindow createWindow(WindowConfig config) {
         return new Win32Window(config);
+    }
+
+    /**
+     * The default mark for this process, realised per window as a pair of {@code HICON}s.
+     *
+     * <p>Windows has no process-level icon to set — the icon lives on the window, which is precisely why
+     * per-window customization is available at all — so "the application's icon" is a VexelRay-level fact kept
+     * here and pushed to each window that never chose its own.
+     */
+    @Override
+    public void setApplicationIcon(Icon icon) {
+        Win32Window.setApplicationIcon(icon);
     }
 
     /**

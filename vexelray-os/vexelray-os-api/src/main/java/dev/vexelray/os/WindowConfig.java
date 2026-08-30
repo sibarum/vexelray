@@ -24,6 +24,14 @@ package dev.vexelray.os;
  * (a maximized-then-restored window, a display mode change, a call to {@link NativeWindow#resize}).
  * {@link #NO_MINIMUM} leaves the platform's own metric, which is what every window had before this existed.
  *
+ * <p><b>The mark it wears.</b> {@code icon} is this window's own, and {@code null} — the default — means "the
+ * application's", whatever {@link NativePlatform#setApplicationIcon} was last given. Per-window rather than
+ * per-process because one process is routinely several things at once: a document window and the console
+ * watching it, a tool palette beside the editor it edits. Each is a separate entry in the task switcher, and an
+ * entry the user cannot tell apart from its neighbour is one they have to click to identify. Setting it here
+ * rather than after creation is what keeps the window from being shown under the generic icon first and
+ * corrected a frame later.
+ *
  * @param title       the window title
  * @param width       requested width (outer rect)
  * @param height      requested height (outer rect)
@@ -34,9 +42,10 @@ package dev.vexelray.os;
  * @param decorations who draws the frame (see {@link Decorations})
  * @param minWidth    smallest outer width the user may drag to, or {@link #NO_MINIMUM}
  * @param minHeight   smallest outer height the user may drag to, or {@link #NO_MINIMUM}
+ * @param icon        the mark this window wears, or {@code null} for the application's
  */
 public record WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
-                           Decorations decorations, int minWidth, int minHeight) {
+                           Decorations decorations, int minWidth, int minHeight, Icon icon) {
 
     /** "Let the OS place it" — the default for {@link #x}/{@link #y}. */
     public static final int UNPOSITIONED = Integer.MIN_VALUE;
@@ -76,6 +85,12 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
         this(title, width, height, resizable, owner, x, y, decorations, NO_MINIMUM, NO_MINIMUM);
     }
 
+    /** The ten-argument form kept for callers that set everything but an icon. */
+    public WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
+                        Decorations decorations, int minWidth, int minHeight) {
+        this(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight, null);
+    }
+
     /** A resizable window with the given title and size. */
     public static WindowConfig of(String title, int width, int height) {
         return new WindowConfig(title, width, height, true);
@@ -84,22 +99,34 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
     /** This window as a satellite of {@code ownerHandle} (see the class doc for what ownership means). */
     public WindowConfig ownedBy(long ownerHandle) {
         return new WindowConfig(title, width, height, resizable, ownerHandle, x, y, decorations,
-                minWidth, minHeight);
+                minWidth, minHeight, icon);
     }
 
     /** This window placed at screen {@code (x, y)} instead of OS placement. */
     public WindowConfig at(int x, int y) {
-        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight);
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
+                icon);
     }
 
     /** This window with the given frame ownership — {@link Decorations#CLIENT} to draw the chrome yourself. */
     public WindowConfig decorations(Decorations decorations) {
-        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight);
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
+                icon);
     }
 
     /** This window with a smallest outer size the window manager will let the user drag it to. */
     public WindowConfig minSize(int minWidth, int minHeight) {
-        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight);
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
+                icon);
+    }
+
+    /**
+     * This window wearing {@code icon} rather than the application's. {@code null} goes back to the
+     * application's, which is what a window that never asked for one already wears.
+     */
+    public WindowConfig icon(Icon icon) {
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
+                icon);
     }
 
     /** Whether a minimum was asked for at all. */
