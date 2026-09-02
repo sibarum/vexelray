@@ -306,6 +306,52 @@ active platform once multiple platforms are implemented.
 
 ---
 
+
+### 4.5 Upcalls must not throw
+
+The rule at the top of §8 — never swallow a native error — has exactly one exception, and it is a hard one:
+**an upcall body may not let anything propagate out of it.** A callback the driver or the OS invokes runs with
+native frames beneath it, and an exception thrown through those frames does not unwind into Java. Panama takes
+the VM down instead, which costs the diagnostic as well as the process.
+
+So a callback that cannot rethrow must still not go quiet. The pattern, as used by
+`VulkanDebugMessenger.onMessage`:
+
+1. Wrap the whole body in `catch (Throwable)` and reduce the failure to a printed line. Losing one malformed
+   message beats losing the process.
+2. **Record** the failure somewhere a Java frame can read it — an `AtomicLong` tally, a queue, a flag.
+3. Expose a check (`failOnError()`) that a test or the frame loop calls at a safe point, where throwing *is*
+   allowed. That is where the never-swallow rule is honoured.
+
+The seam moves; it does not disappear. A `WndProc` is under the same constraint.
+
+---
+
+### 4.6 Vulkan validation
+
+`VK_LAYER_KHRONOS_validation` only *produces* diagnostics. Without a `VK_EXT_debug_utils` messenger to receive
+them they go to the loader's own reporting and never reach the process — a validation error then looks exactly
+like no validation error at all. `VulkanInstance` wires both together:
+
+```
+-Dvexelray.vulkan.validation              # or VEXELRAY_VULKAN_VALIDATION=1 — warnings and errors
+-Dvexelray.vulkan.validation.verbose      # adds info + verbose (the loader narrates ICD discovery here)
+```
+
+Two details that are easy to get wrong:
+
+- **The layer and the extension go missing independently.** The extension ships with the loader, the layer with
+  the SDK. Requesting either one when it is absent fails `vkCreateInstance` outright, so both are probed first
+  and each degrades to a warning. A machine with no SDK still gets a messenger, and still hears the loader.
+- **The messenger is built twice.** No messenger object can exist during `vkCreateInstance` or
+  `vkDestroyInstance` — precisely the calls that report a bad layer or extension list. An identical create-info
+  chained into `VkInstanceCreateInfo.pNext` covers that window.
+
+`DebugMessengerSmoke` proves the whole chain on a machine with no SDK by pushing a message through
+`vkSubmitDebugUtilsMessageEXT` exactly as a layer would.
+
+---
+
 ## 5. The platform-agnostic API (`vexelray-os-api`)
 
 This is what the engine codes against. It never mentions Win32, X11, or Cocoa.
@@ -437,7 +483,8 @@ Not implementing it is a supported state: every method defaults to a no-op, and 
 - ❌ Reflection or `MethodHandles.lookup().findVirtual(...)` to reach native code.
 - ❌ A binding that compiles for only one OS, or a platform interface with a single implementation "for now."
 - ❌ Calling a native function from a static initializer, or opening a library at image-build time.
-- ❌ Swallowing a native error code / returning a NULL handle without throwing.
+- ❌ Swallowing a native error code / returning a NULL handle without throwing (§4.5 is the one exception —
+  an upcall body, which must record and report instead, never propagate).
 - ❌ `Arena.ofAuto()` for a resource whose lifetime the engine must control.
 - ❌ The Vulkan module importing anything from `dev.vexelray.os.<platform>` (it depends only on `dev.vexelray.os`).
 ```

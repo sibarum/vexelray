@@ -33,6 +33,19 @@ public final class VulkanInstance implements AutoCloseable {
     private static final int VK_TRUE = 1;
     private static final int VK_API_VERSION_1_3 = (1 << 22) | (3 << 12);
     private static final int VK_MAX_PHYSICAL_DEVICE_NAME_SIZE = 256;
+    private static final int VK_MAX_EXTENSION_NAME_SIZE = 256;
+    private static final int VK_MAX_DESCRIPTION_SIZE = 256;
+
+    /**
+     * The layer that turns a GPU-side lifetime mistake into a line on stderr. Off by default — it costs real
+     * frame time — and switched on with {@code -Dvexelray.vulkan.validation} or {@code VEXELRAY_VULKAN_VALIDATION=1}.
+     *
+     * <p>Worth reaching for the moment anything looks like memory corruption rather than a wrong picture:
+     * destroying an object still in use, or still referenced by an in-flight frame, is undefined behaviour that
+     * the driver is under no obligation to report. Without the layer the first observable symptom can be a hung
+     * GPU — which on Windows stalls the compositor, so it presents as a frozen desktop rather than as a bug here.
+     */
+    private static final String VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
     private static final int VK_QUEUE_GRAPHICS_BIT = 0x0001;
     private static final int VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU = 2;
 
@@ -84,9 +97,20 @@ public final class VulkanInstance implements AutoCloseable {
             JAVA_INT.withName("granularity_depth")
     ).withName("VkQueueFamilyProperties");
 
+    /** {@code VkLayerProperties} — enough of it to read a layer's name back out. */
+    private static final GroupLayout LAYER_PROPERTIES = MemoryLayout.structLayout(
+            MemoryLayout.sequenceLayout(VK_MAX_EXTENSION_NAME_SIZE, JAVA_BYTE).withName("layerName"),
+            JAVA_INT.withName("specVersion"),
+            JAVA_INT.withName("implementationVersion"),
+            MemoryLayout.sequenceLayout(VK_MAX_DESCRIPTION_SIZE, JAVA_BYTE).withName("description")
+    ).withName("VkLayerProperties");
+
     private static final long DEVICE_NAME_OFFSET =
             PHYSICAL_DEVICE_PROPERTIES.byteOffset(MemoryLayout.PathElement.groupElement("deviceName"));
     private static final long QFP_STRIDE = QUEUE_FAMILY_PROPERTIES.byteSize();
+    private static final long LAYER_NAME_OFFSET =
+            LAYER_PROPERTIES.byteOffset(MemoryLayout.PathElement.groupElement("layerName"));
+    private static final long LAYER_STRIDE = LAYER_PROPERTIES.byteSize();
 
     private static final VarHandle AI_sType = Ffi.field(APPLICATION_INFO, "sType");
     private static final VarHandle AI_pApplicationName = Ffi.field(APPLICATION_INFO, "pApplicationName");
@@ -94,9 +118,12 @@ public final class VulkanInstance implements AutoCloseable {
     private static final VarHandle AI_pEngineName = Ffi.field(APPLICATION_INFO, "pEngineName");
 
     private static final VarHandle CI_sType = Ffi.field(INSTANCE_CREATE_INFO, "sType");
+    private static final VarHandle CI_pNext = Ffi.field(INSTANCE_CREATE_INFO, "pNext");
     private static final VarHandle CI_pApplicationInfo = Ffi.field(INSTANCE_CREATE_INFO, "pApplicationInfo");
     private static final VarHandle CI_enabledExtensionCount = Ffi.field(INSTANCE_CREATE_INFO, "enabledExtensionCount");
     private static final VarHandle CI_ppEnabledExtensionNames = Ffi.field(INSTANCE_CREATE_INFO, "ppEnabledExtensionNames");
+    private static final VarHandle CI_enabledLayerCount = Ffi.field(INSTANCE_CREATE_INFO, "enabledLayerCount");
+    private static final VarHandle CI_ppEnabledLayerNames = Ffi.field(INSTANCE_CREATE_INFO, "ppEnabledLayerNames");
 
     private static final VarHandle PDP_deviceType = Ffi.field(PHYSICAL_DEVICE_PROPERTIES, "deviceType");
     private static final VarHandle QFP_queueFlags = Ffi.field(QUEUE_FAMILY_PROPERTIES, "queueFlags");
@@ -106,6 +133,7 @@ public final class VulkanInstance implements AutoCloseable {
     }
 
     private final MemorySegment handle;
+    private final VulkanDebugMessenger debugMessenger;
     private final MethodHandle vkEnumeratePhysicalDevices;
     private final MethodHandle vkGetPhysicalDeviceProperties;
     private final MethodHandle vkGetPhysicalDeviceQueueFamilyProperties;
@@ -124,16 +152,53 @@ public final class VulkanInstance implements AutoCloseable {
             AI_pEngineName.set(appInfo, temp.allocateFrom("VexelRay"));
             AI_apiVersion.set(appInfo, VK_API_VERSION_1_3);
 
-            MemorySegment extArray = temp.allocate(ADDRESS, extensions.size());
-            for (int i = 0; i < extensions.size(); i++) {
-                extArray.setAtIndex(ADDRESS, i, temp.allocateFrom(extensions.get(i)));
+            List<String> layers = requestedLayers();
+
+            // Tied to the *request*, not to whether the layer was found. The extension comes from the loader
+            // and the layer from the SDK, so they go missing independently: on a machine with no SDK the layer
+            // is absent but the messenger still catches what the loader and driver report, which is a strictly
+            // better answer than staying silent because the louder source of messages happened to be missing.
+            boolean debug = validationRequested() && VulkanDebugMessenger.available();
+            if (validationRequested() && !debug) {
+                System.err.println("[vexelray] " + VulkanDebugMessenger.EXTENSION + " is unavailable, so Vulkan "
+                        + "diagnostics cannot be captured by the application and go to the loader's own output.");
+            }
+            List<String> allExtensions = new ArrayList<>(extensions);
+            if (debug && !allExtensions.contains(VulkanDebugMessenger.EXTENSION)) {
+                allExtensions.add(VulkanDebugMessenger.EXTENSION);
+            }
+
+            MemorySegment extArray = temp.allocate(ADDRESS, allExtensions.size());
+            for (int i = 0; i < allExtensions.size(); i++) {
+                extArray.setAtIndex(ADDRESS, i, temp.allocateFrom(allExtensions.get(i)));
+            }
+
+            // Not a ternary at the set() below: VarHandle.set is signature-polymorphic and reads the *static*
+            // type of its argument, so a conditional expression arrives as Object and fails at runtime.
+            MemorySegment layerArray = MemorySegment.NULL;
+            if (!layers.isEmpty()) {
+                layerArray = temp.allocate(ADDRESS, layers.size());
+                for (int i = 0; i < layers.size(); i++) {
+                    layerArray.setAtIndex(ADDRESS, i, temp.allocateFrom(layers.get(i)));
+                }
             }
 
             MemorySegment createInfo = temp.allocate(INSTANCE_CREATE_INFO);
             CI_sType.set(createInfo, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
+            // Chaining a messenger create-info here is the only way to hear about vkCreateInstance and
+            // vkDestroyInstance themselves: outside this pNext no messenger object exists at the one moment a
+            // bad layer or extension list gets reported. Same struct the real messenger is built from. Not a
+            // ternary at the set(), for the signature-polymorphic reason noted above.
+            MemorySegment debugInfo = MemorySegment.NULL;
+            if (debug) {
+                debugInfo = VulkanDebugMessenger.createInfo(temp);
+            }
+            CI_pNext.set(createInfo, debugInfo);
             CI_pApplicationInfo.set(createInfo, appInfo);
-            CI_enabledExtensionCount.set(createInfo, extensions.size());
+            CI_enabledExtensionCount.set(createInfo, allExtensions.size());
             CI_ppEnabledExtensionNames.set(createInfo, extArray);
+            CI_enabledLayerCount.set(createInfo, layers.size());
+            CI_ppEnabledLayerNames.set(createInfo, layerArray);
 
             MemorySegment pInstance = temp.allocate(ADDRESS);
             int result;
@@ -146,6 +211,7 @@ public final class VulkanInstance implements AutoCloseable {
                 throw new NativeException("vkCreateInstance failed: VkResult " + result);
             }
             this.handle = pInstance.get(ADDRESS, 0);
+            this.debugMessenger = debug ? VulkanDebugMessenger.attach(this.handle) : null;
         }
 
         this.vkEnumeratePhysicalDevices = VkLoader.instanceCommand(handle, "vkEnumeratePhysicalDevices",
@@ -161,6 +227,66 @@ public final class VulkanInstance implements AutoCloseable {
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS));
         this.vkDestroyInstance = VkLoader.instanceCommand(handle, "vkDestroyInstance",
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+    }
+
+    /**
+     * The instance layers to enable: the validation layer if it was asked for <em>and</em> is installed, nothing
+     * otherwise. A layer named in {@code ppEnabledLayerNames} that the loader cannot find fails
+     * {@code vkCreateInstance} outright, so asking is not enough — an absent layer has to degrade to a warning,
+     * or every machine without the Vulkan SDK stops being able to start the application at all.
+     */
+    private static List<String> requestedLayers() {
+        if (!validationRequested()) {
+            return List.of();
+        }
+        if (!layerAvailable(VALIDATION_LAYER)) {
+            System.err.println("[vexelray] " + VALIDATION_LAYER + " was requested but the loader cannot find it; "
+                    + "install the Vulkan SDK to enable it. Continuing without validation.");
+            return List.of();
+        }
+        System.err.println("[vexelray] " + VALIDATION_LAYER + " enabled — expect lower frame rates.");
+        return List.of(VALIDATION_LAYER);
+    }
+
+    /** The system property wins over the environment variable; a bare {@code -D} with no value counts as on. */
+    private static boolean validationRequested() {
+        String property = System.getProperty("vexelray.vulkan.validation");
+        return truthy(property != null ? property : System.getenv("VEXELRAY_VULKAN_VALIDATION"));
+    }
+
+    private static boolean truthy(String value) {
+        return value != null && (value.isEmpty() || value.equals("1") || Boolean.parseBoolean(value));
+    }
+
+    /** Whether the loader can see a layer by this name, asked before it is named in the create info. */
+    private static boolean layerAvailable(String name) {
+        MethodHandle enumerateLayers = VkLoader.globalCommand("vkEnumerateInstanceLayerProperties",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment pCount = temp.allocate(JAVA_INT);
+            if ((int) enumerateLayers.invokeExact(pCount, MemorySegment.NULL) != VK_SUCCESS) {
+                return false;
+            }
+            int count = pCount.get(JAVA_INT, 0);
+            if (count == 0) {
+                return false;
+            }
+            MemorySegment properties = temp.allocate(LAYER_PROPERTIES, count);
+            if ((int) enumerateLayers.invokeExact(pCount, properties) != VK_SUCCESS) {
+                return false;
+            }
+            // The second call may report fewer layers than the first: trust the count it just wrote, not the
+            // count the array was sized from, or the tail is read as layer names out of uninitialised memory.
+            count = Math.min(count, pCount.get(JAVA_INT, 0));
+            for (int i = 0; i < count; i++) {
+                if (name.equals(properties.getString(i * LAYER_STRIDE + LAYER_NAME_OFFSET))) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("vkEnumerateInstanceLayerProperties", t);
+        }
     }
 
     /** The {@code VkInstance} handle. */
@@ -354,8 +480,21 @@ public final class VulkanInstance implements AutoCloseable {
         }
     }
 
+    /** The debug messenger — present only when validation and {@code VK_EXT_debug_utils} were both available. */
+    public Optional<VulkanDebugMessenger> debugMessenger() {
+        return Optional.ofNullable(debugMessenger);
+    }
+
+    /**
+     * Destroys the messenger before the instance, which is the order the spec requires and the reason the
+     * messenger is owned here rather than left to a finalizer. The copy chained into the instance's {@code pNext}
+     * outlives it and keeps reporting for the {@code vkDestroyInstance} below.
+     */
     @Override
     public void close() {
+        if (debugMessenger != null) {
+            debugMessenger.close();
+        }
         try {
             vkDestroyInstance.invokeExact(handle, MemorySegment.NULL);
         } catch (Throwable t) {
