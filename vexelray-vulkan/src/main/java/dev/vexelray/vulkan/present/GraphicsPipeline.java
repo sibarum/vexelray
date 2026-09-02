@@ -1,5 +1,7 @@
 package dev.vexelray.vulkan.present;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -198,6 +200,7 @@ public final class GraphicsPipeline implements AutoCloseable {
     public GraphicsPipeline(VulkanDevice device, long renderPass, int width, int height,
                             byte[] vertexSpirv, String vertexEntry, byte[] fragmentSpirv, String fragmentEntry,
                             Config config) {
+        Probe.opened(Lane.GPU, "GraphicsPipeline", this);
         this.device = device;
         this.dynamicViewport = config.dynamicViewport();
         MemorySegment dev = device.handle();
@@ -380,6 +383,7 @@ public final class GraphicsPipeline implements AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "GraphicsPipeline", this);
         MemorySegment dev = device.handle();
         invokeVoid(vkDestroyPipeline, dev, pipeline, MemorySegment.NULL);
         invokeVoid(vkDestroyPipelineLayout, dev, pipelineLayout, MemorySegment.NULL);

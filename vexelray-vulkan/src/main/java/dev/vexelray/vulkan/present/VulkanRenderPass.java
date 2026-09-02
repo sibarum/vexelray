@@ -1,5 +1,7 @@
 package dev.vexelray.vulkan.present;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -70,6 +72,7 @@ public final class VulkanRenderPass implements AutoCloseable {
     private final MethodHandle vkDestroyRenderPass;
 
     public VulkanRenderPass(VulkanDevice device, int colorFormat, int finalLayout) {
+        Probe.opened(Lane.GPU, "VulkanRenderPass", this);
         this.device = device;
         MemorySegment dev = device.handle();
         MethodHandle vkCreateRenderPass = device.command("vkCreateRenderPass", C4);
@@ -144,6 +147,7 @@ public final class VulkanRenderPass implements AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "VulkanRenderPass", this);
         invokeVoid(vkDestroyRenderPass, device.handle(), handle, MemorySegment.NULL);
     }
 }

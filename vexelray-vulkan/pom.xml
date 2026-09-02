@@ -21,6 +21,10 @@
     </description>
 
     <dependencies>
+        <dependency>
+            <groupId>sibarum.atchung</groupId>
+            <artifactId>atchung-probe</artifactId>
+        </dependency>
         <!-- Always: the platform-agnostic native API (Ffi helper, NativePlatform, NativeWindow). -->
         <dependency>
             <groupId>dev.vexelray</groupId>

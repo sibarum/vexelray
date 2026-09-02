@@ -74,6 +74,13 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- The stack-wide profiling seam (see sibarum.probe.Probe). Zero dependencies of its own, so a
+                 module can carry instrumentation without acquiring the event bus with it. -->
+            <dependency>
+                <groupId>sibarum.atchung</groupId>
+                <artifactId>atchung-probe</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
             <!-- Reactor-internal modules: children reference these without a version. -->
             <dependency>
                 <groupId>dev.vexelray</groupId>

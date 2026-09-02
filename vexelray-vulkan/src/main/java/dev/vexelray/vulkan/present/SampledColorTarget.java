@@ -1,5 +1,7 @@
 package dev.vexelray.vulkan.present;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -168,6 +170,7 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     private final MethodHandle vkDestroyDescriptorPool;
 
     public SampledColorTarget(VulkanDevice device, int width, int height) {
+        Probe.opened(Lane.GPU, "SampledColorTarget", this);
         this.device = device;
         this.width = width;
         this.height = height;
@@ -502,6 +505,7 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "SampledColorTarget", this);
         MemorySegment dev = device.handle();
         invokeVoid(vkDestroyDescriptorPool, dev, descriptorPool, MemorySegment.NULL);
         invokeVoid(vkDestroyDescriptorSetLayout, dev, descriptorSetLayout, MemorySegment.NULL);

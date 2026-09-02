@@ -1,6 +1,9 @@
 package dev.vexelray.vulkan.present;
 
 import dev.vexelray.os.NativeWindow;
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
+import sibarum.probe.Zone;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -168,6 +171,7 @@ public final class WindowedPresenter implements AutoCloseable {
 
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              GraphicsPipeline pipeline, NativeWindow window) {
+        Probe.opened(Lane.GPU, "WindowedPresenter", this);
         this.device = device;
         this.dev = device.handle();
         this.swapchain = swapchain;
@@ -272,6 +276,13 @@ public final class WindowedPresenter implements AutoCloseable {
     }
 
     private boolean renderOnce(int pushConstantBytes, Frame perFrame) {
+        try (Zone z = Probe.zone(Lane.GPU, "present frame")) {
+            return renderFrame(pushConstantBytes, perFrame);
+        }
+    }
+
+    /** The body of {@link #renderOnce}, split out so one probe span covers a whole presented frame. */
+    private boolean renderFrame(int pushConstantBytes, Frame perFrame) {
         if (state == null) {
             state = new FrameState();
         }
@@ -280,8 +291,17 @@ public final class WindowedPresenter implements AutoCloseable {
             s.pushSeg = a.allocate(pushConstantBytes);
             s.pushCapacity = pushConstantBytes;
         }
-        check(invoke(waitFences, dev, 1, s.pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
-        int acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, s.pImageIndex);
+        // The single most diagnostic number in this whole file. One frame is in flight, so this fence is the
+        // CPU waiting for the GPU to finish the *previous* frame - and a loop that is GPU-bound spends its
+        // budget here and nowhere else. A "driver overload" report with a large fence wait and a small
+        // everything-else is not an application problem at all, and this is the line that says so.
+        try (Zone w = Probe.zone(Lane.GPU, "wait fence")) {
+            check(invoke(waitFences, dev, 1, s.pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+        }
+        int acq;
+        try (Zone w = Probe.zone(Lane.GPU, "acquire image")) {
+            acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, s.pImageIndex);
+        }
         if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
             rebuild();
             return true;   // skip this frame; the window is still open
@@ -356,9 +376,14 @@ public final class WindowedPresenter implements AutoCloseable {
         invokeVoid(endRp, cmd);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
 
-        check(invoke(submitCmd, device.queue(), 1, s.submit, inFlight), "vkQueueSubmit");
+        try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
+            check(invoke(submitCmd, device.queue(), 1, s.submit, inFlight), "vkQueueSubmit");
+        }
         s.pSwapchains.set(JAVA_LONG, 0, swapchain.handle());
-        int res = invoke(present, device.queue(), s.presentInfo);
+        int res;
+        try (Zone w = Probe.zone(Lane.GPU, "queue present")) {
+            res = invoke(present, device.queue(), s.presentInfo);
+        }
         if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
             rebuild();
         }
@@ -435,10 +460,15 @@ public final class WindowedPresenter implements AutoCloseable {
     }
 
     private void rebuild() {
-        device.waitIdle();
-        framebuffers.close();
-        swapchain.recreate(window.width(), window.height());
-        framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
+        // Counted because swapchain churn is a cost that hides: a drag-resize rebuilds every frame, each one
+        // a full device idle, and the frame times it produces look like a rendering problem rather than the
+        // resize it actually is.
+        try (Zone z = Probe.zone(Lane.GPU, "swapchain rebuild")) {
+            device.waitIdle();
+            framebuffers.close();
+            swapchain.recreate(window.width(), window.height());
+            framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
+        }
     }
 
     private long createSemaphore(MethodHandle create) {
@@ -481,6 +511,7 @@ public final class WindowedPresenter implements AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "WindowedPresenter", this);
         device.waitIdle();
         invokeVoid(destroyPool, dev, pool, MemorySegment.NULL);
         invokeVoid(destroyFence, dev, inFlight, MemorySegment.NULL);

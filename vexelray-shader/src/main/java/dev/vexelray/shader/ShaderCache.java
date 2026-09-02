@@ -1,5 +1,9 @@
 package dev.vexelray.shader;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
+import sibarum.probe.Zone;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,8 +35,16 @@ public final class ShaderCache {
      *                               result and fail later at pipeline creation, far from the cause
      */
     public <D> List<ComposedShader> shadersFor(ShaderComposer<D> composer, D description) {
+        // Hit and miss are counted apart because the difference between them is the whole reason this class
+        // exists, and because a miss is expensive in a way that a frame-time average will never show: it is
+        // IR construction, a SPIR-V encode and then the driver's own compile, all inside one frame. A run
+        // whose miss count keeps climbing has a key that is not stable, which is a cache that is not one.
+        Probe.count(Lane.SHADER, "cache lookup");
         return entries.computeIfAbsent(composer.keyFor(description), key -> {
-            List<ComposedShader> composed = List.copyOf(composer.compose(description));
+            List<ComposedShader> composed;
+            try (Zone z = Probe.zone(Lane.SHADER, "compose (cache miss)")) {
+                composed = List.copyOf(composer.compose(description));
+            }
             if (composed.isEmpty()) {
                 throw new IllegalStateException("composer " + composer.getClass().getSimpleName()
                         + " produced no stages for " + key);

@@ -1,5 +1,7 @@
 package dev.vexelray.vulkan.present;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -50,6 +52,7 @@ public final class SwapchainFramebuffers implements AutoCloseable {
     private final long[] framebuffers;
 
     public SwapchainFramebuffers(VulkanDevice device, VulkanSwapchain swapchain, long renderPass) {
+        Probe.opened(Lane.GPU, "SwapchainFramebuffers", this);
         this.device = device;
         MemorySegment dev = device.handle();
         MethodHandle vkCreateImageView = device.command("vkCreateImageView",
@@ -101,6 +104,7 @@ public final class SwapchainFramebuffers implements AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "SwapchainFramebuffers", this);
         MemorySegment dev = device.handle();
         for (long fb : framebuffers) {
             invokeVoid(vkDestroyFramebuffer, dev, fb, MemorySegment.NULL);

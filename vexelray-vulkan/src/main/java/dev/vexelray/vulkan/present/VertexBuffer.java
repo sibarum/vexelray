@@ -1,5 +1,7 @@
 package dev.vexelray.vulkan.present;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -68,6 +70,7 @@ public final class VertexBuffer implements AutoCloseable {
 
     /** A dynamic buffer with room for {@code capacityFloats} floats, ready for repeated {@link #update(float[])}. */
     public VertexBuffer(VulkanDevice device, int capacityFloats) {
+        Probe.opened(Lane.GPU, "VertexBuffer", this);
         this.device = device;
         this.capacityFloats = capacityFloats;
         MemorySegment dev = device.handle();
@@ -143,6 +146,7 @@ public final class VertexBuffer implements AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "VertexBuffer", this);
         MemorySegment dev = device.handle();
         invokeVoid(vkDestroyBuffer, dev, buffer, MemorySegment.NULL);
         invokeVoid(vkFreeMemory, dev, memory, MemorySegment.NULL);

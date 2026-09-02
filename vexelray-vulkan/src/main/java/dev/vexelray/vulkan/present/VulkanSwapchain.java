@@ -1,5 +1,7 @@
 package dev.vexelray.vulkan.present;
 
+import sibarum.probe.Lane;
+import sibarum.probe.Probe;
 import dev.vexelray.os.ffi.NativeException;
 import dev.vexelray.vulkan.vk.VkLoader;
 import dev.vexelray.vulkan.vk.Vk;
@@ -72,6 +74,7 @@ public final class VulkanSwapchain implements AutoCloseable {
     private int extentHeight;
 
     public VulkanSwapchain(MemorySegment instance, VulkanDevice device, long surface, int width, int height) {
+        Probe.opened(Lane.GPU, "VulkanSwapchain", this);
         this.instance = instance;
         this.device = device;
         this.surface = surface;
@@ -218,6 +221,7 @@ public final class VulkanSwapchain implements AutoCloseable {
 
     @Override
     public void close() {
+        Probe.closed(Lane.GPU, "VulkanSwapchain", this);
         destroyHandle(handle);
         handle = 0L;
     }
