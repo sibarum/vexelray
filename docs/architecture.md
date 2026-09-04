@@ -64,7 +64,13 @@ vexelray-shader        vexelray-vulkan        Composition seam (SupirVast) · Vu
   + Shading/ShaderCache          ▲              (bindings, instance/device/swapchain, buffers, pipeline wrappers)
       ▲                          │
 vexelray-surface       Surfaces as data -> a marchable distance field, with the Lipschitz analysis and the
-      ▲                symbolic derivative that make an arbitrary implicit safe to march.
+      ▲                symbolic derivative that make an arbitrary implicit safe to march. Also strokes,
+      │                per-vertex colour, Bounds, and Cones (the same geometry handed out as numbers).
+      │
+vexelray-text          MSDF atlas model, glyph layout, the MSDF shader as core IR.  (on -shader)
+      ▲
+vexelray-canvas        2D immediate-mode API: one fat-vertex batch for shapes, text and sampled images, and
+      ▲                its uber-shader as core IR.  (on -text, so on -shader)
       └────────┬────────────────┘
 vexelray-engine        Runtime impl: implements RuntimeManager/VexelEngine, realises a pipeline, owns the frame
                        loop + present targets (windowed swapchain / offscreen), drives techniques.
@@ -116,9 +122,12 @@ into their own repos — not upstreams like LWJGL/GLFW. (Atchung is pure Java: n
 buffers). `vexelray-engine` holds *orchestration* (frame loop, present targets, technique driving). Techniques
 target the Vulkan runtime directly — a backend abstraction is deferred (YAGNI until a second backend exists).
 
-**Current vs target.** Today the runtime is low-level and `Fathom` hand-wires it; `vexelray-core`'s pipeline
-API is being reworked from a sealed `Pass` set into the open `RenderTechnique` SPI; only the SDF path exists
-(not yet a module). The topology above is the target the refactor moves toward.
+**Current vs target.** The topology above is the target the refactor moves toward, and it is half arrived.
+`vexelray-engine-api` exists and carries the SPI plus the pipeline DSL; `vexelray-technique-sdf` exists as a
+module; `-text` and `-canvas` landed beside `-surface`. What is *not* there is `vexelray-engine` — there is no
+runtime behind the front door — so today the runtime is still low-level and `Fathom` hand-wires it, as do the
+demos under `vexelray-vulkan`. Read the front door as designed and validated rather than as load-bearing until
+that module exists. §6 has the current state.
 
 ---
 
@@ -184,7 +193,16 @@ the binding layer rebinds it. A canvas that drew no images is still exactly one 
 constants), a scene rendered by one pipeline composites into a 2D frame drawn by another — which is what a
 GUI viewport is made of.
 
-The **next architectural move** is the technique refactor in §3–4: stand up `vexelray-engine-api`
-(SPI + pipeline DSL, retiring the sealed `Pass`), a real runtime in `vexelray-engine`, wrap the SDF path as
-`vexelray-technique-sdf`, and move `Fathom` onto the front-door API. See [`fathom-demo`](../) progress and the
-commit history for the current state.
+The surface compiler has since grown the things a *user-authored* scene needs: `Stroke` (thick polylines whose
+corners pass exactly through their vertices), per-vertex colour that costs nothing when unused, `Bounds` so a
+camera can be pointed at arbitrary geometry, and — because folding a few hundred segments into a shader was
+measured at five seconds of pipeline build on the frame loop — `ConeField`, the same march reading its geometry
+from a storage buffer, so one pipeline serves every scene. All of it is
+[`docs/surface-compiler.md`](surface-compiler.md) §3.1–§3.4.
+
+The **next architectural move** is still the technique refactor in §3–4, now half-landed.
+`vexelray-engine-api` is stood up (the SPI plus the pipeline DSL) and the SDF path is wrapped as
+`vexelray-technique-sdf`. What remains is the part that changes how anything *runs*: a real runtime in
+`vexelray-engine`, which does not exist as a module yet, and moving `Fathom` onto the front-door API. Until
+then the working demos drive `vexelray-vulkan` directly — the front door is expressible and validated
+(`HybridPipelineTest`) rather than load-bearing, and it is worth being plain about which of those it is.

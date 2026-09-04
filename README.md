@@ -41,7 +41,9 @@ vexelray                 parent (pom)
 │                           differentiates the IR symbolically and Normalize rescales by it, so an arbitrary
 │                           implicit expression becomes sphere-traceable. See docs/surface-compiler.md.
 ├─ vexelray-technique-sdf  the SDF technique: surface + lighting model -> fullscreen ray-march fragment
-│    dev.vexelray.technique.sdf  SdfComposer, SdfScene, MarchSettings
+│    dev.vexelray.technique.sdf  SdfComposer, SdfScene, MarchSettings; ConeField is the same march with the
+│                           geometry read from a storage buffer instead of compiled in — one pipeline for
+│                           every scene, so new geometry is a buffer copy rather than a shader build
 ├─ vexelray-msdf-maven-plugin  build-time MSDF atlas generator (Maven plugin), used by vexelray-text
 ├─ vexelray-text         MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, MSDF shader as core IR
 │    dev.vexelray.text      AtlasData/AtlasInfo, GlyphLayout, TextLayout/TextMesh, MsdfShader
@@ -106,6 +108,11 @@ The runnable demos live as test sources in `vexelray-vulkan` — each is a `main
 | `CanvasDemo` / `DynamicCanvasDemo` | the immediate-mode 2D API, static and per-frame |
 | `SampledSurfaceDemo` | a compiled surface marched into a sampled texture |
 | `OffscreenTriangleSmoke` / `OffscreenScreenshotSmoke` / `SurfaceDeviceSmoke` | headless render + readback |
+| `StrokeMarchSmoke` | a `Surface.Stroke` marched headlessly, answering *did anything get drawn* in numbers |
+
+`StrokeMarchSmoke` is worth knowing about before you need it: "nothing renders" is three questions a window
+cannot tell apart — a shader that draws nothing, a good shader with the camera pointed elsewhere, or a draw that
+never happened. It runs the first in isolation and counts the pixels that are not sky.
 
 `vexelray-demo` holds Fathom, the first-person SDF dungeon that exercises the render==sim thesis: the same
 `core` IR is lowered to SPIR-V for the GPU and to a Truffle AST for CPU collision.

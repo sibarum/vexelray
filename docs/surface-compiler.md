@@ -242,6 +242,84 @@ hard crossover, so a soft join between differently coloured children shows a har
 colours by the same exponential the distance uses is the material-matrix work of [`vexel-world.md`](vexel-world.md)
 §2, not a patch to this pass.
 
+### 3.4 The third mode: geometry as **data**, not as code
+
+Everything above compiles a scene *into* a shader. Every coefficient is a literal, every cone is its own tree of
+arithmetic folded against its own constants, and the result is the fastest thing there is to march. It is also
+why a few hundred segments lower to some hundreds of kilobytes of SPIR-V, and why building a pipeline from that
+was measured at **five seconds** — on the frame loop, which is one thread per window, so the whole application
+stopped for it. §3.2's 21 MB freeze was the same fact at the other end of the scale.
+
+`ConeField` trades it back. The shader is a `float sdf(vec3)` that **loops over round cones read from a storage
+buffer**, so the arithmetic is the same formula with its coefficients *loaded* per cone per step rather than
+folded in. A march costs more. In exchange the module is a fixed size and — this being the point — **the same
+bytes for every scene**: one pipeline, built once when the window opens, and a new expression is a buffer copy.
+
+**What makes the march affordable is culling, and the skip is exact.** The loop is over *groups* of eight
+consecutive cones rather than over cones, and each group carries a bounding sphere computed in Java when the
+buffer is packed. Every cone in a group lies inside its sphere, so the cone's distance is at least
+`|p − centre| − radius`; when that lower bound is already `>= best`, no cone in the group can lower `best`, and
+skipping them returns *the same number the flat loop would have*. There is no tolerance to tune and no geometry
+traded away. It pays because cones come off a curve, so consecutive ones are neighbours in space and a group's
+sphere is tight, while a ray step is near one part of the curve and far from all the rest — most groups fail the
+test. Where nothing can be culled the cost is the tests themselves, about a quarter of a cone evaluation per
+group of eight, so a few percent.
+
+Three details are load-bearing rather than incidental:
+
+- **The bound is built in two passes**, from the axis-aligned box of the cones' *end spheres* and then the
+  furthest any end reaches from that box's middle. The box's own half-diagonal is one pass and a legitimate
+  answer, but a loose sphere is exactly what defeats the thing it exists for — a bound is useful in proportion
+  to how often it excludes something, and the second pass is a few dozen operations per group *per plot*
+  against a test evaluated per group per ray step per pixel. A cone is the convex hull of its two end spheres,
+  so bounding the ends bounds the cone and no point along the axis needs considering.
+- **The radius is grown by a margin, and the asymmetry is the point.** Too big costs a group test that excludes
+  nothing; too small costs a cone the march never looks at — a hole in the curve that *moves as the camera
+  turns*, which nobody would read as a bad bounding sphere. Two ulps was tried and was not enough:
+  `everyConeIsInsideItsGroupBound` caught a group short by about two and a half against the double-precision
+  cone it is meant to contain, and the shader then adds its own float error on top. So the margin is set far
+  above the error rather than tuned to it — five orders of magnitude below a pixel at the scale this draws.
+- **`GROUP = 8` is a compile-time constant and the group count is not.** That is what keeps the module
+  scene-independent: the shader derives a group's first cone by multiplying, while the group count and the
+  offset the bounds begin at are data, exactly as the cone count already was.
+  `ConeFieldTest.isIndependentOfItsGeometry` is what holds it.
+
+The ordering is left alone on purpose: `best` starts at infinity, so the first group examined is never skipped
+and the rest are skipped against whatever it found. Sorting groups by distance would cull more and costs
+per-pixel work to do it; the chain order is free and already spatially coherent.
+
+Three things make it hold together:
+
+- **`Cones` is the seam, and `Spine` stays behind it.** `Spine` owns the geometric argument of §3.1 — where a
+  corner's control point has to be, why the sub-cone count is even, how radius and colour ride the same curve —
+  and all of it is liable to be refined, so it is package-private. What a caller can depend on is the *result*:
+  a stroke is a union of tapered round cones and nothing else. `Cones.of` hands out exactly that, and
+  `Cones.flatten` writes it as `FLOATS = 8` per cone (`ax, ay, az, ar, bx, by, bz, br`).
+- **One primitive, no cases.** The compiler emits a *sphere* for a degenerate piece — one end swallowing the
+  other, where the round-cone field divides by `|b−a|² − (r_a−r_b)²` and roots something that is not real there.
+  `Cones` does not, deliberately: it emits that end as a cone whose two ends coincide, and the shader clamps the
+  axis length away from zero, at which the formula's three regions collapse and the surviving branch evaluates
+  to `|p − a| − r` — the sphere. A branch per cone saved is worth a clamp per cone spent, and a loop that reads
+  its geometry from a buffer is only worth having if it has no cases.
+- **The counts live in the buffer, not in a push constant.** The first `FLOATS` floats are a header carrying the
+  cone count, the group count and the float offset the group bounds begin at; cone *i* then occupies
+  `[FLOATS*(i+1), FLOATS*(i+2))`, and the bounds follow the last cone. The header is a whole cone wide so that a
+  cone's block starts at a multiple of its own size, which is what lets the shader index cone *i* by multiplying
+  rather than by adding an offset it had to read. Keeping all of it in the buffer is what lets this compose with
+  `SdfComposer.cameraBytes` unchanged — the camera is still six floats and nothing else had to learn about
+  cones — and the load is from an address every invocation in the group shares, the cheapest kind there is.
+
+Underneath, `StorageBuffer` is `VertexBuffer`'s allocation with a different usage bit, kept a separate class
+because what they are *for* differs at the descriptor: a vertex buffer is bound by the pipeline's vertex input
+state and needs no descriptor at all. Host-visible and host-coherent for the same reason — small contents that
+change often, where a staging copy would cost more than it saved — and with the same obligation, which is worth
+stating because nothing enforces it: **the previous draw must have completed before `update` rewrites it**.
+`SampledColorTarget.renderInto` waits on its own fence before returning, so a caller that updates between calls
+to it is already safe.
+
+This does not replace §4's tiering; it sits beside it as the mode for geometry that *changes*. A scene that is
+authored once and marched forever still wants everything folded.
+
 ---
 
 ## 4. Two compile modes, tiered
