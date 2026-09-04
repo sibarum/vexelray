@@ -19,10 +19,11 @@ import dev.vexelray.surface.Surface;
  * @param surface      the geometry
  * @param shading      how a hit point becomes a colour
  * @param march        sphere-trace budget and artifact guards
- * @param albedo       surface colour, uniform across the scene for now. Per-primitive materials arrive with the
- *                     material matrix of docs/vexel-world.md §2; until then a scene is one colour, which is
- *                     enough to see shape and shading but is a real narrowing versus the harness's blended
- *                     per-primitive colours
+ * @param albedo       the scene's surface colour: what anything that did not name a colour of its own is shaded
+ *                     as. A {@link Surface.Stroke} may carry per-vertex colour and gradient between them, and a
+ *                     combinator hands the point to whichever child is showing — so this is the default rather
+ *                     than the only colour. Giving <em>any</em> surface its own material still waits on the
+ *                     material matrix of docs/vexel-world.md §2
  * @param sky          colour returned when a ray reaches {@link MarchSettings#farPlane} without hitting anything
  * @param focalLength  distance from eye to image plane in the ray basis: larger is a longer lens, narrower field
  *                     of view. The camera's only compile-time property; everything else about it is a push

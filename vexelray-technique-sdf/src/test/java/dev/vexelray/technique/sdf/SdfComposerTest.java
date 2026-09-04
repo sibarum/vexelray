@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -123,6 +125,53 @@ class SdfComposerTest {
                 "expected exactly one float-returning function: the field");
         assertEquals(8, countOccurrences(disassembly, "OpFunctionCall"),
                 "expected 8 field samples per pixel (1 march + 1 hit + 6 normal taps)");
+    }
+
+    /** A scene whose geometry carries colour: a stroke running red to blue, over the plain ground plane. */
+    private static SdfScene colouredScene() {
+        return SdfScene.of(Surface.union(
+                Surface.Plane.ground(),
+                new Surface.Stroke(List.of(
+                        new Surface.Stroke.Vertex(-2, 1, 3, 0.2, 1)
+                                .painted(new Surface.Rgb(0.9, 0.1, 0.1)),
+                        new Surface.Stroke.Vertex(0, 2, 3, 0.3, 1)
+                                .painted(new Surface.Rgb(0.9, 0.9, 0.1)),
+                        new Surface.Stroke.Vertex(2, 1, 3, 0.2, 1)
+                                .painted(new Surface.Rgb(0.1, 0.1, 0.9))))));
+    }
+
+    @Test
+    @DisplayName("a surface with no colour of its own emits no colour function at all")
+    void uncolouredScenesCostNothing() {
+        // The invariant the whole module is built around, in its colour spelling: a feature nobody used must
+        // leave no trace in the output. An extra function here — even an unused one — would break the parity
+        // this composer is meant to hold.
+        assertNull(SdfComposer.albedoFunction(scene()));
+    }
+
+    @Test
+    @DisplayName("a coloured surface adds one function, called once, and the module still validates")
+    void colourAddsOneFunctionCalledOnce() {
+        // The cost story worth pinning. Colour is a second function roughly the size of the field, because
+        // picking a colour out of a union means re-testing the same distances — but it is called ONCE, at the
+        // hit point, where the field is called eight times. If this ever reads more than nine calls, something
+        // has started evaluating the colour inside the march.
+        NativeTools tools = new NativeTools();
+        Assumptions.assumeTrue(tools.isAvailable(), "spirv-tools not bundled for this platform");
+
+        assertNotNull(SdfComposer.albedoFunction(colouredScene()));
+        String disassembly = tools.disassemble(SdfComposer.fragmentSpirv(colouredScene()));
+        assertEquals(1, countOccurrences(disassembly, "= OpFunction %float "),
+                "expected exactly one float-returning function: the field");
+        assertEquals(1, countOccurrences(disassembly, "= OpFunction %v3float "),
+                "expected exactly one vec3-returning function: the colour");
+        assertEquals(9, countOccurrences(disassembly, "OpFunctionCall"),
+                "expected 8 field samples plus a single colour read");
+
+        for (ComposedShader shader : composer.compose(colouredScene())) {
+            NativeTools.ValidationResult result = tools.validate(shader.spirv());
+            assertTrue(result.valid(), shader.stage() + " rejected by spirv-val:\n" + result.output());
+        }
     }
 
     @Test

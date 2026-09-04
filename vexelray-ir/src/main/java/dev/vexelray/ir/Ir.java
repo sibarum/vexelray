@@ -41,6 +41,19 @@ public final class Ir {
      */
     public static final Expr POINT = new Expr.Param(0, V3);
 
+    /**
+     * A stand-in for "whatever colour the scene says by default", used while a surface is being lowered and
+     * resolved when it is composed into a renderer.
+     *
+     * <p>It exists because colour is optional per surface but a combinator is not: union a painted stroke with a
+     * bare sphere and the sphere still has to answer when it is the thing in front of the camera. Rather than
+     * have the surface layer learn what a scene's default colour is — it has no business knowing — the
+     * uncoloured branch reads this, and the composer substitutes its own value on the way out. That keeps a
+     * compiled surface independent of the scene it is dropped into, which is what lets the shader cache key on
+     * the surface alone.
+     */
+    public static final Expr SCENE_ALBEDO = new Expr.Param(1, V3);
+
     private Ir() {
     }
 

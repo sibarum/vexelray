@@ -83,6 +83,24 @@ final class Fold {
         return Ir.mul(v, Ir.broadcast(s, v.type()));
     }
 
+    /**
+     * Component {@code i} of a vector, reading straight through a vector that was just built rather than emitting
+     * an extract of a construct. Domain operators build a point, and the next operator down immediately takes it
+     * apart again; without this, a stack of them leaves a tower of construct/extract pairs that nothing
+     * downstream removes.
+     */
+    static Expr component(Expr v, int i) {
+        if (v instanceof Expr.VectorConstruct vc && i < vc.components().size()) {
+            return vc.components().get(i);
+        }
+        return switch (i) {
+            case 0 -> Ir.x(v);
+            case 1 -> Ir.y(v);
+            case 2 -> Ir.z(v);
+            default -> throw new IllegalArgumentException("no component " + i);
+        };
+    }
+
     /** True for an exact zero — a zero constant, or a vector built entirely of them. */
     static boolean isZero(Expr e) {
         return isConstant(e, 0.0);

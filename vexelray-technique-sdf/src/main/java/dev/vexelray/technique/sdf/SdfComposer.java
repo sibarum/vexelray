@@ -51,6 +51,16 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     /** The name of the generated field function, for hosts that lower the same module on the CPU. */
     public static final String SDF_FUNCTION = "sdf";
 
+    /**
+     * The name of the generated colour function, present only when the surface carries colour of its own.
+     *
+     * <p>Note what it costs, because the answer is counter-intuitive: the colour function is roughly as large as
+     * the field — picking a colour out of a union means re-testing the same distances — but it is called
+     * <b>once per pixel</b>, at the hit point, where the field is called nine times per pixel <em>per march
+     * step</em>. Colour is close to free at runtime and merely bulky in the module.
+     */
+    public static final String ALBEDO_FUNCTION = "albedo";
+
     private static final Type.Float F32 = Ir.F32;
 
     @Override
@@ -83,6 +93,25 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         return SurfaceCompiler.compile(scene.surface()).asFunction(SDF_FUNCTION);
     }
 
+    /**
+     * The scene's colour as a standalone {@code vec3 albedo(vec3)}, or {@code null} when nothing in the surface
+     * named a colour and the scene's single albedo is the whole story.
+     *
+     * <p>Null rather than a constant function on purpose: a shape-only scene must compose byte-identically to
+     * what it composed before surfaces could carry colour, and an extra function in the module — even an unused
+     * one — is not that.
+     */
+    public static Function albedoFunction(SdfScene scene) {
+        Field field = SurfaceCompiler.compile(scene.surface());
+        return field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null;
+    }
+
+    /** The scene-wide albedo as a constant, and what {@link Ir#SCENE_ALBEDO} resolves to. */
+    private static Expr sceneAlbedo(SdfScene scene) {
+        SdfScene.Rgb rgb = scene.albedo();
+        return Ir.v3(rgb.r(), rgb.g(), rgb.b());
+    }
+
     /** The compiled field, if a caller wants the Lipschitz bound along with the expression. */
     public static Field field(SdfScene scene) {
         return SurfaceCompiler.compile(scene.surface());
@@ -103,8 +132,34 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     /** Compose and lower the ray-march fragment for {@code scene}. */
     public static byte[] fragmentSpirv(SdfScene scene) {
+        // Compiled once and used twice: the field the march walks, and — only if a surface asked for it — the
+        // colour read at the hit point.
+        Field field = SurfaceCompiler.compile(scene.surface());
+        return fragmentSpirv(scene, field.asFunction(SDF_FUNCTION),
+                field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null);
+    }
+
+    /**
+     * As {@link #fragmentSpirv(SdfScene)}, but marching a distance field supplied by the caller rather than one
+     * compiled from {@code scene.surface()}.
+     *
+     * <p>Everything that is not the field itself is shared: the primary ray, the sphere-trace loop, the hit test,
+     * the normal by central difference, the shading and the miss. Those are the renderer, and they do not become
+     * a different renderer because the field arrived by another route — so a second composer that duplicated them
+     * would be two copies of the march to keep in step, which is the mistake this window's three predecessors
+     * made with their transforms.
+     *
+     * <p>What it is <em>for</em>: a field whose geometry lives in a storage buffer rather than in the shader. Such
+     * a field is the same SPIR-V whatever it draws, so its pipeline is built once instead of once per scene —
+     * and building one was measured at five seconds on the thread that presents. {@code scene.surface()} is not
+     * read here and may describe the same geometry the caller put in the buffer; the scene is still consulted for
+     * everything else about the picture.
+     *
+     * @param sdf      {@code float sdf(vec3 p)} — called by the march and, nine times over, by the normal
+     * @param albedoFn {@code vec3 albedo(vec3 p)}, or null when the scene's own albedo is the whole story
+     */
+    public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn) {
         MarchSettings march = scene.march();
-        Function sdf = sdfFunction(scene);
 
         InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, Ir.V4);
@@ -151,14 +206,17 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 new Statement.Assign(p, Ir.add(read(ro), Ir.scale(read(rd), read(t)))),
                 new Statement.Assign(d, call(sdf, read(p))),
                 new Statement.If(hitTest(march, read(d), read(t)),
-                        hit(scene, sdf, fragColor, p, rd, t),
+                        hit(scene, sdf, albedoFn, fragColor, p, rd, t),
                         miss(scene, fragColor)),
                 new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
         CoreModule module = new CoreModule()
-                .addFunction(sdf)                       // emitted once; called nine times per pixel
-                .addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+                .addFunction(sdf);                      // emitted once; called nine times per pixel
+        if (albedoFn != null) {
+            module = module.addFunction(albedoFn);      // emitted once; called once, at the hit point
+        }
+        module = module.addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
         return ComposedShader.lower(ShaderStage.FRAGMENT, module, Fullscreen.ENTRY_POINT).spirv();
     }
 
@@ -194,7 +252,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 Ir.add(Ir.f(march.hitEpsilon()), Ir.mul(Ir.f(march.hitEpsilonSlope()), travelled)));
     }
 
-    private static Region hit(SdfScene scene, Function sdf, InterfaceVar fragColor,
+    private static Region hit(SdfScene scene, Function sdf, Function albedoFn, InterfaceVar fragColor,
                               LocalVar p, LocalVar rd, LocalVar t) {
         // Finite-difference normal, sampled at a width that grows with distance. At a fixed near-field width a
         // far hit point's neighbours differ only by float noise, so normalize() amplifies it and the normal
@@ -212,9 +270,13 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 centralDifference(sdf, p, Ir.v3(Ir.f(0.0), width, Ir.f(0.0))),
                 centralDifference(sdf, p, Ir.v3(Ir.f(0.0), Ir.f(0.0), width)))));
 
-        SdfScene.Rgb albedo = scene.albedo();
-        Expr shaded = scene.shading().shade(ShadingPoint.diffuse(
-                read(p), normal, Ir.neg(read(rd)), Ir.v3(albedo.r(), albedo.g(), albedo.b())), bindings);
+        // Bound for the same reason the normal is: a model may reference the albedo more than once, and where
+        // the surface carries its own colour that expression is a call rather than a constant.
+        Expr albedo = albedoFn == null
+                ? sceneAlbedo(scene)
+                : bindings.bind("albedo", new Expr.Call(albedoFn, List.of(read(p))));
+        Expr shaded = scene.shading().shade(
+                ShadingPoint.diffuse(read(p), normal, Ir.neg(read(rd)), albedo), bindings);
 
         LocalVar colour = new LocalVar("colour", Ir.V3);
         List<Statement> statements = new ArrayList<>(bindings.statements());

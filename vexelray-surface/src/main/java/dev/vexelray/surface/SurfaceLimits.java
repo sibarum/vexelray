@@ -95,8 +95,19 @@ public record SurfaceLimits(int maxNodes, int maxDepth, int maxCompiledNodes) {
             }
             case Surface.Torus ignored -> {
             }
+            // Charged for what it lowers to, not for what it is. A stroke is one node in the tree and thousands
+            // in the IR — a few hundred vertices at a high corner count reaches millions — so counting it as a
+            // leaf would let the one node in this file that expands without an Implicit in sight walk straight
+            // past the budget it exists to enforce.
+            case Surface.Stroke s -> count(counter, s.coneBound());
             case Surface.Translate t -> walk(t.of(), depth + 1, counter);
             case Surface.Scale s -> walk(s.of(), depth + 1, counter);
+            case Surface.Rotate r -> walk(r.of(), depth + 1, counter);
+            case Surface.Mirror m -> walk(m.of(), depth + 1, counter);
+            case Surface.Repeat r -> walk(r.of(), depth + 1, counter);
+            case Surface.PolarRepeat r -> walk(r.of(), depth + 1, counter);
+            case Surface.Twist t -> walk(t.of(), depth + 1, counter);
+            case Surface.Bend b -> walk(b.of(), depth + 1, counter);
             case Surface.Shell s -> walk(s.of(), depth + 1, counter);
             case Surface.Round r -> walk(r.of(), depth + 1, counter);
             case Surface.Difference d -> {
@@ -142,7 +153,11 @@ public record SurfaceLimits(int maxNodes, int maxDepth, int maxCompiledNodes) {
     }
 
     private void count(Counter counter) {
-        if (++counter.nodes > maxNodes) {
+        count(counter, 1);
+    }
+
+    private void count(Counter counter, int nodes) {
+        if ((counter.nodes += nodes) > maxNodes) {
             throw new SurfaceTooLargeException("surface exceeds " + maxNodes + " nodes");
         }
     }

@@ -24,7 +24,7 @@ final class Eval {
 
     /** Evaluate a scalar expression at a point. */
     static double at(Expr e, double x, double y, double z) {
-        double[] v = eval(e, new double[]{x, y, z});
+        double[] v = eval(e, Env.at(x, y, z));
         if (v.length != 1) {
             throw new IllegalArgumentException("expected a scalar, got " + v.length + " components");
         }
@@ -33,7 +33,7 @@ final class Eval {
 
     /** Evaluate a vector expression at a point. */
     static double[] vecAt(Expr e, double x, double y, double z) {
-        return eval(e, new double[]{x, y, z});
+        return eval(e, Env.at(x, y, z));
     }
 
     /** Central-difference gradient of a scalar expression — the reference {@link Gradient} is checked against. */
@@ -44,11 +44,37 @@ final class Eval {
                 (at(f, x, y, z + h) - at(f, x, y, z - h)) / (2 * h)};
     }
 
-    private static double[] eval(Expr e, double[] p) {
+    /**
+     * A point, and any locals a colour program declared on the way to its answer.
+     *
+     * <p>The compiler binds subexpressions rather than repeating them (see {@link Lets}), so evaluating a
+     * colour means running its declarations first and then reading them by name — which is what a shader does
+     * too. Without this the interpreter meets a {@code Read} of a local and has nothing to look it up in.
+     */
+    record Env(double[] point, java.util.Map<dev.supirvast.vastir.core.LocalVar, double[]> locals) {
+        static Env at(double x, double y, double z) {
+            return new Env(new double[]{x, y, z}, java.util.Map.of());
+        }
+    }
+
+    /** Evaluate a colour: its declarations in order, then the expression that reads them. */
+    static double[] withLets(Expr e, java.util.List<dev.supirvast.vastir.core.Statement> lets,
+                             double x, double y, double z) {
+        java.util.Map<dev.supirvast.vastir.core.LocalVar, double[]> locals = new java.util.LinkedHashMap<>();
+        Env env = new Env(new double[]{x, y, z}, locals);
+        for (dev.supirvast.vastir.core.Statement s : lets) {
+            var d = (dev.supirvast.vastir.core.Statement.DeclareVar) s;
+            locals.put(d.variable(), eval(d.initializer(), env));
+        }
+        return eval(e, env);
+    }
+
+    private static double[] eval(Expr e, Env p) {
         return switch (e) {
             case Expr.ConstFloat c -> new double[]{c.value()};
             case Expr.ConstInt c -> new double[]{c.value()};
-            case Expr.Param param -> param.index() == 0 ? p.clone() : unsupported(e);
+            case Expr.Read r -> p.locals().get(r.variable()).clone();
+            case Expr.Param param -> param.index() == 0 ? p.point().clone() : unsupported(e);
             case Expr.Unary u -> map(eval(u.operand(), p), v -> switch (u.op()) {
                 case NEGATE -> -v;
                 default -> throw new UnsupportedOperationException(u.op().toString());
@@ -75,7 +101,7 @@ final class Eval {
         };
     }
 
-    private static double[] math(Expr.MathCall m, double[] p) {
+    private static double[] math(Expr.MathCall m, Env p) {
         List<Expr> args = m.args();
         double[] a = eval(args.get(0), p);
         return switch (m.fn()) {

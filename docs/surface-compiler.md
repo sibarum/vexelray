@@ -113,10 +113,13 @@ infrastructure); interval/affine second, as its own pass, shared with the vexel 
 ```
 Surface
 ├── Sphere / Box / Capsule / Plane / Torus      — proper bounded SDFs, exact
-├── Translate / Scale                           — domain transforms (Lipschitz-tracked)
+├── Translate / Scale / Rotate / Mirror         — isometries and uniform scale; distances survive intact
+├── Repeat(axes) / PolarRepeat(n)               — tiling; folds into the nearest cell AND its neighbour (§8.2)
+├── Twist(rate, r) / Bend(rate, r)              — NOT isometries; divided by a declared stretch bound (§8.3)
 ├── Union / Intersection / Difference           — min / max combinators
 ├── SmoothUnion(k, ...)                         — N-ary soft-min; <= min, so still conservative
 ├── Shell(t) / Round(r)                         — |d| - t, d - r
+├── Stroke(vertices, segmentsPerCorner)         — thick polyline; per-vertex radius, curvature, colour (§3.1)
 └── Implicit(Expr f)                            — ANY expression; normalized on lowering (§2)
 ```
 
@@ -131,6 +134,113 @@ Three properties fall out of it being records:
    `Expr` and only inserts the (expensive) gradient division where a subtree admits it cannot vouch for itself.
    Hand-authored scenes therefore compile to *exactly what they compile to today* — no regression, no cost paid
    for a generality they don't use. That is the invariant the harness will hold us to (§6).
+
+### 3.1 `Stroke`, and why its corners are not the usual corners
+
+`Stroke` is a thick line through space: vertices, a radius at each, and a per-vertex curvature that runs from a
+sharp crease to a full arc. It lowers to a `Union` of **tapered round cones** — each the exact hull of the two
+spheres at its ends — so it is 1-Lipschitz by construction and pays nothing for normalization. All the geometry
+happens in Java on compile-time constants (`Spine`); the IR sees a flat `min` over exact primitives and no curve
+evaluation at all.
+
+The one design decision worth recording is the corner. The standard fillet runs a quadratic Bézier between two
+handles with the vertex `V` as its control point — and **that curve never reaches `V`**. It passes at
+`(H⁻ + 2V + H⁺)/4`, missing by more the harder the stroke turns, so vertices become hints and the shape drifts
+away from the points the caller named exactly as they ask for more rounding. So the control point is *solved*
+instead: `P = 2V − (H⁻ + H⁺)/2` gives `B(0.5) = V` identically, for any handles. The vertex is a fixed point of
+the whole curvature family, from crease to arc.
+
+Two details keep that true of the geometry rather than only of the algebra:
+
+- **the corner is sampled an even number of times**, so `u = 0.5` — the vertex — is a *joint* of the emitted
+  chain, not merely near one. `segmentsPerCorner` is rejected if it is odd, and the `u = 0.5` and `u = 1`
+  samples are written down rather than evaluated, because the polynomial lands an ulp or two off in float and
+  "on the surface, give or take an ulp" is a weaker claim than the node is meant to make;
+- **handles reach at most half of each adjacent segment**, so two rounded corners sharing a segment meet at its
+  midpoint at worst and the straight run between them never runs backwards.
+
+Radii ride the same construction one dimension down, clamped to the hull of the three they interpolate — a
+quadratic through three positive values can dip below zero between them, and a negative radius is not a thin
+tube but an inside-out one. And a taper steep enough that one end sphere swallows the other is caught on
+constants and emitted as that sphere: the round-cone field divides by `|b−a|² − (r_a−r_b)²` and roots it, which
+is not real there. No epsilon, no NaN, no branch.
+
+What is *not* promised is that the shape's volumetric centroid lies inside it. No polyline node can promise
+that — a stroke bent back on itself has its centroid in the gap, the way a horseshoe does.
+
+`SurfaceLimits` charges a stroke for the cones it lowers to rather than the one node it looks like: it is the
+only node in the tree that expands by orders of magnitude without an `Implicit` in sight.
+
+### 3.2 Colour, and where it is cheap
+
+A stroke's vertices may each carry an `Rgb`, and the colour gradients along the stroke the same way the radius
+does — interpolated in its own channels through the same through-the-vertex construction, so a vertex's colour
+is read exactly at that vertex, corners included. All or nothing per stroke: a gradient between a colour and an
+absence has no meaning.
+
+`Field` therefore grew a nullable `albedo` expression alongside the distance, and combinators propagate it —
+union takes the nearer child's colour, intersection and difference the farther, domain transforms pass it
+through untouched. A child with no colour of its own contributes `Ir.SCENE_ALBEDO`, a placeholder the composer
+substitutes with the scene's own albedo on the way out; that keeps a compiled surface independent of the scene
+it lands in, which is what lets the shader cache key on the surface alone.
+
+Two things are worth stating plainly about the cost.
+
+**It is free when unused.** `albedo` is null unless something named a colour, so an uncoloured scene lowers to
+byte-identical IR and the composer emits byte-identical SPIR-V — no extra function, not even an unused one. The
+same invariant §3 states for the Lipschitz bound, one field over, and `SdfComposerTest` pins it.
+
+**When used, it is bulky but not hot.** Selecting a colour out of a union means re-testing the same distances,
+so the colour program is roughly a second copy of the field. What makes that affordable is *where* it runs: the
+distance is called eight times per pixel (one per march step, one hit test, six normal taps) and the colour
+exactly **once**, at the hit point. It is emitted as its own `vec3 albedo(vec3)` for the same reason the field
+is a function, and the nine-call count is a test rather than a hope.
+
+**"A second copy" is true only because the fold is let-bound, and it was not, and that is §4.1's fourth
+appearance.** Written the obvious way — folding pairwise and comparing `a.distance()` against the next child —
+each comparison embeds the accumulated chain, and the colour grows as the *square* of the child count while the
+distance grows linearly. Measured on a stroke:
+
+| cones | distance nodes | colour, folded | colour, let-bound |
+|---|---|---|---|
+| 10 | 4,639 | 73,888 | 5,358 |
+| 50 | 23,879 | 1,816,228 | 27,598 |
+| 114 | 54,663 | **9,406,276** | 63,182 |
+
+That is not a slow shader. The 114-cone case reached the driver as **21 MB of SPIR-V** and froze the machine
+compiling it, with the host's frame-loop watchdog reporting three dead paths in a row while the GPU compile
+blocked. The fix is `Lets`: each child's distance is named once, each combination refers to two names, and the
+colour comes out the same order of size as the field it selects over. `ColourSizeTest` asserts the *ratio*
+rather than an absolute size, because absolute size is allowed to grow with the geometry and the ratio is not.
+
+Two lessons worth keeping, since this is the fourth time: a size that is "roughly a copy" should be *measured*
+before it is written down, and any new IR-emitting fold in this codebase should take a binder from the start.
+
+### 3.3 `Bounds`, and why a surface has to say where it is
+
+`Bounds.of(Surface)` walks the tree as data and returns a conservative axis-aligned box, or empty for the
+surfaces that genuinely have none — a `Plane` is a half-space, an unbounded `Repeat` tiles to the horizon, and
+an `Implicit` needs the interval arithmetic of §2.2 rather than a guess.
+
+It exists because a renderer has to point a camera somewhere. A host built around a fixed world box maps an
+expression's volume into it before compiling, so a camera aimed at that box always finds the geometry. A
+surface handed to that host **already built** goes through no such pass: it sits wherever its coordinates put
+it. A stroke authored sixty units out, or a fiftieth of a unit across, compiles correctly, marches correctly,
+and renders a flawless picture of empty space — which is indistinguishable from a broken renderer until
+something measures it. It cost a full debugging cycle to find that out, and the box is what makes the question
+answerable: centre on it, scale by the tightest axis ratio, and arbitrary geometry lands in shot.
+
+Every box **contains** its surface; none claims to be tight. Where tightness is expensive the answer is simply
+larger — a rotation takes the box of the rotated corners rather than the rotated box, a polar repeat takes the
+whole swept cylinder, a soft union adds the `log(n)/k` its blend can bulge by. Loose costs a little framing
+margin; wrong puts geometry outside the shot, which is the one failure the class exists to prevent. So
+`BoundsTest` checks containment against the compiled *field* rather than against another box someone wrote
+down: sample well past the box on every side, and every sample must read a positive distance.
+
+What this does not do is blend colour. A `SmoothUnion` fillets the geometry and then switches colour at the
+hard crossover, so a soft join between differently coloured children shows a hard colour seam. Weighting
+colours by the same exponential the distance uses is the material-matrix work of [`vexel-world.md`](vexel-world.md)
+§2, not a patch to this pass.
 
 ---
 
@@ -226,12 +336,74 @@ render time, CPU-eval cost, and fidelity against a high-step reference. That is 
 
 ---
 
-## 8. Staged plan
+## 8. Domain operators, and the two ways they break a march
+
+`Translate` and `Scale` were the whole of the domain vocabulary, which made the tree a CSG assembler and nothing
+more: every instance of a repeated thing had to be a separate node, so a colonnade cost a column apiece and a
+lattice was not expressible at all. Procedural generation lives in the domain, not in the tree, so the tree needs
+`Rotate`, `Mirror`, `Repeat`, `PolarRepeat`, `Twist`, and `Bend`.
+
+They divide cleanly by *how* they threaten the field, and the two halves want different remedies.
+
+### 8.1 The isometries — free
+
+`Rotate` and `Mirror` change no distances at all. A rotation is lowered by evaluating the child at `Rᵀp`, with
+Rodrigues' formula run in Java so the shader sees nine constants and three folded dot products; a mirror is one
+`abs` per folded axis. Both keep `lipschitz = 1` untouched, and both cost the same as `Translate` — which is the
+invariant §3 keeps insisting on: generality charges nothing where it is not used.
+
+Neither takes a centre. Rotation and mirroring about somewhere else is `Translate` composed with them, exactly as
+`Scale` already handles it.
+
+### 8.2 The repeats — discontinuity, not slope
+
+Folding `p` into its own cell (`p - period·round(p/period)`) is a piecewise isometry, so it is 1-Lipschitz
+*within* a cell. That is not enough. The fold is **discontinuous at the cell walls**, and a discontinuous field can
+report more distance than there really is: stand just inside one cell next to an instance that overhangs the wall
+from the next, and the field answers with the distance to the far copy. Overestimating is the one thing a sphere
+trace cannot survive — it is precisely the step that goes through the surface.
+
+So `Repeat` folds into the nearest cell **and** into the nearer neighbour along every repeated axis, and takes the
+`min`. That is `2ⁿ` copies of the child for `n` repeated axes, and it nests multiplicatively — which is the same
+compounding §4.1 records for `Gradient`, and is caught by the same output budget in `SurfaceLimits`.
+`PolarRepeat` is the angular form of the identical argument, at two sectors.
+
+`Repeat.Axis` carries an inclusive cell range as well as a period, so a finite row and an endless lattice are one
+node: the cell index is clamped before the fold, and a bounded repeat simply stops.
+
+### 8.3 The deformations — a bound that is not what it looks like
+
+`Twist` and `Bend` are the first nodes in the tree that are not isometries. They stretch the domain in proportion
+to distance from their axis, so the composed field reads long by that factor, and reads-long is the failure mode
+above again. The remedy is the one `Normalize` already uses on an implicit: divide the distance by an upper bound
+on the stretch. Both nodes therefore *require* a radius — a declared region of validity, in the spirit of
+`Implicit.bounded`: safe everywhere inside it, one divide, no derivative in the shader. Outside it the field can
+overshoot, and the javadoc says so rather than pretending otherwise.
+
+**The bound itself is worth the derivation, because the obvious answer is wrong.** Factoring the rotation out of a
+twist leaves `I + u·e_yᵀ` with `|u| = a = |rate|·radius`. It is tempting to read that as two perpendicular
+contributions and take `sqrt(1 + a²)` — but a rank-one update does not add in quadrature, and the true norm is
+
+    twist:  (a + √(a² + 4)) / 2      ≈ 1 + a/2
+    bend:   1 + a
+
+The two readings agree to second order, so a *fierce* twist hides the error and a *gentle* one exposes it: at
+`a = 0.6` the quadrature guess reports 1.166 against a true 1.344, and every march step inside the shape comes out
+15% too long. This was caught by the finite-difference gradient test, not by inspection, which is the argument for
+having that test at all. The bend is the worse of the two because it turns and travels in the same plane, so on
+the inside of the curve the update has a component along its own direction and the two contributions add outright;
+a twist slides along the axis it turns about, so they do not.
+
+The cost is march steps, linearly in `rate·radius`. Twist tightly and locally, not across a world.
+
+## 9. Staged plan
 
 - **S0 — module, tree, lowering, gradient. DONE.** `vexelray-surface`: `Surface` records, `Expr` lowering with
-  Lipschitz tracking, forward-mode `Gradient`, `Normalize`, input *and* output limits. 38 tests, standalone, no
+  Lipschitz tracking, forward-mode `Gradient`, `Normalize`, input *and* output limits, and the domain operators
+  of §8 (`Rotate`, `Mirror`, `Repeat`, `PolarRepeat`, `Twist`, `Bend`). 57 tests, standalone, no
   GPU — derivatives checked against central differences, normalisation checked against true distance, the
-  soft-min checked for conservatism and order-independence.
+  soft-min checked for conservatism and order-independence, the repeats checked against a brute-force min over
+  their own copies, the deformations against finite differences of their own gradient.
 - **S0.5 — let-bound gradients.** Bind tangents to `LocalVar`s and emit `grad f` as a function body, turning
   §2.1's compounding into addition. Promoted out of "someday" by the measurements above.
 - **S1 — the composer. DONE.** `vexelray-technique-sdf`: `SdfComposer implements ShaderComposer<SdfScene>`,
