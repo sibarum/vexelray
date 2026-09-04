@@ -100,4 +100,95 @@ class ConeFieldTest {
             assertTrue(c.ar() > 0 && c.br() > 0, "a cone arrived with no thickness");
         }
     }
+
+    // --- culling: the bounds the march skips groups on ---
+
+    @Test
+    @DisplayName("every cone lies inside its group's bounding sphere — the invariant the culling rests on")
+    void everyConeIsInsideItsGroupBound() {
+        // THE test for this feature. The march skips a whole group when that group's sphere is further off than
+        // the best distance so far, and it is allowed to do that only because the sphere *contains* the cones.
+        // A sphere that is short by any amount makes the march skip a group it should have evaluated, and the
+        // symptom is geometry missing from the picture in a way that shifts as the camera turns — which reads as
+        // a broken renderer, not as a bad bounding sphere. So this asserts containment directly.
+        //
+        // Containment is checked on the end spheres rather than on distances to the cone body, because a cone is
+        // the convex hull of its two ends: a sphere holding both ends holds everything between them. That makes
+        // this a statement about four numbers rather than about a distance formula the test would have to
+        // reimplement — and a test that reimplements the thing it is checking checks nothing.
+        List<Cones.Cone> cones = Cones.of(strokeOf(60));
+        assertTrue(cones.size() % ConeField.GROUP != 0,
+                "pick a stroke whose cone count does not divide by GROUP, so the short last group is covered too");
+
+        float[] packed = ConeField.pack(Cones.flatten(cones), cones.size());
+        int bounds = (int) packed[2];
+
+        for (int g = 0; g < ConeField.groupsFor(cones.size()); g++) {
+            int at = bounds + g * ConeField.BOUND_FLOATS;
+            double cx = packed[at];
+            double cy = packed[at + 1];
+            double cz = packed[at + 2];
+            double radius = packed[at + 3];
+            assertTrue(radius > 0, "group " + g + " has no radius at all");
+
+            int from = g * ConeField.GROUP;
+            int to = Math.min(cones.size(), from + ConeField.GROUP);
+            assertTrue(to > from, "group " + g + " covers no cones");
+            for (int c = from; c < to; c++) {
+                Cones.Cone cone = cones.get(c);
+                assertInside(cx, cy, cz, radius, cone.ax(), cone.ay(), cone.az(), cone.ar(), g, c, "a");
+                assertInside(cx, cy, cz, radius, cone.bx(), cone.by(), cone.bz(), cone.br(), g, c, "b");
+            }
+        }
+    }
+
+    /** The end sphere at {@code e} of radius {@code r} reaches no further from the centre than {@code radius}. */
+    private static void assertInside(double cx, double cy, double cz, double radius,
+            double ex, double ey, double ez, double r, int group, int cone, String end) {
+        double reach = Math.sqrt((ex - cx) * (ex - cx) + (ey - cy) * (ey - cy) + (ez - cz) * (ez - cz)) + r;
+        assertTrue(reach <= radius,
+                "cone " + cone + " end " + end + " reaches " + reach + " from group " + group
+                        + "'s centre, outside its bound of " + radius);
+    }
+
+    @Test
+    @DisplayName("the header locates the group bounds the shader goes looking for")
+    void theHeaderLocatesTheGroupBounds() {
+        // The shader reads all three of these and indexes on them; a header that disagrees with the array is a
+        // march reading cone floats as sphere centres, which is a picture of nothing in particular.
+        List<Cones.Cone> cones = Cones.of(strokeOf(20));
+        float[] packed = ConeField.pack(Cones.flatten(cones), cones.size());
+
+        int groups = ConeField.groupsFor(cones.size());
+        assertEquals(cones.size(), (int) packed[0], "the header should carry the cone count");
+        assertEquals(groups, (int) packed[1], "the header should carry the group count");
+        assertEquals(ConeField.HEADER_FLOATS + cones.size() * Cones.FLOATS, (int) packed[2],
+                "the bounds should begin immediately after the last cone");
+        assertEquals((int) packed[2] + groups * ConeField.BOUND_FLOATS, packed.length,
+                "the array should end with the last bound; floatsFor and pack disagree");
+    }
+
+    @Test
+    @DisplayName("floatsFor grows with the count, so one worst-case allocation holds every smaller plot")
+    void floatsForIsMonotonic() {
+        // Preview allocates once, for MAX_SAMPLES, and then packs whatever the expression actually produced into
+        // that buffer. If floatsFor ever dipped, a smaller plot would overrun a buffer sized for a larger one.
+        int previous = ConeField.floatsFor(0);
+        for (int cones = 1; cones <= 400; cones++) {
+            int now = ConeField.floatsFor(cones);
+            assertTrue(now > previous, "floatsFor(" + cones + ") did not exceed floatsFor(" + (cones - 1) + ")");
+            previous = now;
+        }
+    }
+
+    @Test
+    @DisplayName("an empty chain packs to a header with nothing behind it")
+    void anEmptyChainHasNoGroups() {
+        // What a refused plot uploads. The march must find no cones *and* no groups: a group count left over
+        // from the previous expression would send it reading bounds out of a buffer that no longer has any.
+        float[] packed = ConeField.pack(new float[0], 0);
+        assertEquals(ConeField.HEADER_FLOATS, packed.length, "an empty chain should pack to the header alone");
+        assertEquals(0, (int) packed[0], "cone count");
+        assertEquals(0, (int) packed[1], "group count");
+    }
 }
