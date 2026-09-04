@@ -60,6 +60,14 @@
             <artifactId>vexelray-canvas</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- The SDF technique — for the march smokes, which compose a scene the way a host would. Test scope:
+             the shipped module has no business knowing about a render technique. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-technique-sdf</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <!--
