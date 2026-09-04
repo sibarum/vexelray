@@ -152,6 +152,7 @@ public final class Vk {
     // Buffer usage
     public static final int BUFFER_USAGE_TRANSFER_SRC_BIT = 0x0001;
     public static final int BUFFER_USAGE_VERTEX_BUFFER_BIT = 0x0080;
+    public static final int BUFFER_USAGE_STORAGE_BUFFER_BIT = 0x0020;
 
     // Sampler
     public static final int FILTER_LINEAR = 1;
@@ -161,6 +162,7 @@ public final class Vk {
 
     // Descriptors
     public static final int DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1;
+    public static final int DESCRIPTOR_TYPE_STORAGE_BUFFER = 7;
 
     // Vertex input
     public static final int VERTEX_INPUT_RATE_VERTEX = 0;

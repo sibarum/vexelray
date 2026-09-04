@@ -221,9 +221,17 @@ public final class Win32Window implements NativeWindow {
                     }
                     window.width = (int) (lParam & 0xFFFF);
                     window.height = (int) ((lParam >> 16) & 0xFFFF);
-                    // A live resize runs inside Windows' own loop: paint from here, or the window shows stale,
-                    // stretched pixels until the user lets go of the edge.
-                    window.runFrameSink();
+                    // Deliberately *not* painting from here. A frame pulled inside WM_SIZE rebuilds the swapchain,
+                    // and that means a vkDeviceWaitIdle plus a destroy/create of every image while DWM is blocked
+                    // waiting for this window procedure to return. A stall anywhere in that sequence is not a
+                    // dropped frame, it is a stopped desktop -- the compositor cannot draw anyone, the cursor
+                    // included, which is why such a hang looks like the whole machine died rather than one app.
+                    //
+                    // Nothing is lost by returning: the rebuild was never driven from here anyway. It happens
+                    // when vkAcquireNextImageKHR or vkQueuePresentKHR reports the surface out of date, so the
+                    // next frame pulled corrects the size no matter who pulls it. During a drag that is the
+                    // WM_ENTERSIZEMOVE timer below, every SIZEMOVE_TIMER_MS; outside one -- maximize, snap,
+                    // setBounds -- the host's own loop is still running and picks it up on its next iteration.
                     return 0;
                 }
                 case User32.WM_CLOSE -> {

@@ -113,6 +113,11 @@ public final class WindowedPresenter implements AutoCloseable {
     private final MemorySegment cmd;
 
     private SwapchainFramebuffers framebuffers;
+    // Teardown happens once. Destroying an already-destroyed VkCommandPool (or fence, or semaphore) is undefined
+    // behaviour that corrupts the loader's own heap — the same heap the device dispatch table lives on — so the
+    // symptom surfaces much later, as a call through an entry point that is no longer code. Being idempotent is far
+    // cheaper than debugging that: a DEP violation inside the driver names neither this class nor the second close.
+    private boolean closed;
     private int vertexCount = 3;
     private long vertexBuffer = 0;      // 0 = no vertex buffer (fullscreen triangle from gl_VertexIndex)
     private long descriptorSet = 0;     // 0 = no descriptor set to bind
@@ -511,6 +516,12 @@ public final class WindowedPresenter implements AutoCloseable {
 
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        // After the idempotence guard, not before: the ledger counts closes, and a second close that returns
+        // early has not closed anything.
         Probe.closed(Lane.GPU, "WindowedPresenter", this);
         device.waitIdle();
         invokeVoid(destroyPool, dev, pool, MemorySegment.NULL);

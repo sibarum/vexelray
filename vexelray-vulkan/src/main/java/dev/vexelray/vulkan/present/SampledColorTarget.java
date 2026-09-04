@@ -11,6 +11,7 @@ import java.lang.foreign.GroupLayout;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
+import java.util.List;
 
 import static dev.vexelray.vulkan.vk.Ffm.check;
 import static dev.vexelray.vulkan.vk.Ffm.gi;
@@ -123,6 +124,10 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("flags"), JAVA_INT.withName("queueFamilyIndex")).withName("VkCommandPoolCreateInfo");
 
+    private static final GroupLayout FENCE_CREATE_INFO = MemoryLayout.structLayout(
+            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
+            JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4)).withName("VkFenceCreateInfo");
+
     private static final GroupLayout COMMAND_BUFFER_ALLOCATE_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_LONG.withName("commandPool"), JAVA_INT.withName("level"), JAVA_INT.withName("commandBufferCount")
@@ -168,6 +173,32 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     private final MethodHandle vkDestroyFramebuffer;
     private final MethodHandle vkDestroyDescriptorSetLayout;
     private final MethodHandle vkDestroyDescriptorPool;
+
+    /**
+     * Everything {@link #renderInto} calls, resolved once here rather than per draw.
+     *
+     * <p>{@link VulkanDevice#command} says callers cache the result, and this one did not: it re-resolved
+     * fourteen commands on every call, and it is called once per dirty frame. Each resolution is a
+     * {@code vkGetDeviceProcAddr} plus a fresh {@code MethodHandle} bound through a confined arena, so a
+     * window doing nothing but turning a picture was rebuilding its whole downcall table sixty times a second.
+     * The destroy handles above were always fields; these now sit beside them for the same reason.
+     */
+    private final MethodHandle vkCreateCommandPool;
+    private final MethodHandle vkDestroyCommandPool;
+    private final MethodHandle vkAllocateCommandBuffers;
+    private final MethodHandle vkBeginCommandBuffer;
+    private final MethodHandle vkEndCommandBuffer;
+    private final MethodHandle vkCmdBeginRenderPass;
+    private final MethodHandle vkCmdEndRenderPass;
+    private final MethodHandle vkCmdBindPipeline;
+    private final MethodHandle vkCmdBindVertexBuffers;
+    private final MethodHandle vkCmdBindDescriptorSets;
+    private final MethodHandle vkCmdDraw;
+    private final MethodHandle vkQueueSubmit;
+    private final MethodHandle vkCmdPushConstants;
+    private final MethodHandle vkCreateFence;
+    private final MethodHandle vkDestroyFence;
+    private final MethodHandle vkWaitForFences;
 
     public SampledColorTarget(VulkanDevice device, int width, int height) {
         Probe.opened(Lane.GPU, "SampledColorTarget", this);
@@ -315,6 +346,33 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             sa(write, WRITE_DESCRIPTOR_SET, "pImageInfo", imageInfo);
             invokeVoid(vkUpdateDescriptorSets, dev, 1, write, 0, MemorySegment.NULL);
         }
+
+        this.vkCreateCommandPool = device.command("vkCreateCommandPool", C4);
+        this.vkDestroyCommandPool = device.command("vkDestroyCommandPool", D_LONG);
+        this.vkAllocateCommandBuffers = device.command("vkAllocateCommandBuffers",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
+        this.vkBeginCommandBuffer = device.command("vkBeginCommandBuffer",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        this.vkEndCommandBuffer = device.command("vkEndCommandBuffer", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        this.vkCmdBeginRenderPass = device.command("vkCmdBeginRenderPass",
+                FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
+        this.vkCmdEndRenderPass = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
+        this.vkCmdBindPipeline = device.command("vkCmdBindPipeline",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
+        this.vkCmdBindVertexBuffers = device.command("vkCmdBindVertexBuffers",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
+        this.vkCmdBindDescriptorSets = device.command("vkCmdBindDescriptorSets",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
+        this.vkCmdDraw = device.command("vkCmdDraw",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
+        this.vkQueueSubmit = device.command("vkQueueSubmit",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
+        this.vkCmdPushConstants = device.command("vkCmdPushConstants",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
+        this.vkCreateFence = device.command("vkCreateFence", C4);
+        this.vkDestroyFence = device.command("vkDestroyFence", D_LONG);
+        this.vkWaitForFences = device.command("vkWaitForFences",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG));
     }
 
     /** The render pass to build the drawing pipeline against (single colour attachment, final SHADER_READ_ONLY). */
@@ -364,8 +422,26 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
      */
     public GraphicsPipeline pipelineFor(byte[] vertexSpirv, String vertexEntry,
                                         byte[] fragmentSpirv, String fragmentEntry, int pushConstantBytes) {
+        return pipelineFor(vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry, pushConstantBytes, new long[0]);
+    }
+
+    /**
+     * As above, for a fragment stage that also reads a descriptor — a storage buffer of geometry, say.
+     *
+     * <p>The layouts have to be known when the pipeline is built, not when it is drawn with, which is why this is
+     * a parameter rather than something {@link #renderInto} could be handed later: a pipeline layout is part of
+     * the pipeline. Pass the layout from whatever owns the descriptor (see {@code StorageBuffer}), and pass that
+     * same object's set to {@code renderInto}.
+     *
+     * @param descriptorSetLayouts {@code VkDescriptorSetLayout} handles, in set order from 0
+     */
+    public GraphicsPipeline pipelineFor(byte[] vertexSpirv, String vertexEntry,
+                                        byte[] fragmentSpirv, String fragmentEntry, int pushConstantBytes,
+                                        long[] descriptorSetLayouts) {
         return new GraphicsPipeline(device, renderPass.handle(), width, height,
-                vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry, pushConstantBytes);
+                vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry,
+                new GraphicsPipeline.Config(0, List.of(), descriptorSetLayouts, false,
+                        Vk.SHADER_STAGE_FRAGMENT_BIT, pushConstantBytes));
     }
 
     /**
@@ -394,29 +470,6 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     public void renderInto(GraphicsPipeline pipeline, long vertexBuffer, long descriptorSet, int vertexCount,
                            byte[] push, float cr, float cg, float cb, float ca) {
         MemorySegment dev = device.handle();
-        MethodHandle vkCreateCommandPool = device.command("vkCreateCommandPool", C4);
-        MethodHandle vkDestroyCommandPool = device.command("vkDestroyCommandPool", D_LONG);
-        MethodHandle vkAllocateCommandBuffers = device.command("vkAllocateCommandBuffers",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
-        MethodHandle vkBeginCommandBuffer = device.command("vkBeginCommandBuffer",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
-        MethodHandle vkEndCommandBuffer = device.command("vkEndCommandBuffer", FunctionDescriptor.of(JAVA_INT, ADDRESS));
-        MethodHandle vkCmdBeginRenderPass = device.command("vkCmdBeginRenderPass",
-                FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
-        MethodHandle vkCmdEndRenderPass = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
-        MethodHandle vkCmdBindPipeline = device.command("vkCmdBindPipeline",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        MethodHandle vkCmdBindVertexBuffers = device.command("vkCmdBindVertexBuffers",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
-        MethodHandle vkCmdBindDescriptorSets = device.command("vkCmdBindDescriptorSets",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
-        MethodHandle vkCmdDraw = device.command("vkCmdDraw",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
-        MethodHandle vkQueueSubmit = device.command("vkQueueSubmit",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
-        MethodHandle vkCmdPushConstants = device.command("vkCmdPushConstants",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
-
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment poolInfo = arena.allocate(COMMAND_POOL_CREATE_INFO);
             si(poolInfo, COMMAND_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
@@ -487,8 +540,26 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             si(submit, SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
             si(submit, SUBMIT_INFO, "commandBufferCount", 1);
             sa(submit, SUBMIT_INFO, "pCommandBuffers", pCmdArray);
-            check(invoke(vkQueueSubmit, device.queue(), 1, submit, 0L), "vkQueueSubmit");
-            device.waitIdle();
+            // Waited on with a fence rather than vkDeviceWaitIdle, which is what this used to do.
+            //
+            // The pool below cannot be destroyed until this submission has finished with it, so *a* wait is
+            // owed here. But vkDeviceWaitIdle waits for every queue in the process to drain, not for this
+            // draw — so a viewport marching its own picture stalled behind whatever else the device happened
+            // to be doing, including the swapchain work of the very frame it was running inside. This waits
+            // for exactly the submission it made, which is the narrowest thing that keeps the pool safe.
+            //
+            // It is still a wait, and it is still on the calling thread. Removing it altogether means keeping
+            // the pool and the fence alive across frames and sampling the image only once the fence signals —
+            // worth doing, and a larger change than this one, because renderInto's contract currently promises
+            // that the image is ready when it returns.
+            MemorySegment fenceInfo = arena.allocate(FENCE_CREATE_INFO);
+            si(fenceInfo, FENCE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FENCE_CREATE_INFO);
+            MemorySegment pFence = arena.allocate(JAVA_LONG);
+            check(invoke(vkCreateFence, dev, fenceInfo, MemorySegment.NULL, pFence), "vkCreateFence");
+            long fence = pFence.get(JAVA_LONG, 0);
+            check(invoke(vkQueueSubmit, device.queue(), 1, submit, fence), "vkQueueSubmit");
+            check(invoke(vkWaitForFences, dev, 1, pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+            invokeVoid(vkDestroyFence, dev, fence, MemorySegment.NULL);
             invokeVoid(vkDestroyCommandPool, dev, pool, MemorySegment.NULL);
         }
     }
