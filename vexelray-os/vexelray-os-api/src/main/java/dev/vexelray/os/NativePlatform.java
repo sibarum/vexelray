@@ -25,7 +25,10 @@ public interface NativePlatform {
      */
     List<String> requiredVulkanInstanceExtensions();
 
-    /** Create and show a native window. The returned window owns its OS resources until {@link NativeWindow#close()}. */
+    /**
+     * Create a native window and, unless the config asked for {@link WindowConfig#hidden()}, put it on screen.
+     * The returned window owns its OS resources until {@link NativeWindow#close()}.
+     */
     NativeWindow createWindow(WindowConfig config);
 
     /**

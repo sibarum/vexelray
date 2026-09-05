@@ -32,6 +32,16 @@ package dev.vexelray.os;
  * rather than after creation is what keeps the window from being shown under the generic icon first and
  * corrected a frame later.
  *
+ * <p><b>Whether it appears at all.</b> A window is normally put on screen the moment it is created, painted
+ * with the class background, so a slow Vulkan bring-up runs behind a clean coloured window instead of behind
+ * nothing. {@code hidden} asks for the other thing: a window that is fully real — a handle, a surface, a
+ * swapchain, pixels — and is never mapped until something calls {@link NativeWindow#show()}. It has to be
+ * decided <em>here</em> rather than undone afterwards, because a window created and then hidden has already
+ * been on screen and has already taken the keyboard, which for the case this exists for is the whole problem:
+ * a test harness driving a real application must not have its focus and input assertions answered by the
+ * window manager. Creating hidden and never showing is also exactly what the presenter already does for the
+ * first frame, one step earlier.
+ *
  * @param title       the window title
  * @param width       requested width (outer rect)
  * @param height      requested height (outer rect)
@@ -43,9 +53,10 @@ package dev.vexelray.os;
  * @param minWidth    smallest outer width the user may drag to, or {@link #NO_MINIMUM}
  * @param minHeight   smallest outer height the user may drag to, or {@link #NO_MINIMUM}
  * @param icon        the mark this window wears, or {@code null} for the application's
+ * @param hidden      whether to create the window without putting it on screen
  */
 public record WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
-                           Decorations decorations, int minWidth, int minHeight, Icon icon) {
+                           Decorations decorations, int minWidth, int minHeight, Icon icon, boolean hidden) {
 
     /** "Let the OS place it" — the default for {@link #x}/{@link #y}. */
     public static final int UNPOSITIONED = Integer.MIN_VALUE;
@@ -91,6 +102,12 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
         this(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight, null);
     }
 
+    /** The eleven-argument form kept for callers from before a window could be asked to stay off screen. */
+    public WindowConfig(String title, int width, int height, boolean resizable, long owner, int x, int y,
+                        Decorations decorations, int minWidth, int minHeight, Icon icon) {
+        this(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight, icon, false);
+    }
+
     /** A resizable window with the given title and size. */
     public static WindowConfig of(String title, int width, int height) {
         return new WindowConfig(title, width, height, true);
@@ -99,25 +116,25 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
     /** This window as a satellite of {@code ownerHandle} (see the class doc for what ownership means). */
     public WindowConfig ownedBy(long ownerHandle) {
         return new WindowConfig(title, width, height, resizable, ownerHandle, x, y, decorations,
-                minWidth, minHeight, icon);
+                minWidth, minHeight, icon, hidden);
     }
 
     /** This window placed at screen {@code (x, y)} instead of OS placement. */
     public WindowConfig at(int x, int y) {
         return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
-                icon);
+                icon, hidden);
     }
 
     /** This window with the given frame ownership — {@link Decorations#CLIENT} to draw the chrome yourself. */
     public WindowConfig decorations(Decorations decorations) {
         return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
-                icon);
+                icon, hidden);
     }
 
     /** This window with a smallest outer size the window manager will let the user drag it to. */
     public WindowConfig minSize(int minWidth, int minHeight) {
         return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
-                icon);
+                icon, hidden);
     }
 
     /**
@@ -126,7 +143,16 @@ public record WindowConfig(String title, int width, int height, boolean resizabl
      */
     public WindowConfig icon(Icon icon) {
         return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
-                icon);
+                icon, hidden);
+    }
+
+    /**
+     * This window created off screen, or created on it — see the class doc. A hidden window is fully real and
+     * fully renderable; it is simply not mapped until {@link NativeWindow#show()} says so.
+     */
+    public WindowConfig hidden(boolean hidden) {
+        return new WindowConfig(title, width, height, resizable, owner, x, y, decorations, minWidth, minHeight,
+                icon, hidden);
     }
 
     /** Whether a minimum was asked for at all. */

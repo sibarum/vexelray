@@ -185,7 +185,14 @@ public final class Win32Window implements NativeWindow {
         // Appear immediately, painted with the class background brush, and pump once so the OS actually erases the
         // client area now. The (potentially slow) Vulkan bring-up then runs with a clean coloured window on screen
         // instead of nothing — the swapchain takes over the pixels once the first frame presents.
-        show();
+        //
+        // Unless the caller asked for a window that stays off screen (WindowConfig.hidden). That is a request
+        // this has to honour *here*: showing and then hiding is not the same thing, because in between the
+        // window is mapped and has taken the keyboard from whatever was using it. The pump still runs — the
+        // creation messages are the window's own business whether or not anyone can see it.
+        if (!config.hidden()) {
+            show();
+        }
         pumpEvents();
     }
 
