@@ -401,6 +401,22 @@ public final class Canvas {
     }
 
     /**
+     * One region of the texture across a rounded box at {@code alpha}, otherwise untinted — the <b>sheet</b>
+     * overload, and the region-taking counterpart of the viewport one above.
+     *
+     * <p>Takes an alpha for exactly the reason that one does, and the reason binds harder here rather than softer:
+     * a caller showing one cell of a sprite sheet has as little to say about colour as one showing a whole
+     * texture, and making it name {@link Color#WHITE} to mean "leave the texels alone" would put a shade in its
+     * hands that it has no business choosing. The identity of the multiply stays in this class, where it is a fact
+     * about the shader rather than a palette entry.
+     */
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, Object image,
+                        float u0, float v0, float u1, float v1, float alpha) {
+        return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1,
+                alpha >= 1f ? UNTINTED : Color.withAlpha(UNTINTED, alpha));
+    }
+
+    /**
      * The runs this frame's vertices divide into, in submission order — see {@link Run}. Never empty for a canvas
      * that drew anything; a canvas that drew no images returns exactly one run covering everything.
      */
