@@ -84,19 +84,27 @@ public final class StrokeMarchSmoke {
 
             try (VulkanDevice device = new VulkanDevice(instance.handle(), selection)) {
                 SdfScene.Rgb sky = scene.sky();
-                byte[] rgba = OffscreenRenderer.render(device, width, height,
-                        vertex, "main", fragment, "main", 3,
-                        (float) sky.r(), (float) sky.g(), (float) sky.b(), 1f,
-                        camera((double) width / height));
+                double aspect = (double) width / height;
+                Smoke smoke = new Smoke("StrokeMarchSmoke", width * height);
 
-                int drawn = countNonSky(rgba, sky);
-                System.out.println("pixels drawn   " + drawn + " of " + (width * height)
-                        + " (" + Math.round(100.0 * drawn / (width * height)) + "%)");
-                System.out.println(drawn == 0
-                        ? "NOTHING DRAWN -- the shader itself renders no geometry from this camera"
-                        : "geometry rendered; if a host shows nothing, the difference is the host's camera,"
-                                + " its mount state, or where the surface sits");
+                byte[] rgba = march(device, width, height, vertex, fragment, sky, camera(YAW, DISTANCE, aspect));
+                smoke.measured("the framed surface", countNonSky(rgba, sky));
                 write(out, rgba, width, height);
+
+                // The eye moved inside the world box, where a surface framed to fill that box surrounds it. The
+                // control that matters here is not "turn away" -- there is a ground plane, so turning away still
+                // finds it, and a count that stayed identical would look like a pass. Standing inside the
+                // geometry changes what a working march reports and changes nothing about a constant.
+                smoke.control("eye inside the box",
+                        countNonSky(march(device, width, height, vertex, fragment, sky,
+                                camera(YAW, 0.0, aspect)), sky));
+
+                System.out.println();
+                System.out.println("if a host shows nothing and this passed, the difference is the host's"
+                        + " camera, its mount state, or where the surface sits");
+                if (!smoke.verdict()) {
+                    System.exit(1);
+                }
             }
         }
     }
@@ -127,14 +135,20 @@ public final class StrokeMarchSmoke {
         return String.format("(%.3f, %.3f, %.3f)", v[0], v[1], v[2]);
     }
 
+    private static byte[] march(VulkanDevice device, int width, int height,
+                                byte[] vertex, byte[] fragment, SdfScene.Rgb sky, byte[] camera) {
+        return OffscreenRenderer.render(device, width, height, vertex, "main", fragment, "main", 3,
+                (float) sky.r(), (float) sky.g(), (float) sky.b(), 1f, camera);
+    }
+
     /** The push-constant block for an eye orbiting the origin, in the same axis order a plot host uses. */
-    private static byte[] camera(double aspect) {
+    private static byte[] camera(double yaw, double distance, double aspect) {
         double cp = Math.cos(PITCH);
         // Forward, in plot space: the direction the eye looks along. The eye stands opposite it.
-        double[] forward = {cp * Math.sin(YAW), cp * Math.cos(YAW), -Math.sin(PITCH)};
-        double[] at = {-DISTANCE * forward[0], -DISTANCE * forward[1], -DISTANCE * forward[2]};
+        double[] forward = {cp * Math.sin(yaw), cp * Math.cos(yaw), -Math.sin(PITCH)};
+        double[] at = {-distance * forward[0], -distance * forward[1], -distance * forward[2]};
         // The plot's z is the world's y, and the plot's y is the world's z — the swap every renderer here makes.
-        return SdfComposer.cameraBytes(at[0], at[2], at[1], YAW, PITCH, aspect);
+        return SdfComposer.cameraBytes(at[0], at[2], at[1], yaw, PITCH, aspect);
     }
 
     private static Surface.Stroke zigzag(int vertices, boolean coloured) {

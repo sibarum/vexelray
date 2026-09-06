@@ -259,9 +259,44 @@ public final class OffscreenRenderer {
                                 byte[] vertexSpirv, String vertexEntry,
                                 byte[] fragmentSpirv, String fragmentEntry,
                                 int vertexCount, float cr, float cg, float cb, float ca, byte[] pushConstants) {
+        return render(device, width, height, vertexSpirv, vertexEntry, fragmentSpirv, fragmentEntry,
+                vertexCount, cr, cg, cb, ca, pushConstants, null, null);
+    }
+
+    /**
+     * As {@link #render(VulkanDevice, int, int, byte[], String, byte[], String, int, float, float, float, float,
+     * byte[])}, but with descriptor sets bound from set 0 before the draw — so a fragment that reads a
+     * <em>buffer</em> can be rendered here rather than only one whose geometry is in its own SPIR-V.
+     *
+     * <p>Added because without it this class could not be pointed at the question it exists to answer. "Nothing
+     * renders" is three questions a window cannot tell apart, and counting non-sky pixels off a headless draw
+     * separates them — but a buffer-driven field (a marched curve, a plot, anything whose geometry arrives at
+     * run time) has a descriptor set, and a renderer with no way to bind one can only ever smoke-test fields
+     * that were already in the shader. The one instrument in the stack for "did this draw anything" was blind to
+     * the whole class of drawing most likely to need it.
+     *
+     * <p>Both arrays or neither: a bound set whose layout the pipeline did not declare is undefined behaviour
+     * rather than an error, which is precisely the silent-plausible-picture failure this overload exists to
+     * expose. They are index-aligned, {@code setLayouts[i]} describing {@code descriptorSets[i]}, bound
+     * contiguously from set 0.
+     *
+     * @param setLayouts     descriptor set layouts the pipeline layout declares, or null for none
+     * @param descriptorSets the sets to bind, index-aligned with {@code setLayouts}, or null for none
+     */
+    public static byte[] render(VulkanDevice device, int width, int height,
+                                byte[] vertexSpirv, String vertexEntry,
+                                byte[] fragmentSpirv, String fragmentEntry,
+                                int vertexCount, float cr, float cg, float cb, float ca, byte[] pushConstants,
+                                long[] setLayouts, long[] descriptorSets) {
         MemorySegment dev = device.handle();
         long pixelBytes = (long) width * height * 4;
         boolean hasPush = pushConstants != null && pushConstants.length > 0;
+        int setCount = setLayouts == null ? 0 : setLayouts.length;
+        if (setCount != (descriptorSets == null ? 0 : descriptorSets.length)) {
+            throw new IllegalArgumentException("setLayouts and descriptorSets must be index-aligned: "
+                    + setCount + " layouts, " + (descriptorSets == null ? 0 : descriptorSets.length) + " sets");
+        }
+        boolean hasSets = setCount > 0;
 
         MethodHandle vkCreateImage = device.command("vkCreateImage", C4);
         MethodHandle vkDestroyImage = device.command("vkDestroyImage", D_LONG);
@@ -301,6 +336,9 @@ public final class OffscreenRenderer {
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
         MethodHandle vkCmdBindPipeline = device.command("vkCmdBindPipeline",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
+        MethodHandle vkCmdBindDescriptorSets = device.command("vkCmdBindDescriptorSets",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT,
+                        ADDRESS));
         MethodHandle vkCmdDraw = device.command("vkCmdDraw",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
         MethodHandle vkCmdEndRenderPass = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
@@ -478,6 +516,14 @@ public final class OffscreenRenderer {
 
             MemorySegment layoutInfo = arena.allocate(PIPELINE_LAYOUT_CREATE_INFO);
             si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+            if (hasSets) {
+                MemorySegment pSetLayouts = arena.allocate(JAVA_LONG, setCount);
+                for (int i = 0; i < setCount; i++) {
+                    pSetLayouts.setAtIndex(JAVA_LONG, i, setLayouts[i]);
+                }
+                si(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "setLayoutCount", setCount);
+                sa(layoutInfo, PIPELINE_LAYOUT_CREATE_INFO, "pSetLayouts", pSetLayouts);
+            }
             if (hasPush) {
                 MemorySegment range = arena.allocate(PUSH_CONSTANT_RANGE);
                 si(range, PUSH_CONSTANT_RANGE, "stageFlags", Vk.SHADER_STAGE_FRAGMENT_BIT);
@@ -561,6 +607,14 @@ public final class OffscreenRenderer {
 
             invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(vkCmdBindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            if (hasSets) {
+                MemorySegment pSets = arena.allocate(JAVA_LONG, setCount);
+                for (int i = 0; i < setCount; i++) {
+                    pSets.setAtIndex(JAVA_LONG, i, descriptorSets[i]);
+                }
+                invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                        0, setCount, pSets, 0, MemorySegment.NULL);
+            }
             if (hasPush) {
                 MemorySegment pc = arena.allocate(pushConstants.length);
                 MemorySegment.copy(pushConstants, 0, pc, JAVA_BYTE, 0, pushConstants.length);
