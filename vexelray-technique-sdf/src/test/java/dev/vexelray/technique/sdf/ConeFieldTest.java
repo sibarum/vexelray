@@ -171,8 +171,10 @@ class ConeFieldTest {
     @Test
     @DisplayName("floatsFor grows with the count, so one worst-case allocation holds every smaller plot")
     void floatsForIsMonotonic() {
-        // Preview allocates once, for MAX_SAMPLES, and then packs whatever the expression actually produced into
-        // that buffer. If floatsFor ever dipped, a smaller plot would overrun a buffer sized for a larger one.
+        // The buffer-fed mode's whole point is one allocation and one pipeline for every scene: a caller sizes
+        // its storage buffer once for the most cones it will ever plot, then packs whatever a given expression
+        // actually produced into it. If floatsFor ever dipped, a smaller plot would overrun a buffer sized for a
+        // larger one.
         int previous = ConeField.floatsFor(0);
         for (int cones = 1; cones <= 400; cones++) {
             int now = ConeField.floatsFor(cones);
