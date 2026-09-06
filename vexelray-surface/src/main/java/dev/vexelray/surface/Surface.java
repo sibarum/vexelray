@@ -27,26 +27,42 @@ public sealed interface Surface {
     // --- primitives: exact, 1-Lipschitz signed distance fields ---
 
     /** Sphere of radius {@code radius} centred at {@code (cx, cy, cz)}. */
-    record Sphere(double cx, double cy, double cz, double radius) implements Surface {
+    record Sphere(Scalar cx, Scalar cy, Scalar cz, Scalar radius) implements Surface {
         public Sphere {
             requirePositive(radius, "radius");
+        }
+
+        public Sphere(double cx, double cy, double cz, double radius) {
+            this(Scalar.of(cx), Scalar.of(cy), Scalar.of(cz), Scalar.of(radius));
         }
     }
 
     /** Axis-aligned box centred at {@code (cx, cy, cz)} with half-extents {@code (hx, hy, hz)}. */
-    record Box(double cx, double cy, double cz, double hx, double hy, double hz) implements Surface {
+    record Box(Scalar cx, Scalar cy, Scalar cz, Scalar hx, Scalar hy, Scalar hz) implements Surface {
         public Box {
             requirePositive(hx, "hx");
             requirePositive(hy, "hy");
             requirePositive(hz, "hz");
+        }
+
+        public Box(double cx, double cy, double cz, double hx, double hy, double hz) {
+            this(Scalar.of(cx), Scalar.of(cy), Scalar.of(cz),
+                    Scalar.of(hx), Scalar.of(hy), Scalar.of(hz));
         }
     }
 
     /**
      * Half-space {@code dot(p, n) + offset <= 0}. The normal is normalised on construction, because an
      * un-normalised one silently breaks the 1-Lipschitz promise this node makes to the compiler.
+     *
+     * <p>The offset takes a parameter — sliding a half-space along its own normal is a translation, and costs
+     * the lowering one read. <b>The normal does not</b>, and it is a {@code double} rather than a
+     * {@link Scalar} so that the type says so rather than a runtime check: a direction has to be re-normalised
+     * every time it changes, which is a divide by a length in the shader rather than the three constants this
+     * emits, and nothing in the design tool yet wants to sweep one. A known limit, recorded rather than
+     * discovered — to turn a plane, wrap it in a {@link Rotate}, whose angle <em>is</em> a {@link Scalar}.
      */
-    record Plane(double nx, double ny, double nz, double offset) implements Surface {
+    record Plane(double nx, double ny, double nz, Scalar offset) implements Surface {
         public Plane {
             double len = Math.sqrt(nx * nx + ny * ny + nz * nz);
             if (len < 1e-12) {
@@ -55,6 +71,11 @@ public sealed interface Surface {
             nx /= len;
             ny /= len;
             nz /= len;
+            requireNonNull(offset, "offset");
+        }
+
+        public Plane(double nx, double ny, double nz, double offset) {
+            this(nx, ny, nz, Scalar.of(offset));
         }
 
         /** The ground plane {@code y = 0}, solid below. */
@@ -64,35 +85,52 @@ public sealed interface Surface {
     }
 
     /** Round-ended segment from {@code a} to {@code b} with radius {@code radius}. */
-    record Capsule(double ax, double ay, double az, double bx, double by, double bz,
-                   double radius) implements Surface {
+    record Capsule(Scalar ax, Scalar ay, Scalar az, Scalar bx, Scalar by, Scalar bz,
+                   Scalar radius) implements Surface {
         public Capsule {
             requirePositive(radius, "radius");
+        }
+
+        public Capsule(double ax, double ay, double az, double bx, double by, double bz, double radius) {
+            this(Scalar.of(ax), Scalar.of(ay), Scalar.of(az),
+                    Scalar.of(bx), Scalar.of(by), Scalar.of(bz), Scalar.of(radius));
         }
     }
 
     /** Torus in the XZ plane centred at {@code (cx, cy, cz)}: ring radius {@code major}, tube {@code minor}. */
-    record Torus(double cx, double cy, double cz, double major, double minor) implements Surface {
+    record Torus(Scalar cx, Scalar cy, Scalar cz, Scalar major, Scalar minor) implements Surface {
         public Torus {
             requirePositive(major, "major");
             requirePositive(minor, "minor");
+        }
+
+        public Torus(double cx, double cy, double cz, double major, double minor) {
+            this(Scalar.of(cx), Scalar.of(cy), Scalar.of(cz), Scalar.of(major), Scalar.of(minor));
         }
     }
 
     // --- domain transforms ---
 
     /** {@code of}, moved by {@code (dx, dy, dz)}. Distance-preserving. */
-    record Translate(double dx, double dy, double dz, Surface of) implements Surface {
+    record Translate(Scalar dx, Scalar dy, Scalar dz, Surface of) implements Surface {
         public Translate {
             requireNonNull(of);
+        }
+
+        public Translate(double dx, double dy, double dz, Surface of) {
+            this(Scalar.of(dx), Scalar.of(dy), Scalar.of(dz), of);
         }
     }
 
     /** {@code of}, uniformly scaled about the origin. Distances scale with it, so the field stays exact. */
-    record Scale(double factor, Surface of) implements Surface {
+    record Scale(Scalar factor, Surface of) implements Surface {
         public Scale {
             requirePositive(factor, "factor");
             requireNonNull(of);
+        }
+
+        public Scale(double factor, Surface of) {
+            this(Scalar.of(factor), of);
         }
     }
 
@@ -104,26 +142,40 @@ public sealed interface Surface {
      * one is not a rotation, and would quietly scale the field along with turning it. Rotation about anything
      * other than the origin is this composed with {@link Translate}, which is also how {@link Scale} handles it.
      *
-     * <p>Costs three dot products at the leaves, not a matrix: the compiler evaluates Rodrigues' formula in Java
-     * and emits the nine resulting numbers as constants.
+     * <p>Costs three dot products at the leaves, not a matrix: for a literal angle the compiler evaluates
+     * Rodrigues' formula in Java and emits the nine resulting numbers as constants.
+     *
+     * <p><b>The angle takes a parameter and the axis does not</b>, which is the one asymmetry in this node and
+     * a deliberate one. A parametric angle lowers to a {@code sin} and a {@code cos} in the shader and nine
+     * products built from them — a handful of instructions, once, outside the loop — and it is the number
+     * anyone building a design tool will animate first, so it earns that. An axis is a direction: it has to be
+     * re-normalised whenever it changes, the normalisation is nonlinear, and nothing yet wants to sweep one.
+     * Recorded as a known limit rather than as an oversight; a swept axis is two rotations composed.
      */
-    record Rotate(double ax, double ay, double az, double angle, Surface of) implements Surface {
+    record Rotate(double ax, double ay, double az, Scalar angle, Surface of) implements Surface {
         public Rotate {
             double len = Math.sqrt(ax * ax + ay * ay + az * az);
             if (len < 1e-12) {
                 throw new IllegalArgumentException("rotation axis must be non-degenerate");
             }
-            if (!Double.isFinite(angle)) {
-                throw new IllegalArgumentException("rotation angle must be finite, got " + angle);
-            }
+            requireNonNull(angle, "angle");
             ax /= len;
             ay /= len;
             az /= len;
             requireNonNull(of);
         }
 
+        public Rotate(double ax, double ay, double az, double angle, Surface of) {
+            this(ax, ay, az, Scalar.of(angle), of);
+        }
+
         /** Rotation about {@code +Y} — the turn that matters most in a world with a ground plane. */
         public static Rotate aboutY(double angle, Surface of) {
+            return new Rotate(0, 1, 0, angle, of);
+        }
+
+        /** Rotation about {@code +Y} by a parameter — the slider a design tool reaches for first. */
+        public static Rotate aboutY(Scalar angle, Surface of) {
             return new Rotate(0, 1, 0, angle, of);
         }
     }
@@ -169,16 +221,25 @@ public sealed interface Surface {
          *
          * @param period spacing, or {@code 0} for an axis that does not repeat
          */
-        public record Axis(double period, long from, long to) {
+        public record Axis(Scalar period, long from, long to) {
 
             /** An axis that does not repeat. */
             public static final Axis NONE = new Axis(0, 0, 0);
 
             public Axis {
-                if (!Double.isFinite(period) || period < 0) {
-                    throw new IllegalArgumentException("period must be finite and non-negative, got " + period);
+                requireNonNull(period, "period");
+                if (period.min() < 0) {
+                    throw new IllegalArgumentException("period must be non-negative, got " + period);
                 }
-                if (period == 0 && (from != 0 || to != 0)) {
+                // Whether an axis repeats has to be a fact about the tree rather than about today's slider, or
+                // the lowering itself would change shape as a value moved — which is precisely what parameters
+                // exist to avoid. So a period that could reach zero is refused unless it is exactly the
+                // constant zero that spells "does not repeat".
+                if (period.min() == 0 && period.max() != 0) {
+                    throw new IllegalArgumentException(
+                            "a repeated axis's period must stay positive across its whole range, got " + period);
+                }
+                if (period.max() == 0 && (from != 0 || to != 0)) {
                     throw new IllegalArgumentException("an axis with no period cannot have a cell range");
                 }
                 if (from > to) {
@@ -186,20 +247,39 @@ public sealed interface Surface {
                 }
             }
 
+            public Axis(double period, long from, long to) {
+                this(Scalar.of(period), from, to);
+            }
+
             /** Endlessly, {@code period} apart. */
             public static Axis every(double period) {
+                return every(Scalar.of(period));
+            }
+
+            /** Endlessly, a driven period apart. */
+            public static Axis every(Scalar period) {
                 requirePositive(period, "period");
                 return new Axis(period, Long.MIN_VALUE, Long.MAX_VALUE);
             }
 
             /** Cells {@code from}..{@code to} inclusive, {@code period} apart. */
             public static Axis range(double period, long from, long to) {
+                return range(Scalar.of(period), from, to);
+            }
+
+            /** Cells {@code from}..{@code to} inclusive, a driven period apart. */
+            public static Axis range(Scalar period, long from, long to) {
                 requirePositive(period, "period");
                 return new Axis(period, from, to);
             }
 
             /** {@code count} cells, starting on the original and running in the {@code +} direction. */
             public static Axis count(double period, long count) {
+                return count(Scalar.of(period), count);
+            }
+
+            /** {@code count} cells at a driven period, starting on the original. */
+            public static Axis count(Scalar period, long count) {
                 if (count < 1) {
                     throw new IllegalArgumentException("count must be at least 1, got " + count);
                 }
@@ -208,7 +288,7 @@ public sealed interface Surface {
 
             /** Whether this axis repeats at all. */
             public boolean repeats() {
-                return period > 0;
+                return period.max() > 0;
             }
 
             /** Whether the cell range is finite, and so needs clamping. */
@@ -242,6 +322,11 @@ public sealed interface Surface {
 
         /** The endless lattice on the ground plane: {@code X} and {@code Z} at one period, {@code Y} untouched. */
         public static Repeat grid(double period, Surface of) {
+            return grid(Scalar.of(period), of);
+        }
+
+        /** The same lattice at a driven period — one slider, and the whole floor spreads or closes. */
+        public static Repeat grid(Scalar period, Surface of) {
             return new Repeat(Axis.every(period), Axis.NONE, Axis.every(period), of);
         }
     }
@@ -287,13 +372,15 @@ public sealed interface Surface {
      * two-thirds of the distance it could have been, and the penalty is linear in {@code rate*radius} after that.
      * Twist tightly and locally, not across a world.
      */
-    record Twist(double rate, double radius, Surface of) implements Surface {
+    record Twist(Scalar rate, Scalar radius, Surface of) implements Surface {
         public Twist {
-            if (!Double.isFinite(rate)) {
-                throw new IllegalArgumentException("twist rate must be finite, got " + rate);
-            }
+            requireNonNull(rate, "rate");
             requirePositive(radius, "radius");
             requireNonNull(of);
+        }
+
+        public Twist(double rate, double radius, Surface of) {
+            this(Scalar.of(rate), Scalar.of(radius), of);
         }
     }
 
@@ -308,13 +395,15 @@ public sealed interface Surface {
      * value at {@code extent} to keep the field marchable: within {@code extent} of the {@code Z} axis the field
      * is conservative, and outside it, it can overshoot.
      */
-    record Bend(double rate, double extent, Surface of) implements Surface {
+    record Bend(Scalar rate, Scalar extent, Surface of) implements Surface {
         public Bend {
-            if (!Double.isFinite(rate)) {
-                throw new IllegalArgumentException("bend rate must be finite, got " + rate);
-            }
+            requireNonNull(rate, "rate");
             requirePositive(extent, "extent");
             requireNonNull(of);
+        }
+
+        public Bend(double rate, double extent, Surface of) {
+            this(Scalar.of(rate), Scalar.of(extent), of);
         }
     }
 
@@ -358,10 +447,14 @@ public sealed interface Surface {
      *
      * @param sharpness larger is crisper; as it grows the blend approaches a hard {@link Union}
      */
-    record SmoothUnion(double sharpness, List<Surface> of) implements Surface {
+    record SmoothUnion(Scalar sharpness, List<Surface> of) implements Surface {
         public SmoothUnion {
             requirePositive(sharpness, "sharpness");
             of = requireNonEmpty(of);
+        }
+
+        public SmoothUnion(double sharpness, List<Surface> of) {
+            this(Scalar.of(sharpness), of);
         }
     }
 
@@ -379,10 +472,14 @@ public sealed interface Surface {
      *
      * @param sharpness larger is crisper; as it grows the fillet approaches a hard {@link Intersection}
      */
-    record SmoothIntersection(double sharpness, List<Surface> of) implements Surface {
+    record SmoothIntersection(Scalar sharpness, List<Surface> of) implements Surface {
         public SmoothIntersection {
             requirePositive(sharpness, "sharpness");
             of = requireNonEmpty(of);
+        }
+
+        public SmoothIntersection(double sharpness, List<Surface> of) {
+            this(Scalar.of(sharpness), of);
         }
     }
 
@@ -397,27 +494,39 @@ public sealed interface Surface {
      *
      * @param sharpness larger is crisper; as it grows the fillet approaches a hard {@link Difference}
      */
-    record SmoothDifference(double sharpness, Surface from, Surface remove) implements Surface {
+    record SmoothDifference(Scalar sharpness, Surface from, Surface remove) implements Surface {
         public SmoothDifference {
             requirePositive(sharpness, "sharpness");
             requireNonNull(from);
             requireNonNull(remove);
         }
+
+        public SmoothDifference(double sharpness, Surface from, Surface remove) {
+            this(Scalar.of(sharpness), from, remove);
+        }
     }
 
     /** The hollow shell of {@code of}, {@code thickness} thick — {@code |d| - thickness}. */
-    record Shell(double thickness, Surface of) implements Surface {
+    record Shell(Scalar thickness, Surface of) implements Surface {
         public Shell {
             requirePositive(thickness, "thickness");
             requireNonNull(of);
         }
+
+        public Shell(double thickness, Surface of) {
+            this(Scalar.of(thickness), of);
+        }
     }
 
     /** {@code of}, inflated by {@code radius} — rounds its edges by the same amount. */
-    record Round(double radius, Surface of) implements Surface {
+    record Round(Scalar radius, Surface of) implements Surface {
         public Round {
             requirePositive(radius, "radius");
             requireNonNull(of);
+        }
+
+        public Round(double radius, Surface of) {
+            this(Scalar.of(radius), of);
         }
     }
 
@@ -447,6 +556,15 @@ public sealed interface Surface {
      *
      * <p>What is <em>not</em> promised: that the shape's volumetric centroid lies inside it. No polyline node can
      * promise that — a stroke bent back on itself has its centroid in the gap, the way a horseshoe does.
+     *
+     * <p><b>A vertex is a {@code double} and not a {@link Scalar}</b>, alone among the numbers in this file.
+     * The guarantee above is the reason: it is kept by solving each corner in Java — a control point derived so
+     * the curve passes through the vertex, an even sample count so a joint lands on it (see {@link Spine}) —
+     * and every one of those solves reads the neighbouring vertices' positions and radii. Driving them from the
+     * host would move that geometry into the shader, where it would be recomputed per march step per cone
+     * rather than once at compile time, and a stroke's whole claim is that it costs what a hand-written union
+     * of capsules costs. A known limit, and the one place P0's triage came out against the parameter: to animate
+     * a stroke, drive a {@link Translate}, a {@link Rotate} or a {@link Scale} around it.
      *
      * @param through           the vertices, in order; at least one
      * @param segmentsPerCorner sub-cones emitted per rounded corner. Even, so that a sample lands on the vertex.
@@ -666,8 +784,35 @@ public sealed interface Surface {
         return new SmoothUnion(sharpness, List.of(of));
     }
 
+    static Surface smoothUnion(Scalar sharpness, Surface... of) {
+        return new SmoothUnion(sharpness, List.of(of));
+    }
+
     static Surface smoothIntersection(double sharpness, Surface... of) {
         return new SmoothIntersection(sharpness, List.of(of));
+    }
+
+    static Surface smoothIntersection(Scalar sharpness, Surface... of) {
+        return new SmoothIntersection(sharpness, List.of(of));
+    }
+
+    /**
+     * This surface with every parameter's <em>identity and value</em> erased and only its slot and range kept —
+     * the normal form two surfaces must agree on to share a compiled pipeline.
+     *
+     * <p>The key to R1: moving a slider does not change the tree at all (a live value lives in a
+     * {@link ParamBlock}, never here), and re-authoring the same shape under fresh {@link ParamId}s, or with a
+     * different starting value, still lands on one pipeline. What survives is what the lowering actually
+     * emitted — a read of slot <i>k</i> — plus the range, which is compile-time and may yet inform the lowering.
+     *
+     * <p>Use this to key a shader cache; do not render it. It is a {@link Surface} only because that is the
+     * cheapest thing with the right structural equality.
+     */
+    default Surface shaderKey() {
+        ParamBlock block = ParamBlock.of(this);
+        return Scalars.map(this, scalar -> scalar instanceof Scalar.Param p
+                ? new Scalar.Param(ParamId.of(block.slotOf(p.id())), p.min(), p.max(), p.min())
+                : scalar);
     }
 
     private static void requireNonNull(Surface s) {
@@ -682,9 +827,32 @@ public sealed interface Surface {
         }
     }
 
+    private static void requireNonNull(Scalar s, String name) {
+        if (s == null) {
+            throw new IllegalArgumentException(name + " must not be null");
+        }
+    }
+
     private static void requirePositive(double v, String name) {
         if (!(v > 0) || !Double.isFinite(v)) {
             throw new IllegalArgumentException(name + " must be finite and positive, got " + v);
+        }
+    }
+
+    /**
+     * Positive <b>across the whole range</b> — R1.1, and the reason a {@link Scalar.Param} must declare one.
+     *
+     * <p>A radius whose slider passes through zero is a surface that stops being a surface partway along the
+     * drag, and the failure it produces there — a field that is no longer a distance to anything — is far from
+     * the mistake that caused it. Asked once, at construction, of every value the parameter may ever take.
+     */
+    private static void requirePositive(Scalar s, String name) {
+        requireNonNull(s, name);
+        if (!(s.min() > 0)) {
+            throw new IllegalArgumentException(s.isLit()
+                    ? name + " must be finite and positive, got " + s.min()
+                    : name + " must stay positive across its whole range, and [" + s.min() + ", " + s.max()
+                            + "] does not");
         }
     }
 

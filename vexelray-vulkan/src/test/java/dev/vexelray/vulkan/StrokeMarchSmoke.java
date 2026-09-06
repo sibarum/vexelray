@@ -87,7 +87,7 @@ public final class StrokeMarchSmoke {
                 double aspect = (double) width / height;
                 Smoke smoke = new Smoke("StrokeMarchSmoke", width * height);
 
-                byte[] rgba = march(device, width, height, vertex, fragment, sky, camera(YAW, DISTANCE, aspect));
+                byte[] rgba = march(device, width, height, vertex, fragment, sky, camera(scene, YAW, DISTANCE, aspect));
                 smoke.measured("the framed surface", countNonSky(rgba, sky));
                 write(out, rgba, width, height);
 
@@ -97,7 +97,7 @@ public final class StrokeMarchSmoke {
                 // geometry changes what a working march reports and changes nothing about a constant.
                 smoke.control("eye inside the box",
                         countNonSky(march(device, width, height, vertex, fragment, sky,
-                                camera(YAW, 0.0, aspect)), sky));
+                                camera(scene, YAW, 0.0, aspect)), sky));
 
                 System.out.println();
                 System.out.println("if a host shows nothing and this passed, the difference is the host's"
@@ -142,13 +142,14 @@ public final class StrokeMarchSmoke {
     }
 
     /** The push-constant block for an eye orbiting the origin, in the same axis order a plot host uses. */
-    private static byte[] camera(double yaw, double distance, double aspect) {
+    private static byte[] camera(SdfScene scene, double yaw, double distance, double aspect) {
         double cp = Math.cos(PITCH);
         // Forward, in plot space: the direction the eye looks along. The eye stands opposite it.
         double[] forward = {cp * Math.sin(yaw), cp * Math.cos(yaw), -Math.sin(PITCH)};
         double[] at = {-distance * forward[0], -distance * forward[1], -distance * forward[2]};
         // The plot's z is the world's y, and the plot's y is the world's z — the swap every renderer here makes.
-        return SdfComposer.cameraBytes(at[0], at[2], at[1], yaw, PITCH, aspect);
+        return SdfComposer.pushConstantBytes(scene, at[0], at[2], at[1], yaw, PITCH, aspect,
+                SdfComposer.paramBlock(scene));
     }
 
     private static Surface.Stroke zigzag(int vertices, boolean coloured) {

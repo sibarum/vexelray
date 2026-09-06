@@ -156,6 +156,33 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
         return new Bounds(cx - r, cy - r, cz - r, cx + r, cy + r, cz + r);
     }
 
+    /**
+     * A sphere's box over <em>every</em> value its numbers can take: the union of the spheres a parameter sweep
+     * would draw, not the one it happens to be drawing now.
+     *
+     * <p>That is what containment has to mean once a number is driven. A box computed from today's slider is a
+     * claim that expires the moment the slider moves, and the thing it was protecting — a camera that finds the
+     * geometry, a cull that does not drop it — has no way to know it expired. The range is declared precisely so
+     * this question has an answer (see {@link Scalar}), and the answer costs an interval instead of a number.
+     */
+    private static Bounds sphere(Scalar cx, Scalar cy, Scalar cz, Scalar r) {
+        return new Bounds(
+                cx.min() - r.max(), cy.min() - r.max(), cz.min() - r.max(),
+                cx.max() + r.max(), cy.max() + r.max(), cz.max() + r.max());
+    }
+
+    /** The smallest interval containing {@code a * b} over both ranges, as {@code {lo, hi}}. */
+    private static double[] product(double aLo, double aHi, Scalar b) {
+        double[] corners = {aLo * b.min(), aLo * b.max(), aHi * b.min(), aHi * b.max()};
+        double lo = corners[0];
+        double hi = corners[0];
+        for (double c : corners) {
+            lo = Math.min(lo, c);
+            hi = Math.max(hi, c);
+        }
+        return new double[]{lo, hi};
+    }
+
     /** The eight corners of a box, for the transforms that have to move them individually. */
     private double[][] corners() {
         return new double[][]{
@@ -168,6 +195,15 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
         double r = 0;
         for (double[] c : corners()) {
             r = Math.max(r, Math.hypot(c[0], c[2]));
+        }
+        return r;
+    }
+
+    /** The furthest any corner reaches from the origin — what a turn about an unknown angle sweeps within. */
+    private double radiusAboutOrigin() {
+        double r = 0;
+        for (double[] c : corners()) {
+            r = Math.max(r, Math.sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]));
         }
         return r;
     }
@@ -185,8 +221,9 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
         return switch (surface) {
             case Surface.Sphere s -> sphere(s.cx(), s.cy(), s.cz(), s.radius());
 
-            case Surface.Box b -> new Bounds(b.cx() - b.hx(), b.cy() - b.hy(), b.cz() - b.hz(),
-                    b.cx() + b.hx(), b.cy() + b.hy(), b.cz() + b.hz());
+            case Surface.Box b -> new Bounds(
+                    b.cx().min() - b.hx().max(), b.cy().min() - b.hy().max(), b.cz().min() - b.hz().max(),
+                    b.cx().max() + b.hx().max(), b.cy().max() + b.hy().max(), b.cz().max() + b.hz().max());
 
             // A half-space reaches forever in every direction but one, so there is no box to give.
             case Surface.Plane ignored -> null;
@@ -195,8 +232,12 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
                     .union(sphere(c.bx(), c.by(), c.bz(), c.radius()));
 
             case Surface.Torus t -> new Bounds(
-                    t.cx() - t.major() - t.minor(), t.cy() - t.minor(), t.cz() - t.major() - t.minor(),
-                    t.cx() + t.major() + t.minor(), t.cy() + t.minor(), t.cz() + t.major() + t.minor());
+                    t.cx().min() - t.major().max() - t.minor().max(),
+                    t.cy().min() - t.minor().max(),
+                    t.cz().min() - t.major().max() - t.minor().max(),
+                    t.cx().max() + t.major().max() + t.minor().max(),
+                    t.cy().max() + t.minor().max(),
+                    t.cz().max() + t.major().max() + t.minor().max());
 
             // The hull of the end spheres of every cone the stroke lowers to — the same list the compiler
             // emits, so the box is around what is actually drawn rather than around the control points. It
@@ -212,17 +253,31 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
             }
 
             case Surface.Translate t -> map(t.of(), framing, b -> new Bounds(
-                    b.minX + t.dx(), b.minY + t.dy(), b.minZ + t.dz(),
-                    b.maxX + t.dx(), b.maxY + t.dy(), b.maxZ + t.dz()));
+                    b.minX + t.dx().min(), b.minY + t.dy().min(), b.minZ + t.dz().min(),
+                    b.maxX + t.dx().max(), b.maxY + t.dy().max(), b.maxZ + t.dz().max()));
 
-            case Surface.Scale s -> map(s.of(), framing, b -> new Bounds(
-                    b.minX * s.factor(), b.minY * s.factor(), b.minZ * s.factor(),
-                    b.maxX * s.factor(), b.maxY * s.factor(), b.maxZ * s.factor()));
+            // A driven factor scales each face by an interval rather than a number, and which end of the
+            // interval grows the box depends on which side of the origin the face is on — so it is the product
+            // of two ranges, not two products.
+            case Surface.Scale s -> map(s.of(), framing, b -> {
+                double[] x = product(b.minX, b.maxX, s.factor());
+                double[] y = product(b.minY, b.maxY, s.factor());
+                double[] z = product(b.minZ, b.maxZ, s.factor());
+                return new Bounds(x[0], y[0], z[0], x[1], y[1], z[1]);
+            });
+
+            // A driven angle sweeps the child through every turn its range allows. Rotation about an axis
+            // through the origin preserves length, so the ball of the furthest corner contains all of them —
+            // loose, and the honest answer to a question that no longer has a tight one.
+            case Surface.Rotate r when !r.angle().isLit() -> map(r.of(), framing, b -> {
+                double radius = b.radiusAboutOrigin();
+                return new Bounds(-radius, -radius, -radius, radius, radius, radius);
+            });
 
             // The box of the rotated corners, not the rotated box — the second is not axis-aligned and the
             // first is what contains it.
             case Surface.Rotate r -> map(r.of(), framing, b -> {
-                double[] m = rotation(r.ax(), r.ay(), r.az(), r.angle());
+                double[] m = rotation(r.ax(), r.ay(), r.az(), r.angle().literal());
                 double[][] turned = new double[8][3];
                 double[][] corners = b.corners();
                 for (int i = 0; i < 8; i++) {
@@ -284,13 +339,14 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
             // Adding that is what keeps the box containing rather than merely nearly containing.
             case Surface.SmoothUnion s -> {
                 Bounds h = hull(s.of(), framing);
-                yield h == null ? null : h.expanded(Math.log(s.of().size()) / s.sharpness());
+                // The softest the blend can be, which is the furthest it bulges: log(n)/k grows as k shrinks.
+                yield h == null ? null : h.expanded(Math.log(s.of().size()) / s.sharpness().min());
             }
 
             // A shell reaches a thickness outside the surface as well as inside it.
-            case Surface.Shell s -> map(s.of(), framing, b -> b.expanded(s.thickness()));
+            case Surface.Shell s -> map(s.of(), framing, b -> b.expanded(s.thickness().max()));
 
-            case Surface.Round r -> map(r.of(), framing, b -> b.expanded(r.radius()));
+            case Surface.Round r -> map(r.of(), framing, b -> b.expanded(r.radius().max()));
 
             // Bounding an arbitrary implicit is interval arithmetic over the IR, which is its own pass.
             case Surface.Implicit ignored -> null;
@@ -357,8 +413,10 @@ public record Bounds(double minX, double minY, double minZ, double maxX, double 
             if (!axes[i].bounded()) {
                 return null;                    // tiles to the horizon; there is no box
             }
-            lo[i] += axes[i].from() * axes[i].period();
-            hi[i] += axes[i].to() * axes[i].period();
+            // A cell index may be negative, so the furthest cell is not simply the largest period — it is one
+            // end of the product of two ranges.
+            lo[i] += product(axes[i].from(), axes[i].from(), axes[i].period())[0];
+            hi[i] += product(axes[i].to(), axes[i].to(), axes[i].period())[1];
         }
         return new Bounds(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
     }

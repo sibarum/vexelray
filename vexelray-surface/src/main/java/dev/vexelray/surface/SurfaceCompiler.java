@@ -31,12 +31,34 @@ public final class SurfaceCompiler {
      */
     private final Lets lets = new Lets();
 
-    private SurfaceCompiler() {
+    /**
+     * Where a {@link Scalar.Param} is read from — supplied by whoever declared the block, and
+     * {@link ParamStore#NONE} when nobody did.
+     */
+    private final ParamStore params;
+
+    private SurfaceCompiler(ParamStore params) {
+        this.params = params;
     }
 
-    /** Compile with {@link SurfaceLimits#DEFAULT}. */
+    /**
+     * Compile with {@link SurfaceLimits#DEFAULT} and no parameter block.
+     *
+     * <p>A surface holding a {@link Scalar.Param} fails here, by name: there is nowhere for its value to come
+     * from. Compile through {@code SdfComposer}, or pass a store from {@link ParamBlock}.
+     */
     public static Field compile(Surface surface) {
-        return compile(surface, SurfaceLimits.DEFAULT);
+        return compile(surface, SurfaceLimits.DEFAULT, ParamStore.NONE);
+    }
+
+    /** Compile with {@link SurfaceLimits#DEFAULT}, reading parameters from {@code params}. */
+    public static Field compile(Surface surface, ParamStore params) {
+        return compile(surface, SurfaceLimits.DEFAULT, params);
+    }
+
+    /** Compile against {@code limits} and no parameter block. */
+    public static Field compile(Surface surface, SurfaceLimits limits) {
+        return compile(surface, limits, ParamStore.NONE);
     }
 
     /**
@@ -45,12 +67,15 @@ public final class SurfaceCompiler {
      * <p>Limits are checked first, before any lowering: a surface may have come from outside the program, and
      * lowering an oversized one is exactly the work worth not starting (see {@link SurfaceLimits}).
      *
+     * @param params where the shader reads driven values from; every {@link Scalar.Param} in the tree is
+     *               resolved through it, and it is also what says which push-constant block an
+     *               {@link Surface.Implicit} may legitimately read
      * @throws SurfaceLimits.SurfaceTooLargeException if the surface exceeds {@code limits}
      * @throws UnsupportedOperationException if an implicit surface contains something that cannot be differentiated
      */
-    public static Field compile(Surface surface, SurfaceLimits limits) {
+    public static Field compile(Surface surface, SurfaceLimits limits, ParamStore params) {
         limits.check(surface);
-        SurfaceCompiler compiler = new SurfaceCompiler();
+        SurfaceCompiler compiler = new SurfaceCompiler(params);
         Field lowered = compiler.lower(surface, Ir.POINT);
         Field field = lowered.hasAlbedo() ? lowered.withAlbedoLets(compiler.lets.statements()) : lowered;
         // Checked again on the way out, not only on the way in: normalisation expands an implicit by a factor
@@ -71,7 +96,7 @@ public final class SurfaceCompiler {
             case Surface.Box b -> Field.exact(box(p, b));
 
             case Surface.Plane pl -> Field.exact(
-                    Fold.add(Ir.dot(p, Ir.v3(pl.nx(), pl.ny(), pl.nz())), Ir.f(pl.offset())));
+                    Fold.add(Ir.dot(p, Ir.v3(pl.nx(), pl.ny(), pl.nz())), expr(pl.offset())));
 
             case Surface.Capsule c -> Field.exact(capsule(p, c));
 
@@ -81,19 +106,19 @@ public final class SurfaceCompiler {
 
             // Moving the domain moves the surface; distances are unaffected.
             case Surface.Translate t ->
-                    lower(t.of(), Fold.sub(p, Ir.v3(t.dx(), t.dy(), t.dz())));
+                    lower(t.of(), Fold.sub(p, Ir.v3(expr(t.dx()), expr(t.dy()), expr(t.dz()))));
 
             // Uniform scale: evaluate in the shrunken frame, then scale the distance back out. Both the field and
             // its gradient scale together, so the bound survives.
             case Surface.Scale s -> {
-                Field inner = lower(s.of(), Fold.div(p, Ir.broadcast(Ir.f(s.factor()), Ir.V3)));
-                yield new Field(Fold.mul(inner.distance(), Ir.f(s.factor())),
-                        inner.lipschitz(), inner.albedo());
+                Expr factor = expr(s.factor());
+                Field inner = lower(s.of(), Fold.div(p, Ir.broadcast(factor, Ir.V3)));
+                yield new Field(Fold.mul(inner.distance(), factor), inner.lipschitz(), inner.albedo());
             }
 
-            // Rotating the object rotates the domain the other way, so the child is lowered at R^T p. The matrix
-            // is nine compile-time constants and Fold drops whichever of them are exactly zero, so an
-            // axis-aligned turn costs little more than a swizzle.
+            // Rotating the object rotates the domain the other way, so the child is lowered at R^T p. For a
+            // literal angle the matrix is nine compile-time constants and Fold drops whichever of them are
+            // exactly zero, so an axis-aligned turn costs little more than a swizzle.
             case Surface.Rotate r -> lower(r.of(), rotate(p, rodrigues(r.ax(), r.ay(), r.az(), r.angle())));
 
             // Folding with abs is 1-Lipschitz, so a mirror is as free as a translate.
@@ -113,7 +138,7 @@ public final class SurfaceCompiler {
                 Expr px = Fold.component(p, 0);
                 Expr py = Fold.component(p, 1);
                 Expr pz = Fold.component(p, 2);
-                Expr angle = Fold.mul(Ir.f(t.rate()), py);
+                Expr angle = Fold.mul(expr(t.rate()), py);
                 Expr c = Expr.MathCall.cos(angle);
                 Expr s = Expr.MathCall.sin(angle);
                 Expr q = Ir.v3(
@@ -128,7 +153,7 @@ public final class SurfaceCompiler {
                 Expr px = Fold.component(p, 0);
                 Expr py = Fold.component(p, 1);
                 Expr pz = Fold.component(p, 2);
-                Expr angle = Fold.mul(Ir.f(b.rate()), px);
+                Expr angle = Fold.mul(expr(b.rate()), px);
                 Expr c = Expr.MathCall.cos(angle);
                 Expr s = Expr.MathCall.sin(angle);
                 Expr q = Ir.v3(
@@ -160,18 +185,19 @@ public final class SurfaceCompiler {
 
             case Surface.Shell s -> {
                 Field inner = lower(s.of(), p);
-                yield new Field(Fold.sub(Ir.abs(inner.distance()), Ir.f(s.thickness())),
+                yield new Field(Fold.sub(Ir.abs(inner.distance()), expr(s.thickness())),
                         inner.lipschitz(), inner.albedo());
             }
 
             case Surface.Round r -> {
                 Field inner = lower(r.of(), p);
-                yield new Field(Fold.sub(inner.distance(), Ir.f(r.radius())), inner.lipschitz(), inner.albedo());
+                yield new Field(Fold.sub(inner.distance(), expr(r.radius())), inner.lipschitz(), inner.albedo());
             }
 
             // The one case that cannot vouch for itself. Normalise in the surface's own frame first, then move it
             // into the caller's — see Substitute for why that order is not interchangeable.
             case Surface.Implicit i -> {
+                screen(i.f());
                 // A known global bound is both safer and cheaper than a derived one: safe everywhere rather than
                 // locally, and one divide rather than a symbolic gradient several times the size of the field.
                 Field normalised = Double.isFinite(i.lipschitzBound())
@@ -180,6 +206,71 @@ public final class SurfaceCompiler {
                 yield new Field(Substitute.point(normalised.distance(), p), normalised.lipschitz());
             }
         };
+    }
+
+    /**
+     * A number in the tree, as IR: the constant it is, or a read of the slot the host writes it into.
+     *
+     * <p>The literal case emits precisely what a {@code double} field emitted before parameters existed, which
+     * is what keeps a scene of literals lowering to byte-identical IR — the acceptance test for the whole
+     * migration.
+     */
+    private Expr expr(Scalar s) {
+        return switch (s) {
+            case Scalar.Lit l -> Ir.f(l.value());
+            case Scalar.Param param -> params.read(param.id());
+        };
+    }
+
+    /**
+     * Refuse an {@link Surface.Implicit} that reads a push-constant block the composer never issued — R1.3, and
+     * the one screen in this file that catches a mistake the IR cannot.
+     *
+     * <p>Measured before it was written: such a read <b>compiles without complaint</b> today. A module emits one
+     * push-constant block, the foreign one's members are never part of it, and only the member <em>index</em>
+     * survives the lowering — so a read of member 0 of some block a caller built by hand silently becomes a read
+     * of the camera's {@code camX}, and the surface moves when the camera does. The bounds check that exists
+     * does not catch it, because the index is validated against the foreign block, where it is perfectly valid.
+     *
+     * <p><b>The limit this leaves.</b> An implicit's expression cannot carry a parameter of its own, because
+     * raw {@code core} IR has no way to spell one: the only expression that reads a driven value is a read of
+     * the composer's block at a slot, and neither the block nor the slot exists when a surface is authored.
+     * So a driven implicit is driven from the outside — a {@link Scalar.Param} on the {@link Surface.Translate},
+     * {@link Surface.Rotate}, {@link Surface.Scale} or {@link Surface.Twist} around it, which is a domain
+     * transform and lowers the same way. Recorded as a known limit; giving {@code Implicit} a parameter of its
+     * own means a marker the compiler substitutes, and that is a decision about the IR rather than about this
+     * screen.
+     */
+    private void screen(Expr e) {
+        switch (e) {
+            case Expr.PushConstantRead read -> {
+                if (!params.issued(read.block())) {
+                    throw new IllegalArgumentException(
+                            "implicit surface reads member " + read.member() + " of a push-constant block the "
+                                    + "composer did not issue; that read would silently resolve to whatever "
+                                    + "member " + read.member() + " of the emitted block happens to be (the "
+                                    + "camera). Drive it from outside instead: a Scalar.Param on the Surface "
+                                    + "nodes around this implicit — raw IR cannot spell a parameter");
+                }
+            }
+            case Expr.Binary b -> {
+                screen(b.lhs());
+                screen(b.rhs());
+            }
+            case Expr.Unary u -> screen(u.operand());
+            case Expr.MathCall m -> m.args().forEach(this::screen);
+            case Expr.VectorConstruct v -> v.components().forEach(this::screen);
+            case Expr.VectorExtract v -> screen(v.vector());
+            case Expr.Convert c -> screen(c.operand());
+            case Expr.Bitcast b -> screen(b.operand());
+            case Expr.MatrixTimesVector m -> screen(m.vector());
+            case Expr.Call c -> c.arguments().forEach(this::screen);
+            case Expr.BufferLoad b -> screen(b.index());
+            case Expr.SampleTexture s -> screen(s.uv());
+            default -> {
+                // A leaf with nothing to say: a constant, a parameter, an interface or builtin read.
+            }
+        }
     }
 
     /**
@@ -192,9 +283,9 @@ public final class SurfaceCompiler {
      * and reporting too much is what makes a march step through the surface it was meant to stop at. Scaling the
      * whole field down by {@code stretch} costs march steps and buys back the bound.
      */
-    private Field deform(Surface of, Expr q, double stretch) {
+    private Field deform(Surface of, Expr q, Expr stretch) {
         Field inner = lower(of, q);
-        return new Field(Fold.div(inner.distance(), Ir.f(stretch)), inner.lipschitz(), inner.albedo());
+        return new Field(Fold.div(inner.distance(), stretch), inner.lipschitz(), inner.albedo());
     }
 
     /**
@@ -209,9 +300,17 @@ public final class SurfaceCompiler {
      * a real bound is the one failure mode this whole module exists to prevent, so:
      * {@code (a + sqrt(a^2 + 4)) / 2}, exactly.
      */
-    private double twistStretch(double rate, double radius) {
-        double a = Math.abs(rate) * radius;
-        return 0.5 * (a + Math.sqrt(a * a + 4));
+    private Expr twistStretch(Scalar rate, Scalar radius) {
+        if (Scalar.allLit(rate, radius)) {
+            double a = Math.abs(rate.literal()) * radius.literal();
+            return Ir.f(0.5 * (a + Math.sqrt(a * a + 4)));
+        }
+        // Driven, so the same formula moves into the shader. It is evaluated once per field call rather than
+        // per march step, and it is the price of a rate a slider can reach: the alternative — bounding the
+        // stretch at the range's worst value instead — divides the field by that bound at every value, and a
+        // twist rate whose range is generous would then march at a fraction of the step it could take.
+        Expr a = Ir.mul(Ir.abs(expr(rate)), expr(radius));
+        return Ir.mul(Ir.f(0.5), Ir.add(a, Ir.sqrt(Ir.add(Ir.mul(a, a), Ir.f(4.0)))));
     }
 
     /**
@@ -223,8 +322,11 @@ public final class SurfaceCompiler {
      * {@code -Y} side of the axis, where the bend's inner and outer radii disagree most, and there the two
      * contributions add outright.
      */
-    private double bendStretch(double rate, double extent) {
-        return 1 + Math.abs(rate) * extent;
+    private Expr bendStretch(Scalar rate, Scalar extent) {
+        if (Scalar.allLit(rate, extent)) {
+            return Ir.f(1 + Math.abs(rate.literal()) * extent.literal());
+        }
+        return Ir.add(Ir.f(1.0), Ir.mul(Ir.abs(expr(rate)), expr(extent)));
     }
 
     /**
@@ -253,7 +355,7 @@ public final class SurfaceCompiler {
         Expr[][] cells = new Expr[active.size()][2];
         for (int a = 0; a < active.size(); a++) {
             Surface.Repeat.Axis axis = axes[active.get(a)];
-            Expr t = Ir.div(Fold.component(p, active.get(a)), Ir.f(axis.period()));
+            Expr t = Ir.div(Fold.component(p, active.get(a)), expr(axis.period()));
             Expr nearest = Expr.MathCall.round(t);
             Expr neighbour = Ir.add(nearest, Expr.MathCall.sign(Ir.sub(t, nearest)));
             cells[a][0] = clampCell(nearest, axis);
@@ -265,7 +367,7 @@ public final class SurfaceCompiler {
             Expr[] q = {Fold.component(p, 0), Fold.component(p, 1), Fold.component(p, 2)};
             for (int a = 0; a < active.size(); a++) {
                 int i = active.get(a);
-                q[i] = Ir.sub(q[i], Ir.mul(Ir.f(axes[i].period()), cells[a][(mask >> a) & 1]));
+                q[i] = Ir.sub(q[i], Ir.mul(expr(axes[i].period()), cells[a][(mask >> a) & 1]));
             }
             Coloured cell = Coloured.of(lower(r.of(), Ir.v3(q[0], q[1], q[2])));
             folded = folded == null ? cell : pick(folded, cell, true);
@@ -318,23 +420,50 @@ public final class SurfaceCompiler {
      * Rodrigues' formula, evaluated in Java: the rotation matrix about a unit axis, row-major.
      * {@code R = I cos(t) + sin(t) [k]x + (1 - cos(t)) k k^T}.
      */
-    private double[] rodrigues(double kx, double ky, double kz, double angle) {
-        double c = Math.cos(angle);
-        double s = Math.sin(angle);
-        double t = 1 - c;
-        return new double[]{
-                t * kx * kx + c, t * kx * ky - s * kz, t * kx * kz + s * ky,
-                t * kx * ky + s * kz, t * ky * ky + c, t * ky * kz - s * kx,
-                t * kx * kz - s * ky, t * ky * kz + s * kx, t * kz * kz + c};
+    private Expr[] rodrigues(double kx, double ky, double kz, Scalar angle) {
+        if (angle.isLit()) {
+            double c = Math.cos(angle.literal());
+            double s = Math.sin(angle.literal());
+            double t = 1 - c;
+            double[] m = {
+                    t * kx * kx + c, t * kx * ky - s * kz, t * kx * kz + s * ky,
+                    t * kx * ky + s * kz, t * ky * ky + c, t * ky * kz - s * kx,
+                    t * kx * kz - s * ky, t * ky * kz + s * kx, t * kz * kz + c};
+            Expr[] out = new Expr[9];
+            for (int i = 0; i < 9; i++) {
+                out[i] = Ir.f(m[i]);
+            }
+            return out;
+        }
+        // A driven angle: the same formula, with the two trigonometric calls in the shader and the axis still
+        // nine constants. Fold keeps the axis-aligned cases cheap here too — about +Y, six of the nine products
+        // involve a zero component and disappear, leaving the swizzle and two multiplies per axis.
+        Expr c = Expr.MathCall.cos(expr(angle));
+        Expr s = Expr.MathCall.sin(expr(angle));
+        Expr t = Ir.sub(Ir.f(1.0), c);
+        return new Expr[]{
+                axisTerm(kx * kx, t, c), skew(kx * ky, t, -kz, s), skew(kx * kz, t, ky, s),
+                skew(kx * ky, t, kz, s), axisTerm(ky * ky, t, c), skew(ky * kz, t, -kx, s),
+                skew(kx * kz, t, -ky, s), skew(ky * kz, t, kx, s), axisTerm(kz * kz, t, c)};
+    }
+
+    /** A diagonal entry of Rodrigues' matrix: {@code k_i^2 * t + c}. */
+    private Expr axisTerm(double kk, Expr t, Expr c) {
+        return Fold.add(Fold.mul(Ir.f(kk), t), c);
+    }
+
+    /** An off-diagonal entry: {@code k_i k_j * t + k_l * s}, with the sign already in {@code k}. */
+    private Expr skew(double kk, Expr t, double k, Expr s) {
+        return Fold.add(Fold.mul(Ir.f(kk), t), Fold.mul(Ir.f(k), s));
     }
 
     /** {@code R^T p} — the domain turned opposite to the object, as three folded dot products. */
-    private Expr rotate(Expr p, double[] m) {
+    private Expr rotate(Expr p, Expr[] m) {
         Expr[] out = new Expr[3];
         for (int i = 0; i < 3; i++) {
             Expr sum = null;
             for (int j = 0; j < 3; j++) {
-                Expr term = Fold.mul(Ir.f(m[j * 3 + i]), Fold.component(p, j));
+                Expr term = Fold.mul(m[j * 3 + i], Fold.component(p, j));
                 sum = sum == null ? term : Fold.add(sum, term);
             }
             out[i] = sum;
@@ -468,7 +597,7 @@ public final class SurfaceCompiler {
      * 1-Lipschitz field never reports more than the true distance to its own zero set, which is the surface
      * actually being drawn — a rounder one than the hard operator would have given.
      */
-    private Field softBlend(double k, List<Field> fields, Blend blend) {
+    private Field softBlend(Scalar sharpness, List<Field> fields, Blend blend) {
         double lipschitz = Field.EXACT;
         for (Field field : fields) {
             lipschitz = Math.max(lipschitz, field.lipschitz());
@@ -482,12 +611,20 @@ public final class SurfaceCompiler {
             return new Field(extremum, lipschitz, fields.get(0).albedo());
         }
 
+        // The signed sharpness is one constant for a literal, and a negation of a read for a driven soft-min —
+        // never a multiply by a constant -1, which would leave a product of two constants nothing downstream
+        // folds and so would stop a literal scene lowering to the IR it lowered to before.
+        Expr k = expr(sharpness);
+        Expr signedK = sharpness.isLit()
+                ? Ir.f(blend.sign * sharpness.literal())
+                : (blend == Blend.SOFT_MIN ? Ir.neg(k) : k);
+
         Expr sum = null;
         for (Field field : fields) {
-            Expr term = Expr.MathCall.exp(Ir.mul(Ir.f(blend.sign * k), Ir.sub(field.distance(), extremum)));
+            Expr term = Expr.MathCall.exp(Ir.mul(signedK, Ir.sub(field.distance(), extremum)));
             sum = sum == null ? term : Ir.add(sum, term);
         }
-        Expr correction = Ir.div(Expr.MathCall.log(sum), Ir.f(k));
+        Expr correction = Ir.div(Expr.MathCall.log(sum), k);
         Expr blended = blend == Blend.SOFT_MIN
                 ? Ir.sub(extremum, correction)
                 : Ir.add(extremum, correction);
@@ -518,19 +655,32 @@ public final class SurfaceCompiler {
 
     /** Exact box: distance to the nearest face outside, the largest signed face distance inside. */
     private Expr box(Expr p, Surface.Box b) {
-        Expr q = Fold.sub(Ir.abs(Fold.sub(p, Ir.v3(b.cx(), b.cy(), b.cz()))), Ir.v3(b.hx(), b.hy(), b.hz()));
+        Expr q = Fold.sub(Ir.abs(Fold.sub(p, Ir.v3(expr(b.cx()), expr(b.cy()), expr(b.cz())))),
+                Ir.v3(expr(b.hx()), expr(b.hy()), expr(b.hz())));
         Expr outside = Ir.length(Ir.max(q, Ir.v3(0, 0, 0)));
         Expr inside = Ir.min(Ir.max(Ir.x(q), Ir.max(Ir.y(q), Ir.z(q))), Ir.f(0.0));
         return Ir.add(outside, inside);
     }
 
-    /** Exact capsule: distance to the segment, less the radius. */
+    /**
+     * Exact capsule: distance to the segment, less the radius.
+     *
+     * <p>The axis {@code b - a} is subtracted in Java where both ends are literal, because
+     * {@code Ir.v3(bx - ax, …)} is one constant vector where {@code Fold.sub(b, a)} is a subtraction of two —
+     * an identity {@link Fold} does not apply (it folds structure, never arithmetic on constants) and nothing
+     * downstream does either. Driven, there is no choice, and the subtraction is three instructions outside the
+     * march's inner work.
+     */
     private Expr capsule(Expr p, Surface.Capsule c) {
-        Expr a = Ir.v3(c.ax(), c.ay(), c.az());
-        Expr ba = Ir.v3(c.bx() - c.ax(), c.by() - c.ay(), c.bz() - c.az());
+        Expr a = Ir.v3(expr(c.ax()), expr(c.ay()), expr(c.az()));
+        Expr ba = Scalar.allLit(c.ax(), c.ay(), c.az(), c.bx(), c.by(), c.bz())
+                ? Ir.v3(c.bx().literal() - c.ax().literal(),
+                        c.by().literal() - c.ay().literal(),
+                        c.bz().literal() - c.az().literal())
+                : Ir.sub(Ir.v3(expr(c.bx()), expr(c.by()), expr(c.bz())), a);
         Expr pa = Fold.sub(p, a);
         Expr h = Ir.clamp(Ir.div(Ir.dot(pa, ba), Ir.dot(ba, ba)), Ir.f(0.0), Ir.f(1.0));
-        return Fold.sub(Ir.length(Fold.sub(pa, Fold.scale(ba, h))), Ir.f(c.radius()));
+        return Fold.sub(Ir.length(Fold.sub(pa, Fold.scale(ba, h))), expr(c.radius()));
     }
 
     /**
@@ -662,14 +812,15 @@ public final class SurfaceCompiler {
 
     /** Exact sphere: the primitive, reachable from {@link #stroke} as well as from the tree. */
     private Expr sphere(Expr p, Surface.Sphere s) {
-        return Fold.sub(Ir.length(Fold.sub(p, Ir.v3(s.cx(), s.cy(), s.cz()))), Ir.f(s.radius()));
+        return Fold.sub(Ir.length(Fold.sub(p, Ir.v3(expr(s.cx()), expr(s.cy()), expr(s.cz())))),
+                expr(s.radius()));
     }
 
     /** Exact torus: distance in the (radial, axial) plane of the ring, less the tube radius. */
     private Expr torus(Expr p, Surface.Torus t) {
-        Expr local = Fold.sub(p, Ir.v3(t.cx(), t.cy(), t.cz()));
-        Expr radial = Fold.sub(Ir.length(Ir.v2(Ir.x(local), Ir.z(local))), Ir.f(t.major()));
-        return Fold.sub(Ir.length(Ir.v2(radial, Ir.y(local))), Ir.f(t.minor()));
+        Expr local = Fold.sub(p, Ir.v3(expr(t.cx()), expr(t.cy()), expr(t.cz())));
+        Expr radial = Fold.sub(Ir.length(Ir.v2(Ir.x(local), Ir.z(local))), expr(t.major()));
+        return Fold.sub(Ir.length(Ir.v2(radial, Ir.y(local))), expr(t.minor()));
     }
 
 }

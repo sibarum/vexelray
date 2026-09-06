@@ -18,6 +18,7 @@ import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.shader.ShaderComposer;
 import dev.vexelray.shader.ShadingPoint;
 import dev.vexelray.surface.Field;
+import dev.vexelray.surface.ParamBlock;
 import dev.vexelray.ir.Ir;
 import dev.vexelray.surface.SurfaceCompiler;
 
@@ -45,8 +46,32 @@ import java.util.List;
  */
 public final class SdfComposer implements ShaderComposer<SdfScene> {
 
-    /** Push-constant block size in bytes: {@code camX, camY, camZ, yaw, pitch, aspect} as six floats. */
+    /** The camera's own share of the push-constant block: {@code camX, camY, camZ, yaw, pitch, aspect}. */
     public static final int CAMERA_BYTES = 24;
+
+    /**
+     * Members the block spends before the first parameter: the camera's six, and {@code focalLength}.
+     *
+     * <p>The lens joins the block rather than staying a compile-time constant because it costs one member and
+     * removes a whole class of recompile: two scenes that differ only in focal length now share a pipeline, and
+     * a lens can be dragged at frame rate. It is the same mechanism as a surface parameter, proving it reaches
+     * scene-level values and not only {@link dev.vexelray.surface.Surface} numerics.
+     */
+    public static final int FIRST_PARAM_MEMBER = 7;
+
+    /**
+     * The most parameters that fit in push constants: {@code (128 - 28) / 4}.
+     *
+     * <p>128 bytes is Vulkan's <em>guaranteed floor</em> for {@code maxPushConstantsSize}, not a measurement —
+     * nothing here queries the device, deliberately. A document must not be scaled on a per-device number: one
+     * authored where the driver reports 256 would fail to open where it reports 128, and it would fail at load
+     * time. So the floor is the cap, and a design that outgrows it moves to the parameter buffer (P0b) rather
+     * than to a bigger block.
+     *
+     * <p>It is spent faster than it reads: a sphere is four numbers and a translate is three, so a tree of
+     * twenty primitives wants north of a hundred.
+     */
+    public static final int MAX_PUSH_CONSTANT_PARAMS = (128 - (FIRST_PARAM_MEMBER * 4)) / 4;
 
     /** The name of the generated field function, for hosts that lower the same module on the CPU. */
     public static final String SDF_FUNCTION = "sdf";
@@ -86,11 +111,78 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     }
 
     /**
+     * The scene's parameters, in slot order, with their values at the initials the surface declared.
+     *
+     * <p>What a host holds on to: build sliders from {@link ParamBlock#params()}, write through
+     * {@link ParamBlock#write}, and hand it back to {@link #pushConstantBytes} each frame. It is deliberately a
+     * fresh block per call — values live in the object, so a caller that wanted to keep its values must keep the
+     * object, and {@link ParamBlock#carryFrom} is how they cross a recompile.
+     *
+     * @throws IllegalArgumentException by name if the scene has more parameters than push constants hold
+     */
+    public static ParamBlock paramBlock(SdfScene scene) {
+        ParamBlock block = ParamBlock.of(scene.surface());
+        if (block.size() > MAX_PUSH_CONSTANT_PARAMS) {
+            throw new IllegalArgumentException(
+                    "surface has " + block.size() + " parameters and push constants hold "
+                            + MAX_PUSH_CONSTANT_PARAMS + " (Vulkan's guaranteed 128 bytes, less "
+                            + (FIRST_PARAM_MEMBER * 4) + " for the camera and lens); this is the point at which "
+                            + "the block moves to a storage buffer — see P0b in the designer's implementation "
+                            + "plan");
+        }
+        return block;
+    }
+
+    /**
+     * The one push-constant block this composer emits: the camera, the lens, then the scene's parameters in
+     * slot order.
+     *
+     * <p>One block, because SPIR-V permits one. The parameters share it with the camera rather than having a
+     * block of their own, which is what makes P0a reachable with no Vulkan work at all — the same
+     * {@code vkCmdPushConstants} the camera already used carries them.
+     */
+    private static PushConstants pushConstants(ParamBlock params) {
+        List<PushConstants.Member> members = new ArrayList<>(FIRST_PARAM_MEMBER + params.size());
+        members.add(new PushConstants.Member("camX", F32));
+        members.add(new PushConstants.Member("camY", F32));
+        members.add(new PushConstants.Member("camZ", F32));
+        members.add(new PushConstants.Member("yaw", F32));
+        members.add(new PushConstants.Member("pitch", F32));
+        members.add(new PushConstants.Member("aspect", F32));
+        members.add(new PushConstants.Member("focalLength", F32));
+        for (int i = 0; i < params.size(); i++) {
+            members.add(new PushConstants.Member("p" + i, F32));
+        }
+        return new PushConstants(members);
+    }
+
+    /**
+     * The scene lowered: its field, and the block its parameters were resolved against.
+     *
+     * <p>Both halves come from one place because they have to agree — a {@code PushConstantRead} carries the
+     * whole block by value, so a field compiled against a block built a second time is only equal to the
+     * fragment's reads if both were built the same way. Deterministic slot order (see {@link ParamBlock}) is
+     * what makes that true rather than lucky.
+     */
+    private static Lowered lower(SdfScene scene) {
+        ParamBlock params = paramBlock(scene);
+        PushConstants block = pushConstants(params);
+        Field field = SurfaceCompiler.compile(scene.surface(), params.inPushConstants(block, FIRST_PARAM_MEMBER));
+        return new Lowered(field, params, block);
+    }
+
+    private record Lowered(Field field, ParamBlock params, PushConstants block) {
+    }
+
+    /**
      * The scene's distance field as a standalone {@code float sdf(vec3)} — the same function the fragment calls,
      * exposed so a host can lower it to the CPU and collide against exactly what it draws.
+     *
+     * <p>A parametric scene's function reads push constants, so a CPU lowering of it needs the same values the
+     * shader is given; a scene of literals lowers to precisely what it always did.
      */
     public static Function sdfFunction(SdfScene scene) {
-        return SurfaceCompiler.compile(scene.surface()).asFunction(SDF_FUNCTION);
+        return lower(scene).field().asFunction(SDF_FUNCTION);
     }
 
     /**
@@ -102,7 +194,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * one — is not that.
      */
     public static Function albedoFunction(SdfScene scene) {
-        Field field = SurfaceCompiler.compile(scene.surface());
+        Field field = lower(scene).field();
         return field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null;
     }
 
@@ -114,15 +206,55 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     /** The compiled field, if a caller wants the Lipschitz bound along with the expression. */
     public static Field field(SdfScene scene) {
-        return SurfaceCompiler.compile(scene.surface());
+        return lower(scene).field();
+    }
+
+    /** How many bytes {@code scene}'s block occupies — camera, lens, and one float per parameter. */
+    public static int pushBytes(SdfScene scene) {
+        return (FIRST_PARAM_MEMBER + paramBlock(scene).size()) * 4;
     }
 
     /**
-     * The camera push-constant block, little-endian, matching the layout the generated fragment reads.
+     * The whole push-constant block, little-endian, matching the layout the generated fragment reads: the
+     * camera, the lens, then {@code values} in slot order.
+     *
+     * <p>Values are written through {@link ParamBlock}, by identity, and never by an offset a caller computed —
+     * see that class on why an offset must not cross this boundary.
      *
      * @param aspect viewport width divided by height; kept a push constant so a window resize does not
      *               recompile the shader
+     * @param values the scene's parameters, from {@link #paramBlock}; must declare the same parameters in the
+     *               same slots as the scene being rendered
      */
+    public static byte[] pushConstantBytes(SdfScene scene, double x, double y, double z,
+                                           double yaw, double pitch, double aspect, ParamBlock values) {
+        ParamBlock expected = paramBlock(scene);
+        if (!expected.sameLayout(values)) {
+            throw new IllegalArgumentException(
+                    "these values were built for a different surface: the scene declares " + expected
+                            + " and the block holds " + values + "; rebuild it with paramBlock(scene) and carry "
+                            + "the old values across with ParamBlock.carryFrom");
+        }
+        float[] params = values.floats();
+        ByteBuffer buffer = ByteBuffer.allocate((FIRST_PARAM_MEMBER + params.length) * 4)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putFloat((float) x).putFloat((float) y).putFloat((float) z);
+        buffer.putFloat((float) yaw).putFloat((float) pitch).putFloat((float) aspect);
+        buffer.putFloat((float) scene.focalLength());
+        for (float value : params) {
+            buffer.putFloat(value);
+        }
+        return buffer.array();
+    }
+
+    /**
+     * The camera's six floats alone.
+     *
+     * @deprecated The block is no longer six floats: it carries {@code focalLength} and the scene's parameters
+     *         after them, and pushing only this leaves those members unwritten — a lens of whatever was last in
+     *         the command buffer. Use {@link #pushConstantBytes}, which needs the scene and the values anyway.
+     */
+    @Deprecated
     public static byte[] cameraBytes(double x, double y, double z, double yaw, double pitch, double aspect) {
         ByteBuffer buffer = ByteBuffer.allocate(CAMERA_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         buffer.putFloat((float) x).putFloat((float) y).putFloat((float) z);
@@ -134,7 +266,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     public static byte[] fragmentSpirv(SdfScene scene) {
         // Compiled once and used twice: the field the march walks, and — only if a surface asked for it — the
         // colour read at the hit point.
-        Field field = SurfaceCompiler.compile(scene.surface());
+        Field field = lower(scene).field();
         return fragmentSpirv(scene, field.asFunction(SDF_FUNCTION),
                 field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null);
     }
@@ -163,16 +295,14 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
         InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, Ir.V4);
-        PushConstants camera = new PushConstants(List.of(
-                new PushConstants.Member("camX", F32),
-                new PushConstants.Member("camY", F32),
-                new PushConstants.Member("camZ", F32),
-                new PushConstants.Member("yaw", F32),
-                new PushConstants.Member("pitch", F32),
-                new PushConstants.Member("aspect", F32)));
+        // The same block the field was compiled against — rebuilt rather than passed in, because a
+        // PushConstantRead carries its block by value and slot order is deterministic, so the two agree by
+        // construction. A caller supplying its own sdf gets the block its scene describes, which is what keeps
+        // a buffer-driven field (see the note above) reading the same camera it always did.
+        PushConstants camera = pushConstants(paramBlock(scene));
 
         Expr eye = Ir.v3(camera.read(0), camera.read(1), camera.read(2));
-        Expr rayDirection = primaryRay(vUv, camera.read(3), camera.read(4), camera.read(5), scene.focalLength());
+        Expr rayDirection = primaryRay(vUv, camera.read(3), camera.read(4), camera.read(5), camera.read(6));
 
         LocalVar ro = new LocalVar("ro", Ir.V3);
         LocalVar rd = new LocalVar("rd", Ir.V3);
@@ -226,12 +356,11 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * <p>Horizontal screen coordinates are scaled by the aspect ratio, so a wide window shows more of the world
      * sideways rather than stretching what it already had.
      */
-    private static Expr primaryRay(InterfaceVar vUv, Expr yaw, Expr pitch, Expr aspect, double focalLength) {
+    private static Expr primaryRay(InterfaceVar vUv, Expr yaw, Expr pitch, Expr aspect, Expr focal) {
         Expr u = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 0);
         Expr v = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 1);
         Expr sx = Ir.mul(Ir.sub(Ir.mul(u, Ir.f(2.0)), Ir.f(1.0)), aspect);
         Expr sy = Ir.sub(Ir.f(1.0), Ir.mul(v, Ir.f(2.0)));
-        Expr focal = Ir.f(focalLength);
 
         Expr cosPitch = Expr.MathCall.cos(pitch);
         Expr sinPitch = Expr.MathCall.sin(pitch);
