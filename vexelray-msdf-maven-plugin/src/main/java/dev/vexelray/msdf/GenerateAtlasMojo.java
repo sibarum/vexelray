@@ -50,6 +50,17 @@ public class GenerateAtlasMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.build.directory}/vexelray-msdf")
     private File workDir;
 
+    /**
+     * Fail the build when a charset asks for codepoints the font does not have, rather than warning.
+     *
+     * <p>Off by default because a partially covered range is usually a deliberate trade — asking for all of
+     * Latin Extended-A and accepting whatever the face carries is reasonable. On, it is the guard for an atlas
+     * whose exact coverage something depends on: an icon vocabulary cannot be specified against a font that
+     * silently declines half of it.
+     */
+    @Parameter(property = "msdf.failOnMissingGlyphs", defaultValue = "false")
+    private boolean failOnMissingGlyphs;
+
     @Override
     public void execute() throws MojoExecutionException {
         if (atlases == null || atlases.isEmpty()) {
@@ -128,6 +139,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
         if (isUpToDate(cfg, pngOut, jsonOut)) {
             getLog().info("Atlas '" + cfg.name + "' is up to date — skipping.");
             bakeNotdef(cfg, pngOut, jsonOut);
+            reportCoverage(cfg, jsonOut);
             return;
         }
 
@@ -140,6 +152,63 @@ public class GenerateAtlasMojo extends AbstractMojo {
         getLog().info("Atlas '" + cfg.name + "' generated: " + pngOut.length() + " bytes png + "
                 + jsonOut.length() + " bytes json");
         bakeNotdef(cfg, pngOut, jsonOut);
+        reportCoverage(cfg, jsonOut);
+    }
+
+    /**
+     * Diff every charset this atlas requested against the glyphs it actually produced, and say what the font
+     * did not cover.
+     *
+     * <p>Deliberately also on the up-to-date path above. A warning that appears only on the build that
+     * regenerates the atlas is a warning nobody sees: the atlas is regenerated once, months ago, and every
+     * build anyone is actually watching takes the skip. Reading the JSON is cheap and the report is the same
+     * either way, so there is no reason for the two paths to disagree about what they say.
+     */
+    private void reportCoverage(AtlasConfig cfg, File jsonOut) throws MojoExecutionException {
+        String json;
+        try {
+            json = Files.readString(jsonOut.toPath(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            // Said, not swallowed: without the JSON this check answers "nothing missing" about an atlas it
+            // never read, which is exactly the confident wrong answer it exists to prevent.
+            getLog().warn("Atlas '" + cfg.name + "': could not read " + jsonOut.getName()
+                    + " to check glyph coverage (" + e.getMessage() + ") — coverage is unverified.");
+            return;
+        }
+
+        boolean anyMissing = false;
+        List<String> charsets = new ArrayList<>();
+        charsets.add(cfg.charset);
+        for (AtlasConfig.ExtraFont extra : extraFonts(cfg)) {
+            charsets.add(extra.charset);
+        }
+        for (int i = 0; i < charsets.size(); i++) {
+            String face = i == 0 ? cfg.font.getName() : extraFonts(cfg).get(i - 1).font.getName();
+            CharsetCoverage.Coverage coverage =
+                    CharsetCoverage.measure(resolveCharsetContent(charsets.get(i)), json);
+            for (String token : coverage.unparsed()) {
+                getLog().warn("Atlas '" + cfg.name + "' (" + face + "): charset token '" + token
+                        + "' was not understood, so those codepoints are unchecked.");
+            }
+            List<String> ranges = coverage.missingRanges();
+            if (ranges.isEmpty()) {
+                getLog().info("Atlas '" + cfg.name + "' (" + face + "): all "
+                        + coverage.requested().size() + " requested codepoints are present.");
+                continue;
+            }
+            anyMissing = true;
+            getLog().warn("Atlas '" + cfg.name + "' (" + face + "): " + coverage.missing().size()
+                    + " of " + coverage.requested().size()
+                    + " requested codepoints are NOT in the atlas — the font does not have them, and text"
+                    + " using them will draw the missing-glyph box:");
+            for (String range : ranges) {
+                getLog().warn("    " + range);
+            }
+        }
+        if (anyMissing && failOnMissingGlyphs) {
+            throw new MojoExecutionException("Atlas '" + cfg.name
+                    + "' is missing requested glyphs and failOnMissingGlyphs is set.");
+        }
     }
 
     private void bakeNotdef(AtlasConfig cfg, File pngOut, File jsonOut) throws MojoExecutionException {

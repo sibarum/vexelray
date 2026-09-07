@@ -407,6 +407,11 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         return descriptorSetLayout;
     }
 
+    @Override
+    public VulkanDevice device() {
+        return device;
+    }
+
     /** The {@code VkDescriptorSet} to bind before drawing (set 0). */
     public long descriptorSet() {
         return descriptorSet;

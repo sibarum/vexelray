@@ -36,6 +36,11 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-surface</artifactId>
         </dependency>
+        <!-- So a technique can say when it has been handed something it cannot render. See ConeField.compose. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-diagnostics</artifactId>
+        </dependency>
         <!-- ShaderComposer/ComposedShader/ShaderKey/ShaderCache, and the Shading half of the lighting model. -->
         <dependency>
             <groupId>dev.vexelray</groupId>

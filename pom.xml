@@ -19,6 +19,9 @@
     </description>
 
     <modules>
+        <!-- One class: how a seam tells a consumer it has silently dropped something the consumer asked for.
+             Depends on nothing at all, so any module can reach it. -->
+        <module>vexelray-diagnostics</module>
         <!-- The terse vocabulary for authoring SupirVast core IR by hand. Depends on nothing but vastir; the
              layer below every module that emits a shader. -->
         <module>vexelray-ir</module>
@@ -82,6 +85,11 @@
                 <version>1.0-SNAPSHOT</version>
             </dependency>
             <!-- Reactor-internal modules: children reference these without a version. -->
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-diagnostics</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-ir</artifactId>

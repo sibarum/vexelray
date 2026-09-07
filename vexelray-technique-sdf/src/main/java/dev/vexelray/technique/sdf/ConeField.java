@@ -12,8 +12,10 @@ import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.tools.Fullscreen;
 import dev.vexelray.shader.ComposedShader;
 import dev.supirvast.vastir.type.Type;
+import dev.vexelray.diag.Diagnostics;
 import dev.vexelray.ir.Ir;
 import dev.vexelray.surface.Cones;
+import dev.vexelray.surface.SurfaceCompiler;
 
 /**
  * A distance field whose geometry is <b>data</b>: a {@code float sdf(vec3)} that loops over round cones read from
@@ -149,16 +151,60 @@ public final class ConeField {
      * the frame comes out one flat colour, and the module is still perfectly valid SPIR-V that passes
      * {@code spirv-val}. See the note on {@link SdfComposer#compose}.
      *
-     * <p>{@code scene.surface()} is not compiled — the field comes from {@link #sdfFunction} and the buffer.
-     * Everything else about the picture is read from the scene as usual.
+     * <p>{@code scene.surface()} is not compiled <em>into the field</em> — that comes from {@link #sdfFunction}
+     * and the buffer. Everything else about the picture is read from the scene as usual, and the surface is
+     * compiled once here for {@link #reportUnrenderableColour}, which is the only thing that reads it.
      */
     public static java.util.List<ComposedShader> compose(SdfScene scene) {
+        reportUnrenderableColour(scene);
         return java.util.List.of(
                 new ComposedShader(ShaderStage.VERTEX, Fullscreen.triangleVertexWithUvSpirv(),
                         Fullscreen.ENTRY_POINT),
                 new ComposedShader(ShaderStage.FRAGMENT,
                         SdfComposer.fragmentSpirv(scene, sdfFunction(SdfComposer.SDF_FUNCTION), null),
                         Fullscreen.ENTRY_POINT));
+    }
+
+    /**
+     * Say so if the scene carries colour this technique cannot render.
+     *
+     * <p>The albedo function passed above is unconditionally {@code null}, because the buffer has no colour
+     * channel: {@link Cones#flatten} writes eight floats per cone and every one of them is geometry. A surface
+     * whose vertices were painted therefore renders in the scene's single albedo, and <b>the frame that comes
+     * out is a perfectly good picture</b> — which is exactly the problem. A consumer who built a colour ramp, a
+     * picker and per-vertex painting watches all of it render, in one colour, and reads that as the plot being
+     * dim rather than as a capability that was dropped. It was found by making a ramp deliberately achromatic
+     * and noticing that nothing changed.
+     *
+     * <p>Compiling the surface to ask is affordable in a way that compiling it into the shader would not be:
+     * this runs once per <em>pipeline</em>, not per frame — the whole reason this lane exists is that the
+     * SPIR-V is the same bytes whatever the buffer holds — and building that pipeline was measured at five
+     * seconds. Against that, one compile is noise. (The cheaper form is a predicate on {@code Surface} itself,
+     * which is where this belongs once there is one; it is a method on the type rather than a walk over it, so
+     * it is a change to make in that module rather than from here.)
+     *
+     * <p>A compile can fail — a surface holding an unbound parameter has nowhere to read it from. That is
+     * reported too rather than swallowed: a diagnostic that fails quietly is the thing being fixed, and one
+     * that throws would take the render down over a warning.
+     */
+    private static void reportUnrenderableColour(SdfScene scene) {
+        boolean carries;
+        try {
+            carries = SurfaceCompiler.compile(scene.surface()).hasAlbedo();
+        } catch (RuntimeException e) {
+            Diagnostics.dropped("ConeField.compose/albedoCheck",
+                    "the check for colour this technique cannot render",
+                    "the surface did not compile (" + e.getMessage() + "); the march is unaffected, but"
+                            + " whether it drops colour is now unknown");
+            return;
+        }
+        if (carries) {
+            Diagnostics.dropped("ConeField.compose/albedo",
+                    "per-vertex colour on the surface",
+                    "a cone field's buffer carries geometry only, so the march has no albedo to read and"
+                            + " every cone renders in the scene's single albedo — the picture will look"
+                            + " deliberate rather than wrong");
+        }
     }
 
     /**

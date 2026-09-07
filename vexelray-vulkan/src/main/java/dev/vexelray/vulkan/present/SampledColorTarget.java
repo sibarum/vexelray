@@ -385,6 +385,11 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
         return descriptorSetLayout;
     }
 
+    @Override
+    public VulkanDevice device() {
+        return device;
+    }
+
     /** The {@code VkDescriptorSet} a downstream pipeline binds to sample this target. */
     public long descriptorSet() {
         return descriptorSet;
