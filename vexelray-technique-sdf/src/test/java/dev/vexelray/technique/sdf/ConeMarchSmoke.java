@@ -1,12 +1,9 @@
-package dev.vexelray.vulkan;
+package dev.vexelray.technique.sdf;
 
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.surface.Cones;
 import dev.vexelray.surface.Surface;
-import dev.vexelray.technique.sdf.ConeField;
-import dev.vexelray.technique.sdf.SdfComposer;
-import dev.vexelray.technique.sdf.SdfScene;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
 import dev.vexelray.vulkan.present.StorageBuffer;
 import dev.vexelray.vulkan.vk.VulkanDevice;

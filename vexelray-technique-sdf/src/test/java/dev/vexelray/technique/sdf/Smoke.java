@@ -1,4 +1,4 @@
-package dev.vexelray.vulkan;
+package dev.vexelray.technique.sdf;
 
 import java.util.ArrayList;
 import java.util.List;

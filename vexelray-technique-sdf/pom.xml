@@ -55,5 +55,80 @@
             <groupId>dev.supirvast</groupId>
             <artifactId>vastir-tools</artifactId>
         </dependency>
+
+        <!--
+          The runtime this technique plugs into. Two edges arrive together and neither is avoidable:
+          vexelray-engine-api for the RenderTechnique SPI, and vexelray-engine for VulkanTechniqueContext, which
+          is the Vulkan-bearing subtype a technique must cast to in order to reach a device and build a pipeline
+          (docs/refactor-decisions.md D3).
+
+          Depending on the engine implementation is the cost of the deferred backend abstraction, paid where it
+          is visible. The alternative — putting VulkanTechniqueContext in vexelray-vulkan — would make the
+          substrate depend on the public API above it, which is worse.
+
+          This is also why the march smokes moved here from vexelray-vulkan's test scope: the substrate cannot
+          test-depend on a technique that compile-depends on the substrate, and the pom comment that used to sit
+          on that dependency was already right about why it should not.
+        -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Test-only: the march smokes render headlessly and count pixels. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-os-api</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <profiles>
+        <!-- The march smokes open a device, so the host platform's provider is needed at test runtime. -->
+        <profile>
+            <id>platform-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation>
+                <os><family>unix</family><name>linux</name></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation>
+                <os><family>mac</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

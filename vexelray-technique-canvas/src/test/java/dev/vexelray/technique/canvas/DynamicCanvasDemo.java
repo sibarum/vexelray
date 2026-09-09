@@ -1,4 +1,4 @@
-package dev.vexelray.vulkan;
+package dev.vexelray.technique.canvas;
 
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.CanvasShader;

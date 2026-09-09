@@ -11,36 +11,46 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>vexelray-vulkan</artifactId>
+    <artifactId>vexelray-technique-canvas</artifactId>
 
     <description>
-        The Panama Vulkan runtime: hand-rolled bindings to the Vulkan loader (vulkan-1) plus the concrete
-        RuntimeManager/ResourceManager that own VexelRay's device, swapchain, and frame loop. Depends on the
-        platform-agnostic OS API for windowing/surface, and on exactly one platform module chosen at build time
-        by the host OS (the selection profiles below). Follows docs/native-bindings.md.
+        The 2D canvas as a RenderTechnique: it owns the uber-shader pipeline, the vertex buffer, and the atlas,
+        and records a Canvas batch into a frame the runtime began — so 2D chrome can share a frame with a marched
+        scene instead of owning the window.
+
+        A separate module from vexelray-canvas on purpose. Canvas itself is a pure geometry batcher with no
+        Vulkan and no runtime: it builds a fat-vertex array and a list of runs, which is exactly what makes it
+        testable headlessly and reusable by a different backend. Putting the technique here keeps that true, and
+        matches the vexelray-technique-* convention the architecture uses for renderable kinds.
     </description>
 
     <dependencies>
         <dependency>
-            <groupId>sibarum.atchung</groupId>
-            <artifactId>atchung-probe</artifactId>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-canvas</artifactId>
+            <version>${project.version}</version>
         </dependency>
-        <!-- Always: the platform-agnostic native API (Ffi helper, NativePlatform, NativeWindow). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- For VulkanTechniqueContext — the Vulkan-bearing subtype a technique casts to (D3). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Test-only: the demos below open windows and need the platform provider at runtime. -->
         <dependency>
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-os-api</artifactId>
-        </dependency>
-
-        <!-- Test-only: compose real SPIR-V (SupirVast core IR -> lowering) to feed the graphics pipeline in the
-             offscreen render smoke. The runtime module itself consumes only SPIR-V byte[], never the composer. -->
-        <dependency>
-            <groupId>dev.vexelray</groupId>
-            <artifactId>vexelray-shader</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>dev.supirvast</groupId>
-            <artifactId>vastir</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -50,12 +60,6 @@
         </dependency>
     </dependencies>
 
-    <!--
-      Build-time platform selection (docs/native-bindings.md §3.1). Exactly one profile activates, from the host
-      OS family, and adds that platform's provider module at runtime scope. This is the ONE place a concrete
-      platform module is depended on — keeping it out of core/shader. ServiceLoader then finds the single
-      NativePlatform provider at runtime.
-    -->
     <profiles>
         <profile>
             <id>platform-windows</id>
@@ -66,7 +70,7 @@
                 <dependency>
                     <groupId>dev.vexelray</groupId>
                     <artifactId>vexelray-os-windows</artifactId>
-                    <scope>runtime</scope>
+                    <scope>test</scope>
                 </dependency>
             </dependencies>
         </profile>
@@ -79,7 +83,7 @@
                 <dependency>
                     <groupId>dev.vexelray</groupId>
                     <artifactId>vexelray-os-linux</artifactId>
-                    <scope>runtime</scope>
+                    <scope>test</scope>
                 </dependency>
             </dependencies>
         </profile>
@@ -92,7 +96,7 @@
                 <dependency>
                     <groupId>dev.vexelray</groupId>
                     <artifactId>vexelray-os-macos</artifactId>
-                    <scope>runtime</scope>
+                    <scope>test</scope>
                 </dependency>
             </dependencies>
         </profile>

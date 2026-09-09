@@ -1,4 +1,4 @@
-package dev.vexelray.vulkan;
+package dev.vexelray.technique.canvas;
 
 import dev.supirvast.vastir.core.Builtin;
 import dev.supirvast.vastir.core.CoreModule;

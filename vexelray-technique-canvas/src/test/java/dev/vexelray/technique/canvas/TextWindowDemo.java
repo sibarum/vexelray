@@ -1,4 +1,4 @@
-package dev.vexelray.vulkan;
+package dev.vexelray.technique.canvas;
 
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;

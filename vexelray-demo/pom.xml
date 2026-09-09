@@ -36,6 +36,27 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-vulkan</artifactId>
         </dependency>
+        <!--
+          The runtime and the two techniques a client composes. This is what an application's dependency list is
+          supposed to look like under the pipeline model: the engine (which it reaches only through
+          vexelray-engine-api's VexelEngine.create) plus one module per renderable kind it wants. It names no
+          swapchain, no render pass and no presenter, because it no longer builds any.
+        -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-technique-sdf</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-technique-canvas</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- Runtime shader composition: brings vastir + vastir-tools transitively (Fullscreen, core IR, lowering). -->
         <dependency>
             <groupId>dev.vexelray</groupId>
