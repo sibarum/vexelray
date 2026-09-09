@@ -1,13 +1,19 @@
 package dev.vexelray.engine;
 
+import dev.vexelray.runtime.EngineConfig;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.ServiceLoader;
+
 /**
- * The engine facade an application holds — the front door of the public API. It owns the Vulkan runtime (instance,
+ * The engine facade an application holds — the front door of the public API. It owns the runtime (instance,
  * device, swapchain/offscreen, sync) and the frame loop; the application only composes a {@link RenderPipeline}
  * and supplies per-frame logic. Everything below the pipeline — instance, device, swapchain, sync — is the
  * engine's, never the app's (architecture.md §4).
  *
  * <pre>{@code
- * try (VexelEngine engine = VexelEngine.create(EngineConfig.windowed("Fathom", 800, 600))) {
+ * try (VexelEngine engine = VexelEngine.create(EngineConfig.of("Fathom"))) {
  *     engine.run(pipeline, frame -> {
  *         // read input + advance CPU sim, then feed per-frame data to techniques via their own APIs
  *         sdf.camera(camX, camY, camZ);
@@ -15,11 +21,34 @@ package dev.vexelray.engine;
  * }
  * }</pre>
  *
- * <p>The concrete implementation (a Vulkan runtime manager) lives in {@code vexelray-engine} and is obtained via
- * {@code create(...)} once that module lands; this interface fixes the contract the pipeline/technique layers and
- * client apps compile against first (see docs/refactor-decisions.md, Phase 2).
+ * <p>Note what the example does <em>not</em> say: which runtime is running. {@link #create} resolves an
+ * {@link EngineProvider} through {@link ServiceLoader}, so this module names no implementation and an
+ * application depending on it drags in no Vulkan. That is the property that makes "techniques are open" true of
+ * the runtime as well as of the content.
  */
 public interface VexelEngine extends AutoCloseable {
+
+    /**
+     * Open the engine served by the {@link EngineProvider} on the module path.
+     *
+     * @throws IllegalStateException if no provider is present, or none reports itself available — the message
+     *                               names the providers that <em>were</em> found, because "no engine" and "an
+     *                               engine that declined this machine" are different faults with the same
+     *                               symptom, and a message that cannot tell them apart sends the reader to the
+     *                               wrong half of the stack
+     */
+    static VexelEngine create(EngineConfig config) {
+        List<String> found = new ArrayList<>();
+        for (EngineProvider provider : ServiceLoader.load(EngineProvider.class)) {
+            found.add(provider.name());
+            if (provider.isAvailable()) {
+                return provider.create(config);
+            }
+        }
+        throw new IllegalStateException(found.isEmpty()
+                ? "no EngineProvider on the module path; add a runtime such as vexelray-engine"
+                : "no EngineProvider reported itself available; found but declined: " + found);
+    }
 
     /**
      * Per-frame application hook, invoked once before each frame is recorded. Runs input handling and CPU

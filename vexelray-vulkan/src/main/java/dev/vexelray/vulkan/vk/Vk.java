@@ -177,4 +177,26 @@ public final class Vk {
     // Pipeline stages / access for the sampled-image transition
     public static final int PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x0080;
     public static final int ACCESS_SHADER_READ_BIT = 0x0020;
+
+    // Depth. The shared depth attachment is what lets two techniques occlude each other instead of merely
+    // painting over one another, so these arrive together with DepthAttachment and the render pass's second slot.
+    public static final int FORMAT_D32_SFLOAT = 126;
+    public static final int FORMAT_D24_UNORM_S8_UINT = 129;
+    public static final int FORMAT_D32_SFLOAT_S8_UINT = 130;
+    public static final int IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3;
+    public static final int IMAGE_ASPECT_DEPTH_BIT = 0x0002;
+    public static final int IMAGE_ASPECT_STENCIL_BIT = 0x0004;
+    public static final int IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT = 0x0020;
+    public static final int ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT = 0x0200;
+    public static final int ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT = 0x0400;
+    // Depth is written in the fragment-test stages, not COLOR_ATTACHMENT_OUTPUT. A subpass dependency that
+    // names only the colour stage lets the next frame's depth clear race this frame's depth writes, which reads
+    // as intermittent z-fighting on geometry that is not moving — so both tests belong in the mask.
+    public static final int PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT = 0x0100;
+    public static final int PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT = 0x0200;
+    public static final int STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO = 25;
+    public static final int COMPARE_OP_NEVER = 0;
+    public static final int COMPARE_OP_LESS = 1;
+    public static final int COMPARE_OP_LESS_OR_EQUAL = 3;
+    public static final int COMPARE_OP_ALWAYS = 7;
 }

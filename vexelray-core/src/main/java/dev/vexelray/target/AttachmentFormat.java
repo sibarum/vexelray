@@ -1,4 +1,4 @@
-package dev.vexelray.pipeline;
+package dev.vexelray.target;
 
 /**
  * A format for a render-target or depth attachment, abstract over the concrete {@code VkFormat} the runtime

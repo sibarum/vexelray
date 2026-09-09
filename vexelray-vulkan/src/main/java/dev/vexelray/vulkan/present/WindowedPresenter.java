@@ -109,10 +109,39 @@ public final class WindowedPresenter implements AutoCloseable {
     public interface Frame {
         void update(double dtSeconds, MemorySegment pushConstants);
     }
+
+    /**
+     * Per-frame hook that records the <em>contents</em> of the render pass — the seam that turns this class from
+     * "present one pipeline" into "present whatever a caller draws."
+     *
+     * <p>Everything this presenter is careful about — the fence, the image acquire, the two semaphores, the
+     * submit, the present, the out-of-date rebuild — stays here. What moves out is the eight commands between
+     * {@code vkCmdBeginRenderPass} and {@code vkCmdEndRenderPass}. That division is not a refactor for
+     * tidiness: it is precisely the line between what every renderer needs identically and what each one needs
+     * differently, and until it existed a frame could contain exactly one pipeline, so no two features in this
+     * repository could appear in the same window.
+     *
+     * <p>The command buffer arrives inside a begun render pass with <b>nothing bound</b> — no pipeline, no
+     * descriptor sets, no vertex buffer, no dynamic viewport. A recorder binds what it needs, per pipeline it
+     * draws with, in the order it wants them composited. It must not begin or end the render pass, submit, or
+     * touch the swapchain.
+     *
+     * <p>{@code width} and {@code height} are this frame's extent, which is not the extent the pipeline was
+     * built at: a resize changes it without rebuilding anything. A recorder whose pipelines declared dynamic
+     * viewport must set viewport and scissor from these, every frame.
+     */
+    @FunctionalInterface
+    public interface Recorder {
+        void record(MemorySegment commandBuffer, int width, int height);
+    }
     private final long imageAvailable, renderFinished, inFlight, pool;
     private final MemorySegment cmd;
 
     private SwapchainFramebuffers framebuffers;
+    /** The depth format this presenter's render pass was built with, or {@link VulkanRenderPass#NO_DEPTH}. */
+    private final int depthFormat;
+    /** The depth image behind {@link #framebuffers}, or null for a colour-only pass. Replaced on resize. */
+    private DepthAttachment depth;
     // Teardown happens once. Destroying an already-destroyed VkCommandPool (or fence, or semaphore) is undefined
     // behaviour that corrupts the loader's own heap — the same heap the device dispatch table lives on — so the
     // symptom surfaces much later, as a call through an entry point that is no longer code. Being idempotent is far
@@ -174,9 +203,44 @@ public final class WindowedPresenter implements AutoCloseable {
         this.vertexCount = total;
     }
 
+    /**
+     * A presenter over a colour-only render pass, drawing one pipeline — the spelling every caller predating
+     * depth and techniques uses, and what it still does.
+     */
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              GraphicsPipeline pipeline, NativeWindow window) {
+        this(device, swapchain, renderPass, pipeline, window, VulkanRenderPass.NO_DEPTH);
+    }
+
+    /**
+     * A presenter that also owns a depth attachment, when {@code depthFormat} is not
+     * {@link VulkanRenderPass#NO_DEPTH}.
+     *
+     * <p>The presenter owns the depth image rather than receiving one, and it must: depth is sized to the
+     * extent, so it has to be recreated on every resize, and the only thing here that knows a resize happened
+     * is {@link #rebuild()}. Handing in a {@code DepthAttachment} would leave the caller holding an object the
+     * presenter has to replace behind its back — which works right up until someone keeps the old handle.
+     *
+     * <p>{@code depthFormat} must agree with what {@code renderPass} was built with. It is passed separately
+     * because the presenter is given a render-pass <em>handle</em>, and a handle cannot be asked.
+     */
+    /**
+     * A presenter with <b>no pipeline of its own</b>, for a caller that always supplies a {@link Recorder}.
+     *
+     * <p>An engine driving techniques has no single pipeline to name — that is the point of it — and passing
+     * null to the constructor above would leave a field that is fine until someone calls a {@code run} overload
+     * without a recorder and gets a null dereference inside a command buffer. This spelling says the pipeline
+     * is absent, and the recorder-less paths refuse rather than crash.
+     */
+    public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
+                             NativeWindow window, int depthFormat) {
+        this(device, swapchain, renderPass, null, window, depthFormat);
+    }
+
+    public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
+                             GraphicsPipeline pipeline, NativeWindow window, int depthFormat) {
         Probe.opened(Lane.GPU, "WindowedPresenter", this);
+        this.depthFormat = depthFormat;
         this.device = device;
         this.dev = device.handle();
         this.swapchain = swapchain;
@@ -219,7 +283,11 @@ public final class WindowedPresenter implements AutoCloseable {
         this.inFlight = createFenceSignaled(createFence);
         this.pool = createPool(createPool);
         this.cmd = allocateCommandBuffer(allocCmd);
-        this.framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
+        this.depth = depthFormat == VulkanRenderPass.NO_DEPTH
+                ? null
+                : new DepthAttachment(device, swapchain.width(), swapchain.height());
+        this.framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass,
+                depth == null ? SwapchainFramebuffers.NO_DEPTH_VIEW : depth.view());
     }
 
     /** Run until the window closes, or until {@code maxFrames} presented if {@code maxFrames > 0}. No push constants. */
@@ -235,8 +303,16 @@ public final class WindowedPresenter implements AutoCloseable {
      * {@code frame} on each of its presenters per iteration instead.
      */
     public void run(int maxFrames, int pushConstantBytes, Frame perFrame) {
+        run(maxFrames, pushConstantBytes, perFrame, null);
+    }
+
+    /**
+     * The present loop with the render pass's <em>recording</em> delegated to {@code recorder} rather than done
+     * by this class — how several techniques get into one frame. See {@link Recorder}.
+     */
+    public void run(int maxFrames, int pushConstantBytes, Frame perFrame, Recorder recorder) {
         int frame = 0;
-        while ((maxFrames <= 0 || frame < maxFrames) && frame(pushConstantBytes, perFrame)) {
+        while ((maxFrames <= 0 || frame < maxFrames) && frame(pushConstantBytes, perFrame, recorder)) {
             frame++;
         }
         device.waitIdle();
@@ -252,10 +328,15 @@ public final class WindowedPresenter implements AutoCloseable {
      * swapchain, so presenters on a shared {@link VulkanDevice} interleave safely on the calling thread.
      */
     public boolean frame(int pushConstantBytes, Frame perFrame) {
+        return frame(pushConstantBytes, perFrame, null);
+    }
+
+    /** {@link #frame(int, Frame)} with the pass's recording delegated to {@code recorder}. */
+    public boolean frame(int pushConstantBytes, Frame perFrame, Recorder recorder) {
         if (!window.pumpEvents()) {
             return false;
         }
-        return render(pushConstantBytes, perFrame);
+        return render(pushConstantBytes, perFrame, recorder);
     }
 
     /**
@@ -269,25 +350,30 @@ public final class WindowedPresenter implements AutoCloseable {
      * over a single command buffer and fence.
      */
     public boolean render(int pushConstantBytes, Frame perFrame) {
+        return render(pushConstantBytes, perFrame, null);
+    }
+
+    /** {@link #render(int, Frame)} with the pass's recording delegated to {@code recorder}. */
+    public boolean render(int pushConstantBytes, Frame perFrame, Recorder recorder) {
         if (rendering) {
             return true;
         }
         rendering = true;
         try {
-            return renderOnce(pushConstantBytes, perFrame);
+            return renderOnce(pushConstantBytes, perFrame, recorder);
         } finally {
             rendering = false;
         }
     }
 
-    private boolean renderOnce(int pushConstantBytes, Frame perFrame) {
+    private boolean renderOnce(int pushConstantBytes, Frame perFrame, Recorder recorder) {
         try (Zone z = Probe.zone(Lane.GPU, "present frame")) {
-            return renderFrame(pushConstantBytes, perFrame);
+            return renderFrame(pushConstantBytes, perFrame, recorder);
         }
     }
 
     /** The body of {@link #renderOnce}, split out so one probe span covers a whole presented frame. */
-    private boolean renderFrame(int pushConstantBytes, Frame perFrame) {
+    private boolean renderFrame(int pushConstantBytes, Frame perFrame, Recorder recorder) {
         if (state == null) {
             state = new FrameState();
         }
@@ -335,6 +421,19 @@ public final class WindowedPresenter implements AutoCloseable {
         si(s.rpBegin, RENDER_PASS_BEGIN, "area_h", extentH);
         sl(s.rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
         invokeVoid(beginRp, cmd, s.rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
+        if (recorder != null) {
+            // The pass is begun and nothing is bound. Everything between here and endRp belongs to the caller,
+            // which is the whole seam: one render pass, one command buffer, N pipelines bound in turn. This
+            // class keeps acquire, sync, submit and present — the parts a technique must never touch.
+            recorder.record(cmd, extentW, extentH);
+            invokeVoid(endRp, cmd);
+            check(invoke(endCmd, cmd), "vkEndCommandBuffer");
+            return submitAndPresent(s);
+        }
+        if (pipeline == null) {
+            throw new IllegalStateException("this presenter was built without a pipeline, so every frame needs a "
+                    + "Recorder; call a run/frame/render overload that takes one");
+        }
         invokeVoid(bindPipe, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
         // Only set dynamic viewport/scissor when the pipeline declared them dynamic; a fixed-viewport pipeline
         // must not receive these commands.
@@ -380,7 +479,17 @@ public final class WindowedPresenter implements AutoCloseable {
         }
         invokeVoid(endRp, cmd);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
+        return submitAndPresent(s);
+    }
 
+    /**
+     * Submit the recorded command buffer, present it, and handle an out-of-date swapchain — the tail both
+     * recording paths share.
+     *
+     * <p>Extracted rather than duplicated because these are the steps a technique must never own, and two
+     * copies of them is two places for a fence or a semaphore to drift out of agreement.
+     */
+    private boolean submitAndPresent(FrameState s) {
         try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
             check(invoke(submitCmd, device.queue(), 1, s.submit, inFlight), "vkQueueSubmit");
         }
@@ -422,7 +531,10 @@ public final class WindowedPresenter implements AutoCloseable {
         final MemorySegment pDescriptorSet1 = a.allocate(JAVA_LONG);
         final MemorySegment pViewport = a.allocate(VIEWPORT);
         final MemorySegment pScissor = a.allocate(RECT2D);
-        final MemorySegment clear = a.allocate(JAVA_FLOAT, 4);
+        // A VkClearValue is a 16-byte union, and there must be one per attachment the pass clears. With depth
+        // that is two: four floats of colour, then the depth float in the first slot of the second union.
+        // Under-counting here is not a validation error the loader always catches — it reads whatever follows.
+        final MemorySegment clear = a.allocate(JAVA_FLOAT, depthFormat == VulkanRenderPass.NO_DEPTH ? 4 : 8);
         final MemorySegment beginInfo = a.allocate(CMD_BEGIN);
         final MemorySegment rpBegin = a.allocate(RENDER_PASS_BEGIN);
         MemorySegment pushSeg = MemorySegment.NULL;
@@ -459,7 +571,12 @@ public final class WindowedPresenter implements AutoCloseable {
             si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
             si(rpBegin, RENDER_PASS_BEGIN, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
             sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", renderPass);
-            si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
+            if (depthFormat != VulkanRenderPass.NO_DEPTH) {
+                clear.setAtIndex(JAVA_FLOAT, 4, DepthAttachment.CLEAR_DEPTH);
+                si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 2);
+            } else {
+                si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
+            }
             sa(rpBegin, RENDER_PASS_BEGIN, "pClearValues", clear);
         }
     }
@@ -472,7 +589,15 @@ public final class WindowedPresenter implements AutoCloseable {
             device.waitIdle();
             framebuffers.close();
             swapchain.recreate(window.width(), window.height());
-            framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
+            // Depth is sized to the extent, so it goes with the framebuffers. Only when the extent actually
+            // changed: a rebuild triggered by OUT_OF_DATE on an unchanged window (which happens) would
+            // otherwise destroy and reallocate a full-screen image for nothing.
+            if (depth != null && !depth.matches(swapchain.width(), swapchain.height())) {
+                depth.close();
+                depth = new DepthAttachment(device, swapchain.width(), swapchain.height());
+            }
+            framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass,
+                    depth == null ? SwapchainFramebuffers.NO_DEPTH_VIEW : depth.view());
         }
     }
 
@@ -529,6 +654,9 @@ public final class WindowedPresenter implements AutoCloseable {
         invokeVoid(destroySem, dev, renderFinished, MemorySegment.NULL);
         invokeVoid(destroySem, dev, imageAvailable, MemorySegment.NULL);
         framebuffers.close();
+        if (depth != null) {
+            depth.close();
+        }
         a.close();
     }
 }

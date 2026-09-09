@@ -23,6 +23,19 @@ package dev.vexelray.engine;
  * from the {@link VexelEngine} run callback, not as raw bytes. {@link #record} then writes that state. This keeps
  * techniques independent and composable — each manages its per-frame data without the app knowing byte offsets.
  *
+ * <p><b>What a resize does, and does not, invalidate.</b> A window resize rebuilds the swapchain images and the
+ * framebuffers over them. It does <em>not</em> recreate the render pass, because a render pass depends on the
+ * attachments' <em>formats</em> and those do not change with extent — so the handle a technique built its
+ * pipeline against at {@link #realize} stays valid, and {@link #realize} is <b>not</b> called again. What does
+ * change is the extent, every frame and without warning, which is why it is on {@link FrameContext} rather than
+ * only on {@link TechniqueContext}: a technique must build its pipeline with dynamic viewport and scissor and
+ * read the size from the frame. Caching {@code ctx.width()} from realise time and drawing to it is the bug this
+ * paragraph exists to prevent — it survives every test that never resizes the window.
+ *
+ * <p>{@link #realize} is called again only when the target is genuinely rebuilt beneath the pipeline — a format
+ * change, or a new target — and it is paired with a {@link #close()} first. A technique therefore never has to
+ * make {@code realize} tolerate being called twice over live objects.
+ *
  * <p><b>Device access.</b> {@link TechniqueContext} exposes the target's formats, extent, render-pass handle, and
  * resource manager as substrate-light values. A technique that must create Vulkan objects casts the context to
  * the runtime-provided Vulkan-bearing subtype (deferred backend abstraction, YAGNI — see D3).

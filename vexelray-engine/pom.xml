@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>vexelray-engine</artifactId>
+
+    <description>
+        The runtime behind the front door: the one implementation of the VexelEngine / TechniqueContext contracts
+        in vexelray-engine-api. It owns instance, device, window, surface, swapchain, render pass, depth and the
+        frame loop, and drives an ordered list of RenderTechniques into one shared colour+depth target.
+
+        This module exists because there was nowhere to assemble. Every feature in this repository could reach the
+        screen only by hand-wiring its own instance/device/swapchain/presenter inside vexelray-vulkan's test
+        scope, which is why six demos each carried a copy of the same eighty lines and why no two features could
+        appear in one frame. Orchestration lives here; Vulkan object wrappers stay in vexelray-vulkan.
+
+        It names no technique. Discovery goes the other way: an application composes a RenderPipeline and reaches
+        this runtime through VexelEngine.create, which resolves an EngineProvider by ServiceLoader.
+    </description>
+
+    <dependencies>
+        <!-- THE contract this module implements. Nothing here is public API; engine-api is. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- The Vulkan object wrappers this orchestrates: device, swapchain, render pass, depth, presenter. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Window + Vulkan surface. The engine owns the window because the target declares it. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-os-api</artifactId>
+        </dependency>
+        <!-- Warn-once for a capability a target asked for and this runtime declined. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-diagnostics</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>sibarum.atchung</groupId>
+            <artifactId>atchung-probe</artifactId>
+        </dependency>
+
+        <!-- Test-only: a technique needs real SPIR-V to prove the SPI drives anything, and the fullscreen
+             triangle comes from vastir-tools. No technique module is depended on here, deliberately: an engine
+             that needed one to be tested would not be an engine that names no technique. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-ir</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation>
+                <os><family>unix</family><name>linux</name></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation>
+                <os><family>mac</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

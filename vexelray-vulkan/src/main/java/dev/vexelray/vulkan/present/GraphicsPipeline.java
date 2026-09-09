@@ -66,15 +66,76 @@ public final class GraphicsPipeline implements AutoCloseable {
      */
     public record Config(int vertexStride, List<VertexAttribute> attributes, long[] descriptorSetLayouts,
                          boolean blendEnable, int pushConstantStages, int pushConstantBytes,
-                         boolean dynamicViewport) {
+                         boolean dynamicViewport, Depth depth) {
 
-        /** Config with a fixed (baked) viewport — the prior 6-arg form. */
+        /**
+         * How this pipeline participates in the shared depth attachment.
+         *
+         * <p>Three states rather than two booleans, because the pair {@code (test, write)} spells one
+         * combination nobody wants — writing depth without testing it — and naming the three that are
+         * meaningful is cheaper than documenting why the fourth is not.
+         */
+        public enum Depth {
+            /**
+             * No depth test and no depth write. The only legal choice against a render pass with no depth
+             * attachment, and the choice a fullscreen pass makes even when depth exists: a technique that
+             * covers every pixel unconditionally has nothing to be occluded by.
+             */
+            NONE,
+            /**
+             * Test against depth and write the result — opaque geometry, and what makes two techniques occlude
+             * each other per pixel instead of in submission order.
+             */
+            TEST_AND_WRITE,
+            /**
+             * Test against depth but leave it unchanged. For a technique that must respect what is in front of
+             * it without claiming space of its own — a transparent overlay, a marched effect composited over
+             * solid geometry.
+             */
+            TEST_ONLY
+        }
+
+        public Config {
+            if (depth == null) {
+                throw new IllegalArgumentException("depth must not be null; use Depth.NONE");
+            }
+        }
+
+        /** Config with a fixed (baked) viewport and no depth — the prior 6-arg form. */
         public Config(int vertexStride, List<VertexAttribute> attributes, long[] descriptorSetLayouts,
                       boolean blendEnable, int pushConstantStages, int pushConstantBytes) {
             this(vertexStride, attributes, descriptorSetLayouts, blendEnable, pushConstantStages, pushConstantBytes,
-                    false);
+                    false, Depth.NONE);
+        }
+
+        /** Config with no depth — the prior 7-arg form, kept so a caller predating depth reads unchanged. */
+        public Config(int vertexStride, List<VertexAttribute> attributes, long[] descriptorSetLayouts,
+                      boolean blendEnable, int pushConstantStages, int pushConstantBytes,
+                      boolean dynamicViewport) {
+            this(vertexStride, attributes, descriptorSetLayouts, blendEnable, pushConstantStages, pushConstantBytes,
+                    dynamicViewport, Depth.NONE);
+        }
+
+        /** This config participating in depth as {@code depth} says — how a technique opts in. */
+        public Config withDepth(Depth depth) {
+            return new Config(vertexStride, attributes, descriptorSetLayouts, blendEnable, pushConstantStages,
+                    pushConstantBytes, dynamicViewport, depth);
         }
     }
+
+    /**
+     * {@code VkPipelineDepthStencilStateCreateInfo}. The two {@code VkStencilOpState}s are 28 bytes each and
+     * modelled as padding rather than named fields: nothing here tests stencil, the depth format carries none,
+     * and a zeroed arena allocation already means "stencil off". Naming them would invite a reader to set them.
+     */
+    private static final GroupLayout DEPTH_STENCIL_STATE = MemoryLayout.structLayout(
+            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
+            JAVA_INT.withName("flags"), JAVA_INT.withName("depthTestEnable"),
+            JAVA_INT.withName("depthWriteEnable"), JAVA_INT.withName("depthCompareOp"),
+            JAVA_INT.withName("depthBoundsTestEnable"), JAVA_INT.withName("stencilTestEnable"),
+            MemoryLayout.paddingLayout(28), MemoryLayout.paddingLayout(28),
+            JAVA_FLOAT.withName("minDepthBounds"), JAVA_FLOAT.withName("maxDepthBounds")
+    ).withName("VkPipelineDepthStencilStateCreateInfo");
 
     private static final GroupLayout SHADER_MODULE_CREATE_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
@@ -344,6 +405,19 @@ public final class GraphicsPipeline implements AutoCloseable {
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pViewportState", viewportState);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pRasterizationState", rasterizer);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pMultisampleState", multisample);
+            if (config.depth() != Config.Depth.NONE) {
+                MemorySegment depthStencil = arena.allocate(DEPTH_STENCIL_STATE);
+                si(depthStencil, DEPTH_STENCIL_STATE, "sType",
+                        Vk.STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+                si(depthStencil, DEPTH_STENCIL_STATE, "depthTestEnable", Vk.VK_TRUE);
+                si(depthStencil, DEPTH_STENCIL_STATE, "depthWriteEnable",
+                        config.depth() == Config.Depth.TEST_AND_WRITE ? Vk.VK_TRUE : 0);
+                // LESS, paired with DepthAttachment.CLEAR_DEPTH of 1.0: nearer wins, and an untouched pixel is
+                // as far away as possible. The two constants are one decision and must move together.
+                si(depthStencil, DEPTH_STENCIL_STATE, "depthCompareOp", Vk.COMPARE_OP_LESS);
+                sf(depthStencil, DEPTH_STENCIL_STATE, "maxDepthBounds", 1.0f);
+                sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pDepthStencilState", depthStencil);
+            }
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pColorBlendState", colorBlend);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pDynamicState", dynamicState);
             sl(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "layout", pipelineLayout);

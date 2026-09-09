@@ -1,11 +1,9 @@
-package dev.vexelray.engine;
-
-import dev.vexelray.pipeline.AttachmentFormat;
+package dev.vexelray.target;
 
 import java.util.Optional;
 
 /**
- * The shared render target a {@link RenderPipeline}'s techniques composite into: one colour attachment and an
+ * The shared render target a render pipeline's techniques composite into: one colour attachment and an
  * optional depth attachment, presented either to a window (swapchain) or an offscreen image. This is the public
  * authoring surface for "where and in what format the frame is drawn"; the runtime resolves it to concrete Vulkan
  * objects (swapchain or offscreen image, depth image, render pass) and hands each technique the render-pass handle

@@ -1,5 +1,7 @@
 package dev.vexelray.engine;
 
+import dev.vexelray.target.Target;
+
 import java.util.List;
 import java.util.Objects;
 
