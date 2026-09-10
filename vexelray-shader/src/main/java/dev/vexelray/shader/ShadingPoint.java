@@ -19,9 +19,23 @@ import dev.vexelray.ir.Ir;
  * @param albedo    linear-RGB base colour ({@code vec3})
  * @param roughness perceptual roughness in [0,1] ({@code float}); 1 for a purely diffuse surface
  * @param metallic  metalness in [0,1] ({@code float}); 0 for a dielectric
+ * @param payload   which surface this is ({@code float}) — a slot the host resolves to a node, or
+ *                  {@link #NO_PAYLOAD} where the renderer carried none. A model may key off it to shade one
+ *                  object differently from another that is otherwise identical: a selection highlight, a
+ *                  per-object tint, eventually a material. It is a <em>name</em>: compare it, never
+ *                  interpolate it and never do arithmetic on it
  */
 public record ShadingPoint(Expr position, Expr normal, Expr view, Expr albedo,
-                           Expr roughness, Expr metallic) {
+                           Expr roughness, Expr metallic, Expr payload) {
+
+    /**
+     * What {@link #payload} says where the renderer carries no identity — the display path unless it was
+     * asked for one, and every rasteriser until it grows a channel of its own.
+     *
+     * <p>Negative, because a slot never is, so a model tells "nothing was carried" from "slot zero" with a
+     * comparison rather than a convention.
+     */
+    public static final Expr NO_PAYLOAD = Ir.f(-1.0);
 
     public ShadingPoint {
         requireVec3(position, "position");
@@ -30,6 +44,7 @@ public record ShadingPoint(Expr position, Expr normal, Expr view, Expr albedo,
         requireVec3(albedo, "albedo");
         requireScalar(roughness, "roughness");
         requireScalar(metallic, "metallic");
+        requireScalar(payload, "payload");
     }
 
     /**
@@ -37,8 +52,12 @@ public record ShadingPoint(Expr position, Expr normal, Expr view, Expr albedo,
      * materials carry PBR channels of their own.
      */
     public static ShadingPoint diffuse(Expr position, Expr normal, Expr view, Expr albedo) {
-        return new ShadingPoint(position, normal, view, albedo,
-                Ir.f(1.0), Ir.f(0.0));
+        return diffuse(position, normal, view, albedo, NO_PAYLOAD);
+    }
+
+    /** The same, from a renderer that knows which surface it hit. */
+    public static ShadingPoint diffuse(Expr position, Expr normal, Expr view, Expr albedo, Expr payload) {
+        return new ShadingPoint(position, normal, view, albedo, Ir.f(1.0), Ir.f(0.0), payload);
     }
 
     private static void requireVec3(Expr e, String name) {

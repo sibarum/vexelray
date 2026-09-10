@@ -53,7 +53,7 @@ import java.util.List;
  *                    to it — {@code SdfComposer} does
  */
 public record Field(Expr distance, double lipschitz, Expr albedo, List<Statement> albedoLets,
-                    List<Statement> lets, List<Function> helpers) {
+                    List<Statement> lets, List<Function> helpers, Expr payload) {
 
     /** The bound a true signed-distance field carries. */
     public static final double EXACT = 1.0;
@@ -80,21 +80,34 @@ public record Field(Expr distance, double lipschitz, Expr albedo, List<Statement
         }
         lets = lets == null ? List.of() : List.copyOf(lets);
         helpers = helpers == null ? List.of() : List.copyOf(helpers);
+        if (payload != null && !Ir.F32.equals(payload.type())) {
+            throw new IllegalArgumentException("a payload must be a scalar float, got " + payload.type());
+        }
     }
 
     /** A colourless field — the shape only, which is what every surface but a painted one produces. */
     public Field(Expr distance, double lipschitz) {
-        this(distance, lipschitz, null, List.of(), List.of(), List.of());
+        this(distance, lipschitz, null, List.of(), List.of(), List.of(), null);
     }
 
     /** A field whose colour needs no declarations — a single flat colour, and nothing to select between. */
     public Field(Expr distance, double lipschitz, Expr albedo) {
-        this(distance, lipschitz, albedo, List.of(), List.of(), List.of());
+        this(distance, lipschitz, albedo, List.of(), List.of(), List.of(), null);
     }
 
     /** A field carrying a colour and the declarations it reads, and no program of its own yet. */
     public Field(Expr distance, double lipschitz, Expr albedo, List<Statement> albedoLets) {
-        this(distance, lipschitz, albedo, albedoLets, List.of(), List.of());
+        this(distance, lipschitz, albedo, albedoLets, List.of(), List.of(), null);
+    }
+
+    /** A field carrying a distance and the payload alongside it — what the identity lowering produces. */
+    public Field(Expr distance, double lipschitz, Expr albedo, Expr payload) {
+        this(distance, lipschitz, albedo, List.of(), List.of(), List.of(), payload);
+    }
+
+    /** Whether this field carries a payload channel — false unless it was lowered for one. */
+    public boolean hasPayload() {
+        return payload != null;
     }
 
     /** A field the compiler knows to be a true distance field. */
@@ -109,12 +122,12 @@ public record Field(Expr distance, double lipschitz, Expr albedo, List<Statement
 
     /** This field with a different albedo — how a combinator rebuilds one around its children's colours. */
     public Field withAlbedo(Expr albedo) {
-        return new Field(distance, lipschitz, albedo, albedoLets, lets, helpers);
+        return new Field(distance, lipschitz, albedo, albedoLets, lets, helpers, payload);
     }
 
     /** This field carrying the declarations its colour reads — attached once, when lowering finishes. */
     public Field withAlbedoLets(List<Statement> albedoLets) {
-        return new Field(distance, lipschitz, albedo, albedoLets, lets, helpers);
+        return new Field(distance, lipschitz, albedo, albedoLets, lets, helpers, payload);
     }
 
     /**
@@ -124,7 +137,7 @@ public record Field(Expr distance, double lipschitz, Expr albedo, List<Statement
      * end.
      */
     public Field withProgram(List<Statement> lets, List<Function> helpers) {
-        return new Field(distance, lipschitz, albedo, albedoLets, lets, helpers);
+        return new Field(distance, lipschitz, albedo, albedoLets, lets, helpers, payload);
     }
 
     /** Whether this can be sphere-traced as-is without overshooting. */
@@ -214,6 +227,31 @@ public record Field(Expr distance, double lipschitz, Expr albedo, List<Statement
         body.addAll(lets);
         body.add(new Statement.Return(distance));
         return new Function(name, new Type.FunctionType(Ir.F32, List.of(Ir.V3)), new Region(body));
+    }
+
+    /**
+     * This field as {@code vec2 f(vec3)} — the distance in {@code x} and the payload in {@code y}.
+     *
+     * <p>One function returning both rather than two functions, because <b>the payload is chosen by the
+     * distance</b>: which child owns a point is decided by which child is nearer, so the comparison that
+     * picks the distance is the comparison that picks the payload. Two functions would run every comparison
+     * twice and, worse, leave two programs free to disagree about which child won.
+     *
+     * <p>Only a field lowered for a payload has one, and that split is the whole design: the display path
+     * calls {@link #asFunction} and pays nothing for a channel it does not read. See
+     * {@link SurfaceCompiler#compileWithPayload}.
+     *
+     * @throws IllegalStateException if this field carries no payload; check {@link #hasPayload()} first
+     */
+    public Function asPayloadFunction(String name) {
+        if (payload == null) {
+            throw new IllegalStateException(
+                    "this field carries no payload; compile it with SurfaceCompiler.compileWithPayload");
+        }
+        List<Statement> body = new java.util.ArrayList<>(lets.size() + 1);
+        body.addAll(lets);
+        body.add(new Statement.Return(Ir.v2(distance, payload)));
+        return new Function(name, new Type.FunctionType(Ir.V2, List.of(Ir.V3)), new Region(body));
     }
 
     /**

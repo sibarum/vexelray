@@ -47,6 +47,14 @@ final class Eval {
         return v[0];
     }
 
+    /** The payload slot the field reports at a point — the channel's value, run as the shader runs it. */
+    static double payloadAt(Field field, double x, double y, double z) {
+        if (!field.hasPayload()) {
+            throw new IllegalStateException("this field carries no payload");
+        }
+        return withLets(field.payload(), field.lets(), x, y, z)[0];
+    }
+
     /** Evaluate a vector expression at a point. */
     static double[] vecAt(Expr e, double x, double y, double z) {
         return eval(e, Env.at(x, y, z));

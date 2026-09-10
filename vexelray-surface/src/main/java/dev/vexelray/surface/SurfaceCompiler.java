@@ -65,12 +65,23 @@ public final class SurfaceCompiler {
     /** Which subtrees to emit as functions, and the shape each one is keyed by — {@link Shared#of}. */
     private final Shared.Sharing sharing;
 
+    /**
+     * The payload channel's slots, or {@code null} when this compile is not carrying one.
+     *
+     * <p>The whole of the second lowering mode is this field being non-null. A display path compiles without
+     * it and pays nothing: no comparison bound, no channel selected, no {@code vec2} anywhere — byte for
+     * byte the module it composed before payloads existed. A pick pass compiles with it, and pays for what
+     * it is going to read.
+     */
+    private final PayloadTable table;
+
     /** Names every local in this compile, so two functions cannot declare the same one. */
     private int nextLocal;
 
-    private SurfaceCompiler(ParamStore params, Shared.Sharing sharing) {
+    private SurfaceCompiler(ParamStore params, Shared.Sharing sharing, PayloadTable table) {
         this.params = params;
         this.sharing = sharing;
+        this.table = table;
         this.scopes.push(new Scope());
     }
 
@@ -127,8 +138,50 @@ public final class SurfaceCompiler {
      * @throws UnsupportedOperationException if an implicit surface contains something that cannot be differentiated
      */
     public static Field compile(Surface surface, SurfaceLimits limits, ParamStore params) {
+        return compile(surface, limits, params, null);
+    }
+
+    /**
+     * Compile {@code surface} into a field that says <b>what</b> it hit as well as how far away it is — the
+     * second lowering mode (P2).
+     *
+     * <p>Two modes rather than one channel that is always there, because the two things a payload costs are
+     * both real and neither is paid by a scene that does not read it:
+     *
+     * <ul>
+     *   <li><b>Every combinator binds its arms' distances</b>, so that the comparison which picks the
+     *       distance can also pick the payload. That is the colour program's cost moved into the distance
+     *       program, and the distance program runs nine times per pixel per march step.</li>
+     *   <li><b>Sharing narrows from shapes to nodes.</b> A shared function carries the payload of the subtree
+     *       it was emitted from, and two separately authored copies of one shape are two answers to "what did
+     *       I click on" — so they cannot be one function here. A repeat's 2ⁿ cells still are: they are one
+     *       authored node, and clicking any cell should select it.</li>
+     * </ul>
+     *
+     * <p>The field's distance is unchanged by any of it — the same expression, marched the same way — and
+     * {@link Field#asPayloadFunction} is how both come out: {@code vec2(distance, payload)}. What the payload
+     * <em>means</em> is {@link PayloadTable}, published on the field, because a slot is an encoding and must
+     * not escape as an identity.
+     */
+    public static Field compileWithPayload(Surface surface, SurfaceLimits limits, ParamStore params) {
+        return compile(surface, limits, params, PayloadTable.of(surface));
+    }
+
+    /** Compile with a payload channel and the default limits. */
+    public static Field compileWithPayload(Surface surface, ParamStore params) {
+        return compileWithPayload(surface, SurfaceLimits.DEFAULT, params);
+    }
+
+    /** Compile with a payload channel, the default limits, and no parameter block. */
+    public static Field compileWithPayload(Surface surface) {
+        return compileWithPayload(surface, SurfaceLimits.DEFAULT, ParamStore.NONE);
+    }
+
+    private static Field compile(Surface surface, SurfaceLimits limits, ParamStore params,
+                                 PayloadTable table) {
         limits.check(surface);
-        SurfaceCompiler compiler = new SurfaceCompiler(params, Shared.of(surface));
+        SurfaceCompiler compiler = new SurfaceCompiler(params,
+                Shared.of(surface, table == null ? Shared.Keying.SHAPE : Shared.Keying.NODE), table);
         Field lowered = compiler.lower(surface, Ir.POINT)
                 .withProgram(compiler.scopes.peek().statements(), compiler.helpers);
         Field field = lowered.hasAlbedo() ? lowered.withAlbedoLets(compiler.lets.statements()) : lowered;
@@ -158,7 +211,14 @@ public final class SurfaceCompiler {
     private Field lower(Surface surface, Expr p) {
         if (sharing.shares(surface)) {
             Helper helper = helperFor(surface);
-            return new Field(new Expr.Call(helper.function(), List.of(p)), helper.lipschitz());
+            Expr call = new Expr.Call(helper.function(), List.of(p));
+            if (table == null) {
+                return new Field(call, helper.lipschitz());
+            }
+            // A payload-carrying function returns both, so the call is named: reading .x and .y off the
+            // expression itself would put two calls in the tree and evaluate the whole subtree twice.
+            Expr both = scopes.peek().bind("hit", call);
+            return new Field(Ir.x(both), helper.lipschitz(), null, Ir.y(both));
         }
         return lowerHere(surface, p);
     }
@@ -172,8 +232,9 @@ public final class SurfaceCompiler {
      * with nothing to substitute.
      */
     private Helper helperFor(Surface surface) {
-        // Keyed by shape rather than by node: two separately authored copies of one subtree are two
-        // instances of one shape, and they must reach one function.
+        // Keyed by whatever "the same subtree" means in this mode: by shape on the display path, so two
+        // separately authored copies reach one function; by node when a payload is being carried, since two
+        // authored nodes are two answers to what was clicked. See Shared.Keying.
         Surface shape = sharing.shapeOf(surface);
         Helper existing = memo.get(shape);
         if (existing != null) {
@@ -190,9 +251,13 @@ public final class SurfaceCompiler {
             scopes.pop();
         }
         List<Statement> statements = new ArrayList<>(scope.statements());
-        statements.add(new Statement.Return(body.distance()));
+        // A payload-carrying subtree returns both, in one function, for the reason Field.asPayloadFunction
+        // gives: the comparison that picked the distance is the one that picked the payload.
+        statements.add(new Statement.Return(
+                table == null ? body.distance() : Ir.v2(body.distance(), body.payload())));
         Function function = new Function("f" + helpers.size(),
-                new Type.FunctionType(Ir.F32, List.of(Ir.V3)), new Region(statements));
+                new Type.FunctionType(table == null ? Ir.F32 : Ir.V2, List.of(Ir.V3)),
+                new Region(statements));
         // Added after its own body was lowered, so a helper that calls another is emitted after the one it
         // calls — the order a module wants.
         helpers.add(function);
@@ -221,6 +286,22 @@ public final class SurfaceCompiler {
         return scopes.peek().bind("p", q);
     }
 
+    /**
+     * The payload a node originates: its slot in the table, as a constant — or {@code null} on the display
+     * path, where there is no channel to put it in.
+     *
+     * <p>A constant, because which node owns a shape's points is known when the shape is lowered. Only a
+     * combinator has to choose at runtime, and it chooses between two constants.
+     */
+    private Expr slot(Surface node) {
+        return table == null ? null : Ir.f(table.slotOf(node.id()));
+    }
+
+    /** A field whose points belong to {@code node} — every primitive, and nothing else. */
+    private Field owned(Expr distance, Surface node) {
+        return new Field(distance, Field.EXACT, null, slot(node));
+    }
+
     /** A scalar used more than once by the operator computing it — a cell index, a folded angle. */
     private Expr bindScalar(String name, Expr value) {
         if (value instanceof Expr.Param || value instanceof Expr.Read || value instanceof Expr.ConstFloat) {
@@ -231,16 +312,16 @@ public final class SurfaceCompiler {
 
     private Field lowerHere(Surface surface, Expr p) {
         return switch (surface) {
-            case Surface.Sphere s -> Field.exact(sphere(p, s));
+            case Surface.Sphere s -> owned(sphere(p, s), s);
 
-            case Surface.Box b -> Field.exact(box(p, b));
+            case Surface.Box b -> owned(box(p, b), b);
 
-            case Surface.Plane pl -> Field.exact(
-                    Fold.add(Ir.dot(p, Ir.v3(pl.nx(), pl.ny(), pl.nz())), expr(pl.offset())));
+            case Surface.Plane pl -> owned(
+                    Fold.add(Ir.dot(p, Ir.v3(pl.nx(), pl.ny(), pl.nz())), expr(pl.offset())), pl);
 
-            case Surface.Capsule c -> Field.exact(capsule(p, c));
+            case Surface.Capsule c -> owned(capsule(p, c), c);
 
-            case Surface.Torus t -> Field.exact(torus(p, t));
+            case Surface.Torus t -> owned(torus(p, t), t);
 
             case Surface.Stroke s -> stroke(p, s);
 
@@ -253,7 +334,8 @@ public final class SurfaceCompiler {
             case Surface.Scale s -> {
                 Expr factor = expr(s.factor());
                 Field inner = lower(s.of(), bindPoint(Fold.div(p, Ir.broadcast(factor, Ir.V3))));
-                yield new Field(Fold.mul(inner.distance(), factor), inner.lipschitz(), inner.albedo());
+                yield new Field(Fold.mul(inner.distance(), factor), inner.lipschitz(), inner.albedo(),
+                        inner.payload());
             }
 
             // Rotating the object rotates the domain the other way, so the child is lowered at R^T p. For a
@@ -327,12 +409,13 @@ public final class SurfaceCompiler {
             case Surface.Shell s -> {
                 Field inner = lower(s.of(), p);
                 yield new Field(Fold.sub(Ir.abs(inner.distance()), expr(s.thickness())),
-                        inner.lipschitz(), inner.albedo());
+                        inner.lipschitz(), inner.albedo(), inner.payload());
             }
 
             case Surface.Round r -> {
                 Field inner = lower(r.of(), p);
-                yield new Field(Fold.sub(inner.distance(), expr(r.radius())), inner.lipschitz(), inner.albedo());
+                yield new Field(Fold.sub(inner.distance(), expr(r.radius())), inner.lipschitz(),
+                        inner.albedo(), inner.payload());
             }
 
             // The one case that cannot vouch for itself. Normalise in the surface's own frame first, then move it
@@ -344,7 +427,8 @@ public final class SurfaceCompiler {
                 Field normalised = Double.isFinite(i.lipschitzBound())
                         ? Normalize.byConstant(i.f(), i.lipschitzBound())
                         : Normalize.lipschitz(i.f());
-                yield new Field(Substitute.point(normalised.distance(), p), normalised.lipschitz());
+                yield new Field(Substitute.point(normalised.distance(), p), normalised.lipschitz(),
+                        null, slot(i));
             }
         };
     }
@@ -426,7 +510,8 @@ public final class SurfaceCompiler {
      */
     private Field deform(Surface of, Expr q, Expr stretch) {
         Field inner = lower(of, q);
-        return new Field(Fold.div(inner.distance(), stretch), inner.lipschitz(), inner.albedo());
+        return new Field(Fold.div(inner.distance(), stretch), inner.lipschitz(), inner.albedo(),
+                inner.payload());
     }
 
     /**
@@ -629,15 +714,32 @@ public final class SurfaceCompiler {
 
     /** A field turned inside out — what a subtraction intersects with. Negation leaves it 1-Lipschitz. */
     private Field invert(Field f) {
-        return new Field(Ir.neg(f.distance()), f.lipschitz(), f.albedo());
+        // The payload passes through a negation: carving does not change which shape is being carved.
+        return new Field(Ir.neg(f.distance()), f.lipschitz(), f.albedo(), f.payload());
     }
 
     /** Two fields' distances combined pointwise, with no colour in it — {@code min}, or {@code max}. */
     private Field pick(Field a, Field b, boolean nearest) {
-        Expr distance = nearest
-                ? Ir.min(a.distance(), b.distance())
-                : Ir.max(a.distance(), b.distance());
-        return new Field(distance, Math.max(a.lipschitz(), b.lipschitz()));
+        double lipschitz = Math.max(a.lipschitz(), b.lipschitz());
+        if (table == null) {
+            Expr distance = nearest
+                    ? Ir.min(a.distance(), b.distance())
+                    : Ir.max(a.distance(), b.distance());
+            return new Field(distance, lipschitz);
+        }
+
+        // Carrying a payload, so the two arms' distances are each read twice — once to combine, once to say
+        // which arm won — and are named rather than written twice. This is the cost the second lowering mode
+        // exists to keep off the display path.
+        Expr da = bindScalar("d", a.distance());
+        Expr db = bindScalar("d", b.distance());
+        Expr distance = nearest ? Ir.min(da, db) : Ir.max(da, db);
+        // 1 selects b: for a union when b is the nearer, for an intersection when b is the farther — the
+        // same rule the colour selection follows, and for the same reason. Both ends are exactly 0 or 1, so
+        // a mix of two slots is one of the two slots and never a number between them: a payload is a name,
+        // and half of one name and half of another is not a name.
+        Expr takeB = nearest ? Ir.step(db, da) : Ir.step(da, db);
+        return new Field(distance, lipschitz, null, Ir.mix(a.payload(), b.payload(), takeB));
     }
 
     /**
@@ -787,7 +889,19 @@ public final class SurfaceCompiler {
             }
             albedo = selected.field().albedo();
         }
-        return new Field(blended, lipschitz, albedo);
+
+        // The payload follows the hard extremum too, and for a stronger reason than colour does: a fillet
+        // between two shapes belongs to one of them, and a click in the middle of it has to answer with a
+        // node. Blending two slots would answer with a number that names neither.
+        Expr payload = null;
+        if (table != null) {
+            Field selected = fields.get(0);
+            for (int i = 1; i < fields.size(); i++) {
+                selected = pick(selected, fields.get(i), blend == Blend.SOFT_MIN);
+            }
+            payload = selected.payload();
+        }
+        return new Field(blended, lipschitz, albedo, payload);
     }
 
     /** Lower every child against the same point. */
@@ -856,7 +970,9 @@ public final class SurfaceCompiler {
             // A coloured cone binds its own distance up front rather than leaving it to be copied by the
             // combination above: it is used twice — once by the comparison, once by the running minimum — and
             // this is the one place where the number of children is large enough for that to matter.
-            Field one = new Field(distance, Field.EXACT, albedo);
+            // Every cone of a stroke reports the stroke: one authored node, however many pieces the spine
+            // was solved into, so clicking anywhere along it selects the thing that was drawn.
+            Field one = new Field(distance, Field.EXACT, albedo, slot(s));
             Coloured next = coloured
                     ? new Coloured(one, lets.bind("d", distance))
                     : Coloured.of(one);

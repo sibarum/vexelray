@@ -21,6 +21,8 @@ import dev.vexelray.shader.ShadingPoint;
 import dev.vexelray.surface.Field;
 import dev.vexelray.surface.NodeId;
 import dev.vexelray.surface.ParamBlock;
+import dev.vexelray.surface.PayloadTable;
+import dev.vexelray.surface.SurfaceLimits;
 import dev.vexelray.ir.Ir;
 import dev.vexelray.surface.Surface;
 import dev.vexelray.surface.SurfaceCompiler;
@@ -88,6 +90,15 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * step</em>. Colour is close to free at runtime and merely bulky in the module.
      */
     public static final String ALBEDO_FUNCTION = "albedo";
+
+    /**
+     * The name of the generated identity function: {@code vec2 hit(vec3)}, distance in {@code x} and the
+     * payload in {@code y}.
+     *
+     * <p>Present only in a module composed by {@link #identityFragmentSpirv}, which is the whole of the
+     * second lowering mode being something a scene opts into.
+     */
+    public static final String PAYLOAD_FUNCTION = "hit";
 
     private static final Type.Float F32 = Ir.F32;
 
@@ -332,6 +343,62 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     }
 
     /**
+     * Compose the same march over a field that carries identity, so the shading model is told which surface
+     * it hit (P2).
+     *
+     * <p>A second lowering rather than a channel the display path always carries, because the channel is not
+     * free: every combinator binds its arms' distances so the comparison that picks the distance can pick the
+     * payload too, and sharing narrows from shapes to nodes so that two lookalikes stay two answers. A scene
+     * that does not ask pays none of it — {@link #fragmentSpirv(SdfScene)} composes exactly what it always
+     * did.
+     *
+     * <p>What the payload <em>means</em> is {@link #payloadTable}, and a host resolves it there rather than
+     * storing the number: a slot is an encoding and changes whenever the tree changes shape.
+     */
+    public static byte[] identityFragmentSpirv(SdfScene scene) {
+        Field field = loweredWithPayload(scene);
+        Function payloadFn = field.asPayloadFunction(PAYLOAD_FUNCTION);
+        List<Function> helpers = new ArrayList<>(field.helpers());
+        helpers.add(payloadFn);
+        return fragmentSpirv(scene, distanceOf(payloadFn),
+                field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null,
+                helpers, payloadFn);
+    }
+
+    /**
+     * What the payload channel's numbers mean for this scene: slot → the node that owns the surface there.
+     *
+     * <p>Read a slot back and resolve it here, at once. Do not store one: it is assigned by walk order, so
+     * the next edit to the tree gives it to a different shape — the same rule {@link ParamBlock} follows for
+     * the same reason.
+     */
+    public static PayloadTable payloadTable(SdfScene scene) {
+        return PayloadTable.of(scene.surface());
+    }
+
+    /** The scene's field with identity, lowered the second way. */
+    private static Field loweredWithPayload(SdfScene scene) {
+        ParamBlock params = paramBlock(scene);
+        PushConstants block = pushConstants(params);
+        return SurfaceCompiler.compileWithPayload(scene.surface(), SurfaceLimits.DEFAULT,
+                params.inPushConstants(block, FIRST_PARAM_MEMBER));
+    }
+
+    /**
+     * {@code float sdf(vec3 p)} over a payload-carrying field: the {@code x} of it.
+     *
+     * <p>The march is not rewritten around {@code vec2} for the sake of a channel it never reads. A wrapper
+     * costs one call the driver will inline and keeps one implementation of the march, which is the thing
+     * that must not fork — three of this window's predecessors forked their transforms and spent the rest of
+     * their lives keeping the copies in step.
+     */
+    private static Function distanceOf(Function payloadFn) {
+        return new Function(SDF_FUNCTION, new Type.FunctionType(F32, List.of(Ir.V3)),
+                Region.of(new Statement.Return(
+                        Ir.x(new Expr.Call(payloadFn, List.of(Ir.POINT))))));
+    }
+
+    /**
      * The functions {@link #sdfFunction} calls — a repeated child, or any subtree the design used twice,
      * emitted once (P1).
      *
@@ -375,6 +442,23 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
                                        List<Function> helpers) {
+        return fragmentSpirv(scene, sdf, albedoFn, helpers, null);
+    }
+
+    /**
+     * The same march, over a field that also says <b>what</b> it hit (P2).
+     *
+     * <p>{@code payloadFn} is {@code vec2 hit(vec3 p)} — distance in {@code x}, payload in {@code y} — and it
+     * is called <b>once, at the hit point</b>, where the shading model is handed the {@code y}. The march
+     * itself never asks: what it needs to advance is the distance and nothing else, so identity costs one
+     * call per pixel rather than nine per step.
+     *
+     * <p>{@code sdf} is still the float function the march walks, and for a payload-carrying field it is the
+     * thin wrapper {@link #identityFragmentSpirv} makes: {@code hit(p).x}. Two functions rather than a march
+     * rewritten around {@code vec2}, because the march is the part that must stay one implementation.
+     */
+    public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
+                                       List<Function> helpers, Function payloadFn) {
         MarchSettings march = scene.march();
 
         InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
@@ -428,7 +512,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 // path that did not, and the symptom is geometry occluding intermittently rather than
                 // anything a validator reports. See Builtin.FRAG_DEPTH.
                 new Statement.If(hitTest(march, read(d), read(t)),
-                        hit(scene, sdf, albedoFn, fragColor, p, rd, t, cosForward),
+                        hit(scene, sdf, albedoFn, payloadFn, fragColor, p, rd, t, cosForward),
                         miss(scene, fragColor)),
                 new Statement.ReturnVoid());
 
@@ -496,7 +580,8 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 Ir.add(Ir.f(march.hitEpsilon()), Ir.mul(Ir.f(march.hitEpsilonSlope()), travelled)));
     }
 
-    private static Region hit(SdfScene scene, Function sdf, Function albedoFn, InterfaceVar fragColor,
+    private static Region hit(SdfScene scene, Function sdf, Function albedoFn, Function payloadFn,
+                              InterfaceVar fragColor,
                               LocalVar p, LocalVar rd, LocalVar t, LocalVar cosForward) {
         // Finite-difference normal, sampled at a width that grows with distance. At a fixed near-field width a
         // far hit point's neighbours differ only by float noise, so normalize() amplifies it and the normal
@@ -519,8 +604,15 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         Expr albedo = albedoFn == null
                 ? sceneAlbedo(scene)
                 : bindings.bind("albedo", new Expr.Call(albedoFn, List.of(read(p))));
+
+        // Which surface was hit, where the field was lowered to say so (P2). One call at the hit point,
+        // once per pixel — the march itself never asks, because what it needs to advance is the distance and
+        // nothing else. Bound, since a model that keys off identity will read it more than once.
+        Expr payload = payloadFn == null
+                ? ShadingPoint.NO_PAYLOAD
+                : bindings.bind("hit", Ir.y(new Expr.Call(payloadFn, List.of(read(p)))));
         Expr shaded = scene.shading().shade(
-                ShadingPoint.diffuse(read(p), normal, Ir.neg(read(rd)), albedo), bindings);
+                ShadingPoint.diffuse(read(p), normal, Ir.neg(read(rd)), albedo, payload), bindings);
 
         LocalVar colour = new LocalVar("colour", Ir.V3);
         List<Statement> statements = new ArrayList<>(bindings.statements());

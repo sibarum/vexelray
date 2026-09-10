@@ -72,13 +72,38 @@ final class Shared {
         }
     }
 
-    /** The node instances worth emitting once and calling, with the shape of each. */
+    /** What counts as "the same subtree" — see {@link #of(Surface, Keying)}. */
+    enum Keying {
+        /**
+         * By shape: two separately authored copies of one subtree are one function. What the display path
+         * wants, since a distance field does not depend on which object anything is.
+         */
+        SHAPE,
+        /**
+         * By node: each authored node gets its own function, however many others look like it. What the
+         * <em>payload</em> lowering needs, because a shared function carries the payload of its subtree and
+         * two authored nodes are two answers to "what did I click on". A repeat's 2ⁿ cells still share one
+         * function — they are one authored node, and clicking any cell should select it.
+         */
+        NODE
+    }
+
+    /** The node instances worth emitting once and calling, keyed by shape. */
     static Sharing of(Surface root) {
+        return of(root, Keying.SHAPE);
+    }
+
+    /** The node instances worth emitting once and calling, with the key each is counted and memoised by. */
+    static Sharing of(Surface root, Keying keying) {
         // Counted on the tree with its identities flattened away, because identity is exactly what the
         // distance field does not depend on. Two spheres of one radius are two objects and one shape, and it
         // is the shape that decides whether a function is worth emitting. Without this, adding NodeId in P2
         // would have turned every shared subtree back into a copy — silently, as a size regression.
-        Map<Surface, Surface> shapes = shapesOf(root);
+        //
+        // Under NODE keying each node stands for itself, so structural equality answers "is this the same
+        // object" and two lookalikes are counted apart. Nothing else in this file changes: the key is the
+        // only thing the two modes disagree about.
+        Map<Surface, Surface> shapes = keying == Keying.SHAPE ? shapesOf(root) : itself(root);
 
         Map<Key, Long> lowerings = new HashMap<>();
         List<Surface> nodes = new ArrayList<>();
@@ -106,6 +131,13 @@ final class Shared {
         Surface flattened = Scalars.map(root, scalar -> scalar, id -> ANONYMOUS);
         Map<Surface, Surface> shapes = new IdentityHashMap<>();
         pair(root, flattened, shapes);
+        return shapes;
+    }
+
+    /** Each node paired with itself — the identity keying, where a lookalike is not the same thing. */
+    private static Map<Surface, Surface> itself(Surface root) {
+        Map<Surface, Surface> shapes = new IdentityHashMap<>();
+        pair(root, root, shapes);
         return shapes;
     }
 
