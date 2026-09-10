@@ -137,8 +137,23 @@ public final class VulkanInstance implements AutoCloseable {
     private final MethodHandle vkEnumeratePhysicalDevices;
     private final MethodHandle vkGetPhysicalDeviceProperties;
     private final MethodHandle vkGetPhysicalDeviceQueueFamilyProperties;
-    private final MethodHandle vkGetPhysicalDeviceSurfaceSupportKHR;
-    private final MethodHandle vkDestroySurfaceKHR;
+    /**
+     * The two {@code VK_KHR_surface} commands, resolved on first use rather than at construction.
+     *
+     * <p>They exist only when the extension was enabled, and a headless instance does not enable it: there is
+     * no window to present to, and asking for {@code VK_KHR_surface} on a machine with no window system is a
+     * way for an offscreen run to fail at instance creation for a capability it was never going to use. Eager
+     * resolution made that failure unconditional — {@code vkGetInstanceProcAddr} returns NULL for an
+     * unenabled extension's commands, so <em>every</em> extension-less instance died in this constructor,
+     * naming a surface function to a caller that had not mentioned surfaces.
+     *
+     * <p>Lazy, so an instance that never touches a surface never asks for them, and one that does gets the
+     * same NULL-check failure at the call that actually needs them. Not volatile: an instance is created and
+     * used on one thread (see the runtime's threading contract), and the worst a race could do here is
+     * resolve the same handle twice to the same address.
+     */
+    private MethodHandle vkGetPhysicalDeviceSurfaceSupportKHR;
+    private MethodHandle vkDestroySurfaceKHR;
     private final MethodHandle vkDestroyInstance;
 
     public VulkanInstance(String applicationName, List<String> extensions) {
@@ -220,13 +235,26 @@ public final class VulkanInstance implements AutoCloseable {
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
         this.vkGetPhysicalDeviceQueueFamilyProperties = VkLoader.instanceCommand(handle,
                 "vkGetPhysicalDeviceQueueFamilyProperties", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
-        this.vkGetPhysicalDeviceSurfaceSupportKHR = VkLoader.instanceCommand(handle,
-                "vkGetPhysicalDeviceSurfaceSupportKHR",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, ADDRESS));
-        this.vkDestroySurfaceKHR = VkLoader.instanceCommand(handle, "vkDestroySurfaceKHR",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS));
         this.vkDestroyInstance = VkLoader.instanceCommand(handle, "vkDestroyInstance",
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+    }
+
+    /** See the field: resolved here so a headless instance never asks for {@code VK_KHR_surface}. */
+    private MethodHandle surfaceSupport() {
+        if (vkGetPhysicalDeviceSurfaceSupportKHR == null) {
+            vkGetPhysicalDeviceSurfaceSupportKHR = VkLoader.instanceCommand(handle,
+                    "vkGetPhysicalDeviceSurfaceSupportKHR",
+                    FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, ADDRESS));
+        }
+        return vkGetPhysicalDeviceSurfaceSupportKHR;
+    }
+
+    private MethodHandle destroySurface() {
+        if (vkDestroySurfaceKHR == null) {
+            vkDestroySurfaceKHR = VkLoader.instanceCommand(handle, "vkDestroySurfaceKHR",
+                    FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS));
+        }
+        return vkDestroySurfaceKHR;
     }
 
     /**
@@ -374,7 +402,7 @@ public final class VulkanInstance implements AutoCloseable {
     /** Destroy a surface created for this instance. */
     public void destroySurface(long surface) {
         try {
-            vkDestroySurfaceKHR.invokeExact(handle, surface, MemorySegment.NULL);
+            destroySurface().invokeExact(handle, surface, MemorySegment.NULL);
         } catch (Throwable t) {
             throw NativeException.rethrow("vkDestroySurfaceKHR", t);
         }
@@ -434,7 +462,7 @@ public final class VulkanInstance implements AutoCloseable {
 
     private boolean surfaceSupported(MemorySegment device, int family, long surface, MemorySegment pSupported) {
         try {
-            int r = (int) vkGetPhysicalDeviceSurfaceSupportKHR.invokeExact(device, family, surface, pSupported);
+            int r = (int) surfaceSupport().invokeExact(device, family, surface, pSupported);
             check(r, "vkGetPhysicalDeviceSurfaceSupportKHR");
             return pSupported.get(JAVA_INT, 0) == VK_TRUE;
         } catch (Throwable t) {

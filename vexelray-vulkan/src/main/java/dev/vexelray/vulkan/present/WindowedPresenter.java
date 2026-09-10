@@ -5,6 +5,7 @@ import sibarum.probe.Lane;
 import sibarum.probe.Probe;
 import sibarum.probe.Zone;
 import dev.vexelray.vulkan.vk.Vk;
+import dev.vexelray.vulkan.vk.VkStructs;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
 import java.lang.foreign.Arena;
@@ -39,53 +40,19 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class WindowedPresenter implements AutoCloseable {
 
-    private static final GroupLayout CREATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4)).withName("CreateInfo");
-
-    private static final GroupLayout POOL_CI = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), JAVA_INT.withName("queueFamilyIndex")).withName("VkCommandPoolCreateInfo");
-
-    private static final GroupLayout CMD_ALLOC = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_LONG.withName("commandPool"), JAVA_INT.withName("level"), JAVA_INT.withName("commandBufferCount")
-    ).withName("VkCommandBufferAllocateInfo");
-
-    private static final GroupLayout CMD_BEGIN = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pInheritanceInfo")
-    ).withName("VkCommandBufferBeginInfo");
-
-    private static final GroupLayout RENDER_PASS_BEGIN = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_LONG.withName("renderPass"), JAVA_LONG.withName("framebuffer"),
-            JAVA_INT.withName("area_x"), JAVA_INT.withName("area_y"),
-            JAVA_INT.withName("area_w"), JAVA_INT.withName("area_h"),
-            JAVA_INT.withName("clearValueCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pClearValues")
-    ).withName("VkRenderPassBeginInfo");
-
-    private static final GroupLayout SUBMIT = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("waitSemaphoreCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pWaitSemaphores"),
-            ADDRESS.withName("pWaitDstStageMask"), JAVA_INT.withName("commandBufferCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pCommandBuffers"), JAVA_INT.withName("signalSemaphoreCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pSignalSemaphores")).withName("VkSubmitInfo");
-
+    /**
+     * The one struct here that no other class needs: presenting is what this presenter is for.
+     *
+     * <p>Everything else it fills — the pool, the command buffer, the render-pass begin, the submit, the
+     * viewport and scissor — comes from {@link VkStructs}, which is where the layouts that had been
+     * transcribed three times now live. This one stays because a shared home for a layout with a single
+     * caller is not sharing, it is indirection.
+     */
     private static final GroupLayout PRESENT = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("waitSemaphoreCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pWaitSemaphores"),
             JAVA_INT.withName("swapchainCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pSwapchains"),
             ADDRESS.withName("pImageIndices"), ADDRESS.withName("pResults")).withName("VkPresentInfoKHR");
-
-    private static final GroupLayout VIEWPORT = MemoryLayout.structLayout(
-            JAVA_FLOAT.withName("x"), JAVA_FLOAT.withName("y"), JAVA_FLOAT.withName("width"),
-            JAVA_FLOAT.withName("height"), JAVA_FLOAT.withName("minDepth"), JAVA_FLOAT.withName("maxDepth")
-    ).withName("VkViewport");
-
-    private static final GroupLayout RECT2D = MemoryLayout.structLayout(
-            JAVA_INT.withName("offset_x"), JAVA_INT.withName("offset_y"),
-            JAVA_INT.withName("extent_w"), JAVA_INT.withName("extent_h")).withName("VkRect2D");
 
     private static final FunctionDescriptor C4 = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS);
     private static final FunctionDescriptor DL = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);
@@ -104,42 +71,6 @@ public final class WindowedPresenter implements AutoCloseable {
     private final MethodHandle bindVertexBuffers, bindDescriptorSets, setViewport, setScissor;
     private final MethodHandle destroySem, destroyFence, destroyPool;
 
-    /** Per-frame hook: fill {@code pushConstants} (camera etc.) given the elapsed time; run input/sim here. */
-    @FunctionalInterface
-    public interface Frame {
-        void update(double dtSeconds, MemorySegment pushConstants);
-    }
-
-    /**
-     * Per-frame hook that records the <em>contents</em> of the render pass — the seam that turns this class from
-     * "present one pipeline" into "present whatever a caller draws."
-     *
-     * <p>Everything this presenter is careful about — the fence, the image acquire, the two semaphores, the
-     * submit, the present, the out-of-date rebuild — stays here. What moves out is the eight commands between
-     * {@code vkCmdBeginRenderPass} and {@code vkCmdEndRenderPass}. That division is not a refactor for
-     * tidiness: it is precisely the line between what every renderer needs identically and what each one needs
-     * differently, and until it existed a frame could contain exactly one pipeline, so no two features in this
-     * repository could appear in the same window.
-     *
-     * <p>The command buffer arrives inside a begun render pass with <b>nothing bound</b> — no pipeline, no
-     * descriptor sets, no vertex buffer. A recorder binds what it needs, per pipeline it draws with, in the
-     * order it wants them composited. It must not begin or end the render pass, submit, or touch the swapchain.
-     *
-     * <p>{@code width} and {@code height} are this frame's extent, which is not the extent the pipeline was
-     * built at: a resize changes it without rebuilding anything.
-     *
-     * <p><b>The dynamic viewport and scissor are already set to that extent.</b> They are the one piece of
-     * state this class sets before handing the buffer over, because they are the only thing every recorder
-     * needs identically and derives from a number only this class knows — and because the alternative was
-     * observed: four recorders each carrying the same {@code VkViewport} fill and the same two
-     * {@code vkCmdSet*} calls, where forgetting them draws nothing and reading a stale extent draws the
-     * previous size. A recorder that wants a sub-rectangle overrides them and is responsible for restoring
-     * them before the next pipeline that assumes the whole frame.
-     */
-    @FunctionalInterface
-    public interface Recorder {
-        void record(MemorySegment commandBuffer, int width, int height);
-    }
     private final long imageAvailable, renderFinished, inFlight, pool;
     private final MemorySegment cmd;
 
@@ -308,7 +239,7 @@ public final class WindowedPresenter implements AutoCloseable {
      * <p>Single-window convenience over {@link #frame}: a multi-window host owns the loop itself and calls
      * {@code frame} on each of its presenters per iteration instead.
      */
-    public void run(int maxFrames, int pushConstantBytes, Frame perFrame) {
+    public void run(int maxFrames, int pushConstantBytes, FrameUpdate perFrame) {
         run(maxFrames, pushConstantBytes, perFrame, null);
     }
 
@@ -316,7 +247,7 @@ public final class WindowedPresenter implements AutoCloseable {
      * The present loop with the render pass's <em>recording</em> delegated to {@code recorder} rather than done
      * by this class — how several techniques get into one frame. See {@link Recorder}.
      */
-    public void run(int maxFrames, int pushConstantBytes, Frame perFrame, Recorder recorder) {
+    public void run(int maxFrames, int pushConstantBytes, FrameUpdate perFrame, Recorder recorder) {
         int frame = 0;
         while ((maxFrames <= 0 || frame < maxFrames) && frame(pushConstantBytes, perFrame, recorder)) {
             frame++;
@@ -333,12 +264,12 @@ public final class WindowedPresenter implements AutoCloseable {
      * {@code frame(...)} per loop iteration — every presenter pumps only its own window and touches only its own
      * swapchain, so presenters on a shared {@link VulkanDevice} interleave safely on the calling thread.
      */
-    public boolean frame(int pushConstantBytes, Frame perFrame) {
+    public boolean frame(int pushConstantBytes, FrameUpdate perFrame) {
         return frame(pushConstantBytes, perFrame, null);
     }
 
-    /** {@link #frame(int, Frame)} with the pass's recording delegated to {@code recorder}. */
-    public boolean frame(int pushConstantBytes, Frame perFrame, Recorder recorder) {
+    /** {@link #frame(int, FrameUpdate)} with the pass's recording delegated to {@code recorder}. */
+    public boolean frame(int pushConstantBytes, FrameUpdate perFrame, Recorder recorder) {
         if (!window.pumpEvents()) {
             return false;
         }
@@ -355,12 +286,12 @@ public final class WindowedPresenter implements AutoCloseable {
      * drawing, because a platform timer that outruns the frame time must not stack frames inside one another
      * over a single command buffer and fence.
      */
-    public boolean render(int pushConstantBytes, Frame perFrame) {
+    public boolean render(int pushConstantBytes, FrameUpdate perFrame) {
         return render(pushConstantBytes, perFrame, null);
     }
 
-    /** {@link #render(int, Frame)} with the pass's recording delegated to {@code recorder}. */
-    public boolean render(int pushConstantBytes, Frame perFrame, Recorder recorder) {
+    /** {@link #render(int, FrameUpdate)} with the pass's recording delegated to {@code recorder}. */
+    public boolean render(int pushConstantBytes, FrameUpdate perFrame, Recorder recorder) {
         if (rendering) {
             return true;
         }
@@ -372,14 +303,14 @@ public final class WindowedPresenter implements AutoCloseable {
         }
     }
 
-    private boolean renderOnce(int pushConstantBytes, Frame perFrame, Recorder recorder) {
+    private boolean renderOnce(int pushConstantBytes, FrameUpdate perFrame, Recorder recorder) {
         try (Zone z = Probe.zone(Lane.GPU, "present frame")) {
             return renderFrame(pushConstantBytes, perFrame, recorder);
         }
     }
 
     /** The body of {@link #renderOnce}, split out so one probe span covers a whole presented frame. */
-    private boolean renderFrame(int pushConstantBytes, Frame perFrame, Recorder recorder) {
+    private boolean renderFrame(int pushConstantBytes, FrameUpdate perFrame, Recorder recorder) {
         if (state == null) {
             state = new FrameState();
         }
@@ -423,9 +354,9 @@ public final class WindowedPresenter implements AutoCloseable {
         s.pDescriptorSet.set(JAVA_LONG, 0, descriptorSet);
 
         check(invoke(beginCmd, cmd, s.beginInfo), "vkBeginCommandBuffer");
-        si(s.rpBegin, RENDER_PASS_BEGIN, "area_w", extentW);
-        si(s.rpBegin, RENDER_PASS_BEGIN, "area_h", extentH);
-        sl(s.rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
+        si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_width", extentW);
+        si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_height", extentH);
+        sl(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "framebuffer", framebuffers.framebuffer(imageIndex));
         invokeVoid(beginRp, cmd, s.rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
         if (recorder != null) {
             // The pass is begun and nothing is bound except the frame's viewport and scissor. Everything
@@ -504,11 +435,11 @@ public final class WindowedPresenter implements AutoCloseable {
      * scissor offset zero) and nothing since changes them.
      */
     private void setFullViewport(FrameState s, MemorySegment cmd, int extentW, int extentH) {
-        sf(s.pViewport, VIEWPORT, "width", extentW);
-        sf(s.pViewport, VIEWPORT, "height", extentH);
+        sf(s.pViewport, VkStructs.VIEWPORT, "width", extentW);
+        sf(s.pViewport, VkStructs.VIEWPORT, "height", extentH);
         invokeVoid(setViewport, cmd, 0, 1, s.pViewport);
-        si(s.pScissor, RECT2D, "extent_w", extentW);
-        si(s.pScissor, RECT2D, "extent_h", extentH);
+        si(s.pScissor, VkStructs.RECT_2D, "extent_width", extentW);
+        si(s.pScissor, VkStructs.RECT_2D, "extent_height", extentH);
         invokeVoid(setScissor, cmd, 0, 1, s.pScissor);
     }
 
@@ -546,20 +477,20 @@ public final class WindowedPresenter implements AutoCloseable {
         final MemorySegment waitStages = a.allocate(JAVA_INT);
         final MemorySegment pCmd = a.allocate(ADDRESS);
         final MemorySegment pSwapchains = a.allocate(JAVA_LONG);
-        final MemorySegment submit = a.allocate(SUBMIT);
+        final MemorySegment submit = a.allocate(VkStructs.SUBMIT_INFO);
         final MemorySegment presentInfo = a.allocate(PRESENT);
         final MemorySegment pVertexBuffers = a.allocate(JAVA_LONG);
         final MemorySegment pVertexOffsets = a.allocate(JAVA_LONG);
         final MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
         final MemorySegment pDescriptorSet1 = a.allocate(JAVA_LONG);
-        final MemorySegment pViewport = a.allocate(VIEWPORT);
-        final MemorySegment pScissor = a.allocate(RECT2D);
+        final MemorySegment pViewport = a.allocate(VkStructs.VIEWPORT);
+        final MemorySegment pScissor = a.allocate(VkStructs.RECT_2D);
         // A VkClearValue is a 16-byte union, and there must be one per attachment the pass clears. With depth
         // that is two: four floats of colour, then the depth float in the first slot of the second union.
         // Under-counting here is not a validation error the loader always catches — it reads whatever follows.
         final MemorySegment clear = a.allocate(JAVA_FLOAT, depthFormat == VulkanRenderPass.NO_DEPTH ? 4 : 8);
-        final MemorySegment beginInfo = a.allocate(CMD_BEGIN);
-        final MemorySegment rpBegin = a.allocate(RENDER_PASS_BEGIN);
+        final MemorySegment beginInfo = a.allocate(VkStructs.COMMAND_BUFFER_BEGIN_INFO);
+        final MemorySegment rpBegin = a.allocate(VkStructs.RENDER_PASS_BEGIN_INFO);
         MemorySegment pushSeg = MemorySegment.NULL;
         int pushCapacity = 0;
         long previousNanos = System.nanoTime();
@@ -573,14 +504,14 @@ public final class WindowedPresenter implements AutoCloseable {
             pCmd.set(ADDRESS, 0, cmd);
             pVertexOffsets.set(JAVA_LONG, 0, 0L);
 
-            si(submit, SUBMIT, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
-            si(submit, SUBMIT, "waitSemaphoreCount", 1);
-            sa(submit, SUBMIT, "pWaitSemaphores", waitSems);
-            sa(submit, SUBMIT, "pWaitDstStageMask", waitStages);
-            si(submit, SUBMIT, "commandBufferCount", 1);
-            sa(submit, SUBMIT, "pCommandBuffers", pCmd);
-            si(submit, SUBMIT, "signalSemaphoreCount", 1);
-            sa(submit, SUBMIT, "pSignalSemaphores", signalSems);
+            si(submit, VkStructs.SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
+            si(submit, VkStructs.SUBMIT_INFO, "waitSemaphoreCount", 1);
+            sa(submit, VkStructs.SUBMIT_INFO, "pWaitSemaphores", waitSems);
+            sa(submit, VkStructs.SUBMIT_INFO, "pWaitDstStageMask", waitStages);
+            si(submit, VkStructs.SUBMIT_INFO, "commandBufferCount", 1);
+            sa(submit, VkStructs.SUBMIT_INFO, "pCommandBuffers", pCmd);
+            si(submit, VkStructs.SUBMIT_INFO, "signalSemaphoreCount", 1);
+            sa(submit, VkStructs.SUBMIT_INFO, "pSignalSemaphores", signalSems);
 
             si(presentInfo, PRESENT, "sType", Vk.STRUCTURE_TYPE_PRESENT_INFO_KHR);
             si(presentInfo, PRESENT, "waitSemaphoreCount", 1);
@@ -589,18 +520,18 @@ public final class WindowedPresenter implements AutoCloseable {
             sa(presentInfo, PRESENT, "pSwapchains", pSwapchains);
             sa(presentInfo, PRESENT, "pImageIndices", pImageIndex);
 
-            sf(pViewport, VIEWPORT, "maxDepth", 1.0f);
+            sf(pViewport, VkStructs.VIEWPORT, "maxDepth", 1.0f);
 
-            si(beginInfo, CMD_BEGIN, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-            si(rpBegin, RENDER_PASS_BEGIN, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-            sl(rpBegin, RENDER_PASS_BEGIN, "renderPass", renderPass);
+            si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+            si(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+            sl(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "renderPass", renderPass);
             if (depthFormat != VulkanRenderPass.NO_DEPTH) {
                 clear.setAtIndex(JAVA_FLOAT, 4, DepthAttachment.CLEAR_DEPTH);
-                si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 2);
+                si(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "clearValueCount", 2);
             } else {
-                si(rpBegin, RENDER_PASS_BEGIN, "clearValueCount", 1);
+                si(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "clearValueCount", 1);
             }
-            sa(rpBegin, RENDER_PASS_BEGIN, "pClearValues", clear);
+            sa(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
         }
     }
 
@@ -625,38 +556,38 @@ public final class WindowedPresenter implements AutoCloseable {
     }
 
     private long createSemaphore(MethodHandle create) {
-        MemorySegment info = a.allocate(CREATE_INFO);
-        si(info, CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
+        MemorySegment info = a.allocate(VkStructs.CREATE_INFO);
+        si(info, VkStructs.CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
         MemorySegment p = a.allocate(JAVA_LONG);
         check(invoke(create, dev, info, MemorySegment.NULL, p), "vkCreateSemaphore");
         return p.get(JAVA_LONG, 0);
     }
 
     private long createFenceSignaled(MethodHandle create) {
-        MemorySegment info = a.allocate(CREATE_INFO);
-        si(info, CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FENCE_CREATE_INFO);
-        si(info, CREATE_INFO, "flags", 0x1);
+        MemorySegment info = a.allocate(VkStructs.CREATE_INFO);
+        si(info, VkStructs.CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FENCE_CREATE_INFO);
+        si(info, VkStructs.CREATE_INFO, "flags", 0x1);
         MemorySegment p = a.allocate(JAVA_LONG);
         check(invoke(create, dev, info, MemorySegment.NULL, p), "vkCreateFence");
         return p.get(JAVA_LONG, 0);
     }
 
     private long createPool(MethodHandle create) {
-        MemorySegment info = a.allocate(POOL_CI);
-        si(info, POOL_CI, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
-        si(info, POOL_CI, "flags", Vk.COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
-        si(info, POOL_CI, "queueFamilyIndex", device.queueFamilyIndex());
+        MemorySegment info = a.allocate(VkStructs.COMMAND_POOL_CREATE_INFO);
+        si(info, VkStructs.COMMAND_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
+        si(info, VkStructs.COMMAND_POOL_CREATE_INFO, "flags", Vk.COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+        si(info, VkStructs.COMMAND_POOL_CREATE_INFO, "queueFamilyIndex", device.queueFamilyIndex());
         MemorySegment p = a.allocate(JAVA_LONG);
         check(invoke(create, dev, info, MemorySegment.NULL, p), "vkCreateCommandPool");
         return p.get(JAVA_LONG, 0);
     }
 
     private MemorySegment allocateCommandBuffer(MethodHandle allocCmd) {
-        MemorySegment info = a.allocate(CMD_ALLOC);
-        si(info, CMD_ALLOC, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
-        sl(info, CMD_ALLOC, "commandPool", pool);
-        si(info, CMD_ALLOC, "level", Vk.COMMAND_BUFFER_LEVEL_PRIMARY);
-        si(info, CMD_ALLOC, "commandBufferCount", 1);
+        MemorySegment info = a.allocate(VkStructs.COMMAND_BUFFER_ALLOCATE_INFO);
+        si(info, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+        sl(info, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "commandPool", pool);
+        si(info, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "level", Vk.COMMAND_BUFFER_LEVEL_PRIMARY);
+        si(info, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "commandBufferCount", 1);
         MemorySegment p = a.allocate(ADDRESS);
         check(invoke(allocCmd, dev, info, p), "vkAllocateCommandBuffers");
         return p.get(ADDRESS, 0);

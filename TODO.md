@@ -91,6 +91,30 @@ file is about the engine and its API. Decisions are logged in
       which is why `TechniqueContext.resources()` had to go; an interface with no implementor is a guess
 - [x] **`docs/architecture.md` §3–§6 and `docs/refactor-decisions.md` (D17–D22)** brought up to date
 
+### `Target.Kind.OFFSCREEN`, and the first check that counts pixels (D23)
+
+- [x] **`OffscreenPresenter`** beside `WindowedPresenter` — colour image + optional `DepthAttachment` +
+      framebuffer + command pool + two command buffers + fence + a permanently-mapped readback buffer, all
+      created once; `frame(pushBytes, perFrame, recorder)` into a begun pass, `readRgba()` after. The copy is
+      pre-recorded and submitted on demand, so a run that never reads pays nothing. `VulkanRenderPass` and
+      `DepthAttachment` reused unchanged
+- [x] **The engine runs an offscreen target**, and `VexelEngine.lastFrameRgba()` hands back the frame it
+      finished on. `driveTechniques` and `loop` are shared by both paths through an internal `FrameTarget`, so
+      a capture is evidence about what a window would show rather than about a second implementation. An
+      offscreen run without a frame callback is refused before a device is touched — nothing else could end it
+- [x] **`OffscreenEngineTest` asserts pixels.** Exact bytes over a whole 64×64 capture, and a two-technique
+      pipeline run twice with the list reversed, which *measures* that order is the composition. Before this,
+      a pipeline whose fragment shader wrote nothing passed every engine-level test in the build
+- [x] **`Recorder` and `FrameUpdate` are top-level**, not nested in `WindowedPresenter` — both presenters take
+      them and the engine hands the same lambda to each
+- [x] **`VkStructs`, and `VkStructsTest` to pin it** — the layouts that appeared privately in four classes with
+      field names already disagreeing. Done with the presenter rather than after it, because the alternative
+      was a fifth copy; the test pins every size and the offsets a padding mistake moves, which is the failure
+      no compiler catches. `OffscreenReadback` also loses its private clone of `Ffm`
+- [x] **`VulkanInstance` resolves its `VK_KHR_surface` commands lazily** — eager resolution made every
+      extension-less (headless) instance fail in the constructor, naming a surface function to a caller that
+      had never mentioned surfaces
+
 ---
 
 ## P1 — Real gaps, stable price
@@ -111,20 +135,10 @@ file is about the engine and its API. Decisions are logged in
       is a camera plus a focal length, with no near/far. That convention is the real design work; the shader
       change is small once it exists.
 
-      Costs early-z for that pipeline. Needs a smoke where a marched surface and a second technique occlude
-      each other, which is the picture that would prove it — and which wants offscreen readback below to be
-      counted rather than looked at.
-
-- [ ] **Implement `Target.Kind.OFFSCREEN` in the engine.** It is authorable and throws. Until it exists, every
-      engine-level test needs a window and a GPU, so `TwoTechniqueTest`/`SdfEngineTest`/`HybridFrameTest`/
-      `EngineEventsTest`/`HelloTechniqueTest` can only skip in a headless environment rather than run — and
-      none of them can count pixels, because the windowed path does no readback.
-
-      The existing headless paths (`OffscreenRenderer`, `OffscreenDraw`) are single-pipeline, per-call and
-      have no `Recorder` seam, so this is a new `OffscreenPresenter` beside `WindowedPresenter`: a colour image
-      + optional depth + framebuffer + command pool + readback buffer created once, `frame(perFrame, recorder)`
-      recording into a begun pass, and `readRgba()` after. Reuses `VulkanRenderPass` and `DepthAttachment`
-      unchanged.
+      Costs early-z for that pipeline. Needs a check where a marched surface and a second technique occlude
+      each other — and **that check can now be written**: `OffscreenEngineTest` runs a pipeline headlessly and
+      asserts exact pixels, so occlusion is a count rather than a screenshot somebody looks at. The
+      measurement half is no longer the blocker; the projection convention is.
 
 - [ ] **Frames in flight > 1.** `EngineConfig.framesInFlight` accepts 1–3 and the runtime honours exactly 1;
       `EngineConfigTest` pins the default to what the presenter actually does rather than to what the config
@@ -138,13 +152,13 @@ file is about the engine and its API. Decisions are logged in
 
 ## P2 — Consistency and polish
 
-- [ ] **The Vulkan struct layouts are declared three times.** `VkFramebufferCreateInfo`,
-      `VkCommandPoolCreateInfo`, `VkCommandBufferAllocateInfo`, `VkCommandBufferBeginInfo`,
-      `VkRenderPassBeginInfo`, `VkSubmitInfo`, `VkMemoryRequirements`, `VkMemoryAllocateInfo` and friends each
-      appear privately in `WindowedPresenter`, `OffscreenDraw` and `OffscreenRenderer`, with field names that
-      already disagree (`area_w` vs `area_extent_width`). A shared `VkStructs` in `dev.vexelray.vulkan.vk` is
-      the obvious home, and the migration is mechanical but padding-sensitive — worth doing *with* the
-      `OffscreenPresenter` above rather than adding a fourth copy.
+- [ ] **The pipeline-state struct layouts are still declared twice.** `VkStructs` (D23) absorbed the layouts
+      the four presenter/readback classes shared, but `OffscreenRenderer` still carries its own
+      `VkPipelineShaderStageCreateInfo`, `VkPipelineVertexInputStateCreateInfo`, the viewport/rasterisation/
+      multisample/colour-blend states and `VkGraphicsPipelineCreateInfo` — a second copy of what
+      `GraphicsPipeline` has. Smaller than the one D23 closed and less urgent, because the two copies build
+      pipelines that are deliberately different; the real question underneath is whether `OffscreenRenderer`
+      should build a pipeline at all now that `OffscreenPresenter` exists to drive one it is handed.
 - [ ] **Convert the five remaining hand-wiring demos.** `CanvasDemo`, `DynamicCanvasDemo`,
       `SampledSurfaceDemo`, `TextWindowDemo`, `Sdf2DWindowDemo` still build their own swapchain and presenter.
       Deliberate for now — they are the only coverage of `WindowedPresenter`'s single-pipeline path, which

@@ -550,6 +550,71 @@ linear, so the difference is never colour space.
   any runtime. An interface with no implementor is a guess; the day there is a pooled allocator, adding it back
   is a one-line change to `TechniqueContext`.
 
+## 19. `Target.Kind.OFFSCREEN`, and a frame you can count (D23)
+
+**DECISION (D23, DONE).** The engine renders an offscreen target through a new `OffscreenPresenter`, and the
+frame it finishes on is readable afterwards as `VexelEngine.lastFrameRgba()`.
+
+`Target.Kind.OFFSCREEN` had been authorable since the target API existed and `VulkanEngine` threw on it. The
+cost of that was not the missing feature, it was what it did to the checks: every engine-level test needed a
+window, and the windowed path does no readback, so a headless environment could only skip them and *none of
+them could assert anything about the picture*. A pipeline whose fragment shader wrote nothing at all passed
+`TwoTechniqueTest`, `SdfEngineTest`, `HybridFrameTest` and `EngineEventsTest` alike. "Techniques composite in
+list order" was a claim about the code with no measurement under it.
+
+**`OffscreenPresenter` beside `WindowedPresenter`, not inside the existing headless paths.** `OffscreenDraw`
+and `OffscreenRenderer` are single-pipeline and per-call — they build an image, a framebuffer, a command
+buffer and a readback buffer, record one draw with the pipeline they were given, and tear all of it down.
+There is no seam for a caller to record into, so a pipeline of techniques cannot share their frame, and
+nothing survives between calls, so a run of frames pays full setup each time. They stay, because "render this
+one thing to a texture" is a real shape and is what the Canvas texture target wants. What was missing is a
+frame *loop* with no window.
+
+So: colour image + optional `DepthAttachment` + framebuffer + command pool + two command buffers + fence +
+a permanently-mapped readback buffer, all created once; `frame(pushBytes, perFrame, recorder)` records into a
+begun pass; `readRgba()` after. `VulkanRenderPass` and `DepthAttachment` are reused unchanged — the only
+difference in the pass is `TRANSFER_SRC_OPTIMAL` instead of `PRESENT_SRC_KHR`, and `VulkanRenderPass` already
+adds the right outgoing subpass dependency for it without being told which of the two it is building.
+
+**One frame loop, two presenters.** `VulkanEngine.driveTechniques` and `VulkanEngine.loop` are shared by both
+paths through a small internal `FrameTarget` (one frame, plus this frame's extent — a method rather than two
+numbers, because a window resize moves it without re-realising anything). That sharing is the point rather
+than a tidiness: a headless capture is evidence about what a window would show *only while* the two runs
+differ in the presenter and nowhere else. The moment a technique can tell which one it is under, a passing
+offscreen test stops meaning anything about the interactive one.
+
+Two consequences worth naming:
+
+- **An offscreen run requires a frame callback.** A windowed run ends when its window closes; an offscreen
+  one has no window and no swapchain that can go out of date, so the callback returning `false` is the only
+  thing that can end it. Passing `null` is refused before a device is touched, because the alternative is not
+  a bug that fails, it is a bug that hangs — and CI reports a hang as a timeout with no stack.
+- **The capture is the last frame, and only the last frame.** Copying every frame out of device memory would
+  make a thousand-frame headless run pay a full image copy a thousand times for pixels nobody asked for;
+  capturing none leaves the whole point of an offscreen target unreachable. The copy command buffer is
+  recorded once at construction and submitted on demand, so a run that never reads pays nothing. A run that
+  needs a specific intermediate frame stops at it and runs again.
+
+`OffscreenEngineTest` is what this was for: `SolidTechnique` fills the frame with a pushed RGBA, and the test
+asserts *exact bytes* — every pixel of a 64×64 capture, then a two-technique pipeline run twice with the list
+reversed, which measures rather than assumes that order is the composition.
+
+*Also in the same sweep:*
+
+- **`Recorder` and `FrameUpdate` are top-level**, no longer nested in `WindowedPresenter`. Both presenters
+  take them and the engine hands the same lambda to each; a type named after one of its two implementations
+  would have made the shared path read like a borrowing.
+- **`VkStructs`** — the layouts that appeared privately in `WindowedPresenter`, `OffscreenDraw`,
+  `OffscreenRenderer` and `OffscreenReadback`, with field names that had already drifted (`area_w` in one,
+  `area_extent_width` in another, for the same field). Done *with* this change rather than after it, because
+  the alternative was a fifth copy. `OffscreenReadback` also loses its private clone of `Ffm`.
+  `VkStructsTest` pins every layout's size and the offsets a padding mistake actually moves — the migration is
+  mechanical but its failure mode is a driver reading the wrong bytes, which no compiler catches and which
+  only a machine with a GPU would otherwise notice.
+- **`VulkanInstance` resolves its two `VK_KHR_surface` commands lazily.** They exist only when the extension
+  is enabled, and a headless instance does not enable it, so eager resolution made *every* extension-less
+  instance die in the constructor naming a surface function to a caller that had not mentioned surfaces.
+
 ## Open questions (to revisit as phases land)
 
 - **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need

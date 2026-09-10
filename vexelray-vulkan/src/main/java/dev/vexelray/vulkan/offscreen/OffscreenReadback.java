@@ -1,17 +1,24 @@
 package dev.vexelray.vulkan.offscreen;
 
-import dev.vexelray.os.ffi.NativeException;
 import dev.vexelray.vulkan.vk.Vk;
+import dev.vexelray.vulkan.vk.VkStructs;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.GroupLayout;
 import java.lang.foreign.MemoryLayout;
-import java.lang.foreign.MemoryLayout.PathElement;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 
+import static dev.vexelray.vulkan.vk.Ffm.check;
+import static dev.vexelray.vulkan.vk.Ffm.gi;
+import static dev.vexelray.vulkan.vk.Ffm.gl;
+import static dev.vexelray.vulkan.vk.Ffm.invoke;
+import static dev.vexelray.vulkan.vk.Ffm.invokeVoid;
+import static dev.vexelray.vulkan.vk.Ffm.sa;
+import static dev.vexelray.vulkan.vk.Ffm.si;
+import static dev.vexelray.vulkan.vk.Ffm.sl;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
@@ -30,49 +37,6 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class OffscreenReadback {
 
-    private static final GroupLayout IMAGE_CREATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), JAVA_INT.withName("imageType"), JAVA_INT.withName("format"),
-            JAVA_INT.withName("extent_width"), JAVA_INT.withName("extent_height"), JAVA_INT.withName("extent_depth"),
-            JAVA_INT.withName("mipLevels"), JAVA_INT.withName("arrayLayers"), JAVA_INT.withName("samples"),
-            JAVA_INT.withName("tiling"), JAVA_INT.withName("usage"), JAVA_INT.withName("sharingMode"),
-            JAVA_INT.withName("queueFamilyIndexCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pQueueFamilyIndices"), JAVA_INT.withName("initialLayout"), MemoryLayout.paddingLayout(4)
-    ).withName("VkImageCreateInfo");
-
-    private static final GroupLayout MEMORY_REQUIREMENTS = MemoryLayout.structLayout(
-            JAVA_LONG.withName("size"), JAVA_LONG.withName("alignment"),
-            JAVA_INT.withName("memoryTypeBits"), MemoryLayout.paddingLayout(4)
-    ).withName("VkMemoryRequirements");
-
-    private static final GroupLayout MEMORY_ALLOCATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_LONG.withName("allocationSize"), JAVA_INT.withName("memoryTypeIndex"), MemoryLayout.paddingLayout(4)
-    ).withName("VkMemoryAllocateInfo");
-
-    private static final GroupLayout BUFFER_CREATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4), JAVA_LONG.withName("size"),
-            JAVA_INT.withName("usage"), JAVA_INT.withName("sharingMode"),
-            JAVA_INT.withName("queueFamilyIndexCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pQueueFamilyIndices")
-    ).withName("VkBufferCreateInfo");
-
-    private static final GroupLayout COMMAND_POOL_CREATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), JAVA_INT.withName("queueFamilyIndex")
-    ).withName("VkCommandPoolCreateInfo");
-
-    private static final GroupLayout COMMAND_BUFFER_ALLOCATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_LONG.withName("commandPool"), JAVA_INT.withName("level"), JAVA_INT.withName("commandBufferCount")
-    ).withName("VkCommandBufferAllocateInfo");
-
-    private static final GroupLayout COMMAND_BUFFER_BEGIN_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pInheritanceInfo")
-    ).withName("VkCommandBufferBeginInfo");
-
     private static final GroupLayout IMAGE_MEMORY_BARRIER = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("srcAccessMask"), JAVA_INT.withName("dstAccessMask"),
@@ -87,27 +51,6 @@ public final class OffscreenReadback {
             JAVA_INT.withName("aspectMask"), JAVA_INT.withName("baseMipLevel"), JAVA_INT.withName("levelCount"),
             JAVA_INT.withName("baseArrayLayer"), JAVA_INT.withName("layerCount")
     ).withName("VkImageSubresourceRange");
-
-    private static final GroupLayout BUFFER_IMAGE_COPY = MemoryLayout.structLayout(
-            JAVA_LONG.withName("bufferOffset"), JAVA_INT.withName("bufferRowLength"), JAVA_INT.withName("bufferImageHeight"),
-            JAVA_INT.withName("is_aspectMask"), JAVA_INT.withName("is_mipLevel"),
-            JAVA_INT.withName("is_baseArrayLayer"), JAVA_INT.withName("is_layerCount"),
-            JAVA_INT.withName("off_x"), JAVA_INT.withName("off_y"), JAVA_INT.withName("off_z"),
-            JAVA_INT.withName("ext_width"), JAVA_INT.withName("ext_height"), JAVA_INT.withName("ext_depth")
-    ).withName("VkBufferImageCopy");
-
-    private static final GroupLayout SUBMIT_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("waitSemaphoreCount"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pWaitSemaphores"),
-            ADDRESS.withName("pWaitDstStageMask"), JAVA_INT.withName("commandBufferCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pCommandBuffers"), JAVA_INT.withName("signalSemaphoreCount"), MemoryLayout.paddingLayout(4),
-            ADDRESS.withName("pSignalSemaphores")
-    ).withName("VkSubmitInfo");
-
-    private static final GroupLayout FENCE_CREATE_INFO = MemoryLayout.structLayout(
-            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
-            JAVA_INT.withName("flags"), MemoryLayout.paddingLayout(4)
-    ).withName("VkFenceCreateInfo");
 
     private OffscreenReadback() {
     }
@@ -173,71 +116,71 @@ public final class OffscreenReadback {
 
         try (Arena arena = Arena.ofConfined()) {
             // --- image + device-local memory ---
-            MemorySegment imageInfo = arena.allocate(IMAGE_CREATE_INFO);
-            si(imageInfo, IMAGE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_CREATE_INFO);
-            si(imageInfo, IMAGE_CREATE_INFO, "imageType", Vk.IMAGE_TYPE_2D);
-            si(imageInfo, IMAGE_CREATE_INFO, "format", Vk.FORMAT_R8G8B8A8_UNORM);
-            si(imageInfo, IMAGE_CREATE_INFO, "extent_width", width);
-            si(imageInfo, IMAGE_CREATE_INFO, "extent_height", height);
-            si(imageInfo, IMAGE_CREATE_INFO, "extent_depth", 1);
-            si(imageInfo, IMAGE_CREATE_INFO, "mipLevels", 1);
-            si(imageInfo, IMAGE_CREATE_INFO, "arrayLayers", 1);
-            si(imageInfo, IMAGE_CREATE_INFO, "samples", Vk.SAMPLE_COUNT_1_BIT);
-            si(imageInfo, IMAGE_CREATE_INFO, "tiling", Vk.IMAGE_TILING_OPTIMAL);
-            si(imageInfo, IMAGE_CREATE_INFO, "usage", Vk.IMAGE_USAGE_TRANSFER_DST_BIT | Vk.IMAGE_USAGE_TRANSFER_SRC_BIT);
-            si(imageInfo, IMAGE_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
-            si(imageInfo, IMAGE_CREATE_INFO, "initialLayout", Vk.IMAGE_LAYOUT_UNDEFINED);
+            MemorySegment imageInfo = arena.allocate(VkStructs.IMAGE_CREATE_INFO);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "imageType", Vk.IMAGE_TYPE_2D);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "format", Vk.FORMAT_R8G8B8A8_UNORM);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "extent_width", width);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "extent_height", height);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "extent_depth", 1);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "mipLevels", 1);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "arrayLayers", 1);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "samples", Vk.SAMPLE_COUNT_1_BIT);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "tiling", Vk.IMAGE_TILING_OPTIMAL);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "usage", Vk.IMAGE_USAGE_TRANSFER_DST_BIT | Vk.IMAGE_USAGE_TRANSFER_SRC_BIT);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
+            si(imageInfo, VkStructs.IMAGE_CREATE_INFO, "initialLayout", Vk.IMAGE_LAYOUT_UNDEFINED);
 
             MemorySegment pImage = arena.allocate(JAVA_LONG);
             check(invoke(vkCreateImage, dev, imageInfo, MemorySegment.NULL, pImage), "vkCreateImage");
             long image = pImage.get(JAVA_LONG, 0);
 
-            MemorySegment imageReq = arena.allocate(MEMORY_REQUIREMENTS);
+            MemorySegment imageReq = arena.allocate(VkStructs.MEMORY_REQUIREMENTS);
             invokeVoid(vkGetImageMemoryRequirements, dev, image, imageReq);
-            long imageMemory = allocate(arena, vkAllocateMemory, dev, gl(imageReq, MEMORY_REQUIREMENTS, "size"),
-                    device.findMemoryType(gi(imageReq, MEMORY_REQUIREMENTS, "memoryTypeBits"),
+            long imageMemory = allocate(arena, vkAllocateMemory, dev, gl(imageReq, VkStructs.MEMORY_REQUIREMENTS, "size"),
+                    device.findMemoryType(gi(imageReq, VkStructs.MEMORY_REQUIREMENTS, "memoryTypeBits"),
                             Vk.MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
             check(invoke(vkBindImageMemory, dev, image, imageMemory, 0L), "vkBindImageMemory");
 
             // --- host-visible readback buffer ---
-            MemorySegment bufferInfo = arena.allocate(BUFFER_CREATE_INFO);
-            si(bufferInfo, BUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-            sl(bufferInfo, BUFFER_CREATE_INFO, "size", pixelBytes);
-            si(bufferInfo, BUFFER_CREATE_INFO, "usage", Vk.BUFFER_USAGE_TRANSFER_DST_BIT);
-            si(bufferInfo, BUFFER_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
+            MemorySegment bufferInfo = arena.allocate(VkStructs.BUFFER_CREATE_INFO);
+            si(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+            sl(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "size", pixelBytes);
+            si(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "usage", Vk.BUFFER_USAGE_TRANSFER_DST_BIT);
+            si(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
 
             MemorySegment pBuffer = arena.allocate(JAVA_LONG);
             check(invoke(vkCreateBuffer, dev, bufferInfo, MemorySegment.NULL, pBuffer), "vkCreateBuffer");
             long buffer = pBuffer.get(JAVA_LONG, 0);
 
-            MemorySegment bufferReq = arena.allocate(MEMORY_REQUIREMENTS);
+            MemorySegment bufferReq = arena.allocate(VkStructs.MEMORY_REQUIREMENTS);
             invokeVoid(vkGetBufferMemoryRequirements, dev, buffer, bufferReq);
-            long bufferMemory = allocate(arena, vkAllocateMemory, dev, gl(bufferReq, MEMORY_REQUIREMENTS, "size"),
-                    device.findMemoryType(gi(bufferReq, MEMORY_REQUIREMENTS, "memoryTypeBits"),
+            long bufferMemory = allocate(arena, vkAllocateMemory, dev, gl(bufferReq, VkStructs.MEMORY_REQUIREMENTS, "size"),
+                    device.findMemoryType(gi(bufferReq, VkStructs.MEMORY_REQUIREMENTS, "memoryTypeBits"),
                             Vk.MEMORY_PROPERTY_HOST_VISIBLE_BIT | Vk.MEMORY_PROPERTY_HOST_COHERENT_BIT));
             check(invoke(vkBindBufferMemory, dev, buffer, bufferMemory, 0L), "vkBindBufferMemory");
 
             // --- command pool + buffer ---
-            MemorySegment poolInfo = arena.allocate(COMMAND_POOL_CREATE_INFO);
-            si(poolInfo, COMMAND_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
-            si(poolInfo, COMMAND_POOL_CREATE_INFO, "queueFamilyIndex", device.queueFamilyIndex());
+            MemorySegment poolInfo = arena.allocate(VkStructs.COMMAND_POOL_CREATE_INFO);
+            si(poolInfo, VkStructs.COMMAND_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
+            si(poolInfo, VkStructs.COMMAND_POOL_CREATE_INFO, "queueFamilyIndex", device.queueFamilyIndex());
             MemorySegment pPool = arena.allocate(JAVA_LONG);
             check(invoke(vkCreateCommandPool, dev, poolInfo, MemorySegment.NULL, pPool), "vkCreateCommandPool");
             long pool = pPool.get(JAVA_LONG, 0);
 
-            MemorySegment cbAlloc = arena.allocate(COMMAND_BUFFER_ALLOCATE_INFO);
-            si(cbAlloc, COMMAND_BUFFER_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
-            sl(cbAlloc, COMMAND_BUFFER_ALLOCATE_INFO, "commandPool", pool);
-            si(cbAlloc, COMMAND_BUFFER_ALLOCATE_INFO, "level", Vk.COMMAND_BUFFER_LEVEL_PRIMARY);
-            si(cbAlloc, COMMAND_BUFFER_ALLOCATE_INFO, "commandBufferCount", 1);
+            MemorySegment cbAlloc = arena.allocate(VkStructs.COMMAND_BUFFER_ALLOCATE_INFO);
+            si(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+            sl(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "commandPool", pool);
+            si(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "level", Vk.COMMAND_BUFFER_LEVEL_PRIMARY);
+            si(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "commandBufferCount", 1);
             MemorySegment pCmd = arena.allocate(ADDRESS);
             check(invoke(vkAllocateCommandBuffers, dev, cbAlloc, pCmd), "vkAllocateCommandBuffers");
             MemorySegment cmd = pCmd.get(ADDRESS, 0);
 
             // --- record: barrier -> clear -> barrier -> copy ---
-            MemorySegment beginInfo = arena.allocate(COMMAND_BUFFER_BEGIN_INFO);
-            si(beginInfo, COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-            si(beginInfo, COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            MemorySegment beginInfo = arena.allocate(VkStructs.COMMAND_BUFFER_BEGIN_INFO);
+            si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+            si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(invoke(vkBeginCommandBuffer, cmd, beginInfo), "vkBeginCommandBuffer");
 
             MemorySegment toDst = imageBarrier(arena, image, 0, Vk.ACCESS_TRANSFER_WRITE_BIT,
@@ -261,29 +204,29 @@ public final class OffscreenReadback {
             invokeVoid(vkCmdPipelineBarrier, cmd, Vk.PIPELINE_STAGE_TRANSFER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT,
                     0, 0, MemorySegment.NULL, 0, MemorySegment.NULL, 1, toSrc);
 
-            MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
-            si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
-            si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
-            si(region, BUFFER_IMAGE_COPY, "ext_width", width);
-            si(region, BUFFER_IMAGE_COPY, "ext_height", height);
-            si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
+            MemorySegment region = arena.allocate(VkStructs.BUFFER_IMAGE_COPY);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "is_layerCount", 1);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "ext_width", width);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "ext_height", height);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "ext_depth", 1);
             invokeVoid(vkCmdCopyImageToBuffer, cmd, image, Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, region);
 
             check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
 
             // --- submit + wait ---
-            MemorySegment fenceInfo = arena.allocate(FENCE_CREATE_INFO);
-            si(fenceInfo, FENCE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FENCE_CREATE_INFO);
+            MemorySegment fenceInfo = arena.allocate(VkStructs.CREATE_INFO);
+            si(fenceInfo, VkStructs.CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FENCE_CREATE_INFO);
             MemorySegment pFence = arena.allocate(JAVA_LONG);
             check(invoke(vkCreateFence, dev, fenceInfo, MemorySegment.NULL, pFence), "vkCreateFence");
             long fence = pFence.get(JAVA_LONG, 0);
 
             MemorySegment pCmdArray = arena.allocate(ADDRESS, 1);
             pCmdArray.setAtIndex(ADDRESS, 0, cmd);
-            MemorySegment submit = arena.allocate(SUBMIT_INFO);
-            si(submit, SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
-            si(submit, SUBMIT_INFO, "commandBufferCount", 1);
-            sa(submit, SUBMIT_INFO, "pCommandBuffers", pCmdArray);
+            MemorySegment submit = arena.allocate(VkStructs.SUBMIT_INFO);
+            si(submit, VkStructs.SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
+            si(submit, VkStructs.SUBMIT_INFO, "commandBufferCount", 1);
+            sa(submit, VkStructs.SUBMIT_INFO, "pCommandBuffers", pCmdArray);
             check(invoke(vkQueueSubmit, device.queue(), 1, submit, fence), "vkQueueSubmit");
 
             MemorySegment pFenceArray = arena.allocate(JAVA_LONG);
@@ -309,10 +252,10 @@ public final class OffscreenReadback {
 
     private static long allocate(Arena arena, MethodHandle vkAllocateMemory, MemorySegment dev,
                                  long size, int memoryTypeIndex) {
-        MemorySegment info = arena.allocate(MEMORY_ALLOCATE_INFO);
-        si(info, MEMORY_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
-        sl(info, MEMORY_ALLOCATE_INFO, "allocationSize", size);
-        si(info, MEMORY_ALLOCATE_INFO, "memoryTypeIndex", memoryTypeIndex);
+        MemorySegment info = arena.allocate(VkStructs.MEMORY_ALLOCATE_INFO);
+        si(info, VkStructs.MEMORY_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+        sl(info, VkStructs.MEMORY_ALLOCATE_INFO, "allocationSize", size);
+        si(info, VkStructs.MEMORY_ALLOCATE_INFO, "memoryTypeIndex", memoryTypeIndex);
         MemorySegment pMemory = arena.allocate(JAVA_LONG);
         check(invoke(vkAllocateMemory, dev, info, MemorySegment.NULL, pMemory), "vkAllocateMemory");
         return pMemory.get(JAVA_LONG, 0);
@@ -333,53 +276,5 @@ public final class OffscreenReadback {
         si(barrier, IMAGE_MEMORY_BARRIER, "sr_levelCount", 1);
         si(barrier, IMAGE_MEMORY_BARRIER, "sr_layerCount", 1);
         return barrier;
-    }
-
-    // --- tiny FFM helpers: offsets from the layout, never literals ---
-
-    private static long off(GroupLayout layout, String field) {
-        return layout.byteOffset(PathElement.groupElement(field));
-    }
-
-    private static void si(MemorySegment s, GroupLayout l, String f, int v) {
-        s.set(JAVA_INT, off(l, f), v);
-    }
-
-    private static void sl(MemorySegment s, GroupLayout l, String f, long v) {
-        s.set(JAVA_LONG, off(l, f), v);
-    }
-
-    private static void sa(MemorySegment s, GroupLayout l, String f, MemorySegment v) {
-        s.set(ADDRESS, off(l, f), v);
-    }
-
-    private static int gi(MemorySegment s, GroupLayout l, String f) {
-        return s.get(JAVA_INT, off(l, f));
-    }
-
-    private static long gl(MemorySegment s, GroupLayout l, String f) {
-        return s.get(JAVA_LONG, off(l, f));
-    }
-
-    private static int invoke(MethodHandle h, Object... args) {
-        try {
-            return (int) h.invokeWithArguments(args);
-        } catch (Throwable t) {
-            throw NativeException.rethrow("vulkan call", t);
-        }
-    }
-
-    private static void invokeVoid(MethodHandle h, Object... args) {
-        try {
-            h.invokeWithArguments(args);
-        } catch (Throwable t) {
-            throw NativeException.rethrow("vulkan call", t);
-        }
-    }
-
-    private static void check(int result, String call) {
-        if (result != Vk.VK_SUCCESS) {
-            throw new NativeException(call + " failed: VkResult " + result);
-        }
     }
 }

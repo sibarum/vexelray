@@ -95,6 +95,12 @@ public interface VexelEngine extends AutoCloseable {
      * threading contract techniques are written against follows from that — see {@link RenderTechnique} for it
      * in full. Call {@code run} from the thread that owns the application's main loop; on macOS that must be
      * the process's first thread, because that is where a window may be created at all.
+     *
+     * <p><b>An offscreen target requires {@code onFrame}.</b> A windowed run also ends when its window is
+     * closed, so a null callback there means "run until the user quits"; an offscreen run has no window, no
+     * swapchain that can go out of date, and nothing else that can say stop, so the callback returning
+     * {@code false} is the only way it ever returns. Passing null with an offscreen target is refused rather
+     * than run, because the alternative is a hang. Read the result with {@link #lastFrameRgba()} afterwards.
      */
     default void run(RenderPipeline pipeline, FrameCallback onFrame) {
         run(pipeline, null, onFrame);
@@ -149,6 +155,44 @@ public interface VexelEngine extends AutoCloseable {
      * }</pre>
      */
     long windowHandle();
+
+    /**
+     * The last frame an offscreen run drew, as tightly-packed R8G8B8A8 — row-major, top-to-bottom,
+     * {@code width * height * 4} bytes for the target's extent.
+     *
+     * <p>The offscreen counterpart to {@link #windowHandle()}, and for the same reason: it is the one thing an
+     * application legitimately needs back from a runtime it handed a target to. A windowed run's output is on
+     * a screen and needs no method; an offscreen run's output is nowhere at all unless something hands it
+     * over.
+     *
+     * <p><b>Read it after {@link #run} returns.</b> The engine captures the last frame of the run before it
+     * tears the target down, and the bytes are an ordinary array that outlives every GPU object involved — so
+     * unlike {@code windowHandle()}, this is valid precisely when {@code run} is <em>not</em> executing:
+     *
+     * <pre>{@code
+     * RenderPipeline pipeline = RenderPipeline.builder()
+     *         .target(Target.offscreen(256, 256).color(AttachmentFormat.RGBA8_UNORM))
+     *         .technique(technique)
+     *         .build();
+     *
+     * try (VexelEngine engine = VexelEngine.create(EngineConfig.of("capture"))) {
+     *     engine.run(pipeline, frame -> frame.frameIndex() < 4);   // five frames, then stop
+     *     byte[] rgba = engine.lastFrameRgba();                     // the fifth one
+     * }
+     * }</pre>
+     *
+     * <p>Capturing the last frame and only the last frame is deliberate. Copying every frame out of device
+     * memory would make a thousand-frame headless run pay a full image copy a thousand times for pixels
+     * nothing asked for; capturing none would leave the whole point of an offscreen target unreachable. A run
+     * that needs a specific intermediate frame stops at it and runs again.
+     *
+     * @return the captured pixels — the array is the caller's, and is not shared with a later run
+     * @throws IllegalStateException if no offscreen run has completed on this engine. A windowed run captures
+     *                               nothing, and saying so is better than an empty array: "the run drew
+     *                               nothing" and "this run does not capture" are different facts, and a length
+     *                               of zero cannot tell them apart
+     */
+    byte[] lastFrameRgba();
 
     @Override
     void close();

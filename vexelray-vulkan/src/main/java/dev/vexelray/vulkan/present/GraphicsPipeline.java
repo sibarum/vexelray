@@ -3,6 +3,7 @@ package dev.vexelray.vulkan.present;
 import sibarum.probe.Lane;
 import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
+import dev.vexelray.vulkan.vk.VkStructs;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
 import java.lang.foreign.Arena;
@@ -197,14 +198,6 @@ public final class GraphicsPipeline implements AutoCloseable {
             JAVA_INT.withName("flags"), JAVA_INT.withName("topology"), JAVA_INT.withName("primitiveRestartEnable"),
             MemoryLayout.paddingLayout(4)).withName("VkPipelineInputAssemblyStateCreateInfo");
 
-    private static final GroupLayout VIEWPORT = MemoryLayout.structLayout(
-            JAVA_FLOAT.withName("x"), JAVA_FLOAT.withName("y"), JAVA_FLOAT.withName("width"),
-            JAVA_FLOAT.withName("height"), JAVA_FLOAT.withName("minDepth"), JAVA_FLOAT.withName("maxDepth")).withName("VkViewport");
-
-    private static final GroupLayout RECT2D = MemoryLayout.structLayout(
-            JAVA_INT.withName("offset_x"), JAVA_INT.withName("offset_y"),
-            JAVA_INT.withName("extent_width"), JAVA_INT.withName("extent_height")).withName("VkRect2D");
-
     private static final GroupLayout VIEWPORT_STATE = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
             JAVA_INT.withName("flags"), JAVA_INT.withName("viewportCount"), ADDRESS.withName("pViewports"),
@@ -347,13 +340,13 @@ public final class GraphicsPipeline implements AutoCloseable {
             si(inputAssembly, INPUT_ASSEMBLY_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
             si(inputAssembly, INPUT_ASSEMBLY_STATE, "topology", Vk.PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
-            MemorySegment viewport = arena.allocate(VIEWPORT);
-            sf(viewport, VIEWPORT, "width", width);
-            sf(viewport, VIEWPORT, "height", height);
-            sf(viewport, VIEWPORT, "maxDepth", 1.0f);
-            MemorySegment scissor = arena.allocate(RECT2D);
-            si(scissor, RECT2D, "extent_width", width);
-            si(scissor, RECT2D, "extent_height", height);
+            MemorySegment viewport = arena.allocate(VkStructs.VIEWPORT);
+            sf(viewport, VkStructs.VIEWPORT, "width", width);
+            sf(viewport, VkStructs.VIEWPORT, "height", height);
+            sf(viewport, VkStructs.VIEWPORT, "maxDepth", 1.0f);
+            MemorySegment scissor = arena.allocate(VkStructs.RECT_2D);
+            si(scissor, VkStructs.RECT_2D, "extent_width", width);
+            si(scissor, VkStructs.RECT_2D, "extent_height", height);
             MemorySegment viewportState = arena.allocate(VIEWPORT_STATE);
             si(viewportState, VIEWPORT_STATE, "sType", Vk.STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
             si(viewportState, VIEWPORT_STATE, "viewportCount", 1);
