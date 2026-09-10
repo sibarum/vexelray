@@ -1,4 +1,4 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.vexelray.engine.EngineProvider;
 import dev.vexelray.engine.VexelEngine;
@@ -15,7 +15,9 @@ public final class VulkanEngineProvider implements EngineProvider {
 
     @Override
     public String name() {
-        return "vexelray-engine (Vulkan, Panama)";
+        // The same string VulkanEngine reports in EngineEvents.RunStarted, so a log line and a "found but
+        // declined" message name the runtime identically.
+        return VulkanEngine.ENGINE_NAME;
     }
 
     /**

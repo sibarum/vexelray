@@ -1,4 +1,4 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.vexelray.engine.EngineProvider;
 import org.junit.jupiter.api.Test;

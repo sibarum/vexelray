@@ -168,19 +168,10 @@ public final class CanvasDemo {
     private static GraphicsPipeline.Config canvasConfig(AtlasTexture atlasTex) {
         List<GraphicsPipeline.VertexAttribute> attrs = new ArrayList<>();
         for (CanvasVertex.Attr a : CanvasVertex.ATTRIBUTES) {
-            attrs.add(new GraphicsPipeline.VertexAttribute(a.location(), vkFormat(a.components()), a.offset()));
+            attrs.add(GraphicsPipeline.VertexAttribute.floats(a.location(), a.components(), a.offset()));
         }
         return new GraphicsPipeline.Config(CanvasVertex.STRIDE_BYTES, attrs,
                 new long[]{atlasTex.descriptorSetLayout()}, true, Vk.SHADER_STAGE_FRAGMENT_BIT, 0);
-    }
-
-    private static int vkFormat(int components) {
-        return switch (components) {
-            case 1 -> Vk.FORMAT_R32_SFLOAT;
-            case 2 -> Vk.FORMAT_R32G32_SFLOAT;
-            case 4 -> Vk.FORMAT_R32G32B32A32_SFLOAT;
-            default -> throw new IllegalArgumentException("unsupported component count " + components);
-        };
     }
 
     private static byte[] loadAtlasRgba(int[] sizeOut) throws IOException {

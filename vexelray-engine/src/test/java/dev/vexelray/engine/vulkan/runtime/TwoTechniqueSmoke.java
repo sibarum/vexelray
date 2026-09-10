@@ -1,4 +1,4 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.vexelray.engine.RenderPipeline;
 import dev.vexelray.engine.VexelEngine;

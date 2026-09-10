@@ -1,5 +1,6 @@
 package dev.vexelray.canvas;
 
+import dev.vexelray.target.ImageHandle;
 import dev.vexelray.text.GlyphQuad;
 import dev.vexelray.text.TextLayout;
 
@@ -46,9 +47,9 @@ public final class Canvas {
 
     // --- image runs (see #runs) ---
     private final List<Run> runs = new java.util.ArrayList<>();
-    private Object runImage;        // the image bound for the run currently open (null = none)
+    private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
-    private Object activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
+    private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
 
     /**
      * A contiguous span of the vertex buffer that shares one bound image.
@@ -58,11 +59,17 @@ public final class Canvas {
      * in this span": the binding layer binds its placeholder, and shapes and glyphs ignore it. A canvas that drew
      * no images is therefore exactly one null run, which is exactly the single draw call it always was.
      *
+     * <p>{@link ImageHandle} rather than {@code Object}, which is what this was. The layering intent was
+     * always right — a canvas knows nothing about textures and must not — but {@code Object} spends type
+     * safety to say so, and accepts a {@code String} or a handle from another device just as happily as an
+     * image. The marker keeps the ignorance and loses the hole: this module still cannot name a
+     * {@code VkImageView}, and can no longer be handed something that is not an image at all.
+     *
      * @param firstVertex index of this run's first vertex
      * @param vertexCount how many vertices it covers
-     * @param image       the caller's opaque image handle, or {@code null} for the placeholder
+     * @param image       the binding layer's image handle, or {@code null} for the placeholder
      */
-    public record Run(int firstVertex, int vertexCount, Object image) {
+    public record Run(int firstVertex, int vertexCount, ImageHandle image) {
     }
 
     /** A canvas sized to the target it will be drawn into, in pixels. */
@@ -356,7 +363,7 @@ public final class Canvas {
      * <p>Consecutive draws of the <em>same</em> handle stay in one run; alternating between two handles costs a run
      * each time, so draw an image's worth of images together where the picture allows it.
      */
-    public Canvas image(float x, float y, float w, float h, float radius, Object image,
+    public Canvas image(float x, float y, float w, float h, float radius, ImageHandle image,
                         float u0, float v0, float u1, float v1, Color tint) {
         return image(x, y, w, h, radius, radius, image, u0, v0, u1, v1, tint);
     }
@@ -365,7 +372,7 @@ public final class Canvas {
      * As the single-radius overload, with independent top and bottom corner radii — the same per-vertical-half
      * selection the shape family uses, so an image in a tab-shaped box rounds the way the box does.
      */
-    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, Object image,
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, ImageHandle image,
                         float u0, float v0, float u1, float v1, Color tint) {
         float halfW = w / 2f;
         float halfH = h / 2f;
@@ -380,9 +387,9 @@ public final class Canvas {
         return this;
     }
 
-    /** {@link #image(float, float, float, float, float, Object, float, float, float, float, Color)} showing the
+    /** {@link #image(float, float, float, float, float, ImageHandle, float, float, float, float, Color)} showing the
      *  whole texture, square-cornered and untinted — what a viewport wants. */
-    public Canvas image(float x, float y, float w, float h, Object image) {
+    public Canvas image(float x, float y, float w, float h, ImageHandle image) {
         return image(x, y, w, h, 0f, image, 0f, 0f, 1f, 1f, UNTINTED);
     }
 
@@ -394,7 +401,7 @@ public final class Canvas {
      * than a shade anyone would theme. A caller that names a colour to mean "leave it alone" is stating a palette
      * choice it does not have, which is precisely what a themed GUI must not do.
      */
-    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, Object image,
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, ImageHandle image,
                         float alpha) {
         return image(x, y, w, h, radiusTop, radiusBottom, image, 0f, 0f, 1f, 1f,
                 alpha >= 1f ? UNTINTED : Color.withAlpha(UNTINTED, alpha));
@@ -410,7 +417,7 @@ public final class Canvas {
      * hands that it has no business choosing. The identity of the multiply stays in this class, where it is a fact
      * about the shader rather than a palette entry.
      */
-    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, Object image,
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, ImageHandle image,
                         float u0, float v0, float u1, float v1, float alpha) {
         return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1,
                 alpha >= 1f ? UNTINTED : Color.withAlpha(UNTINTED, alpha));

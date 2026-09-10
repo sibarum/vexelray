@@ -1,4 +1,4 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.vexelray.engine.EngineProvider;
 import dev.vexelray.engine.FrameContext;
@@ -46,10 +46,10 @@ class EngineSpiTest {
 
     @Test
     void theContextRefusesToBeBuiltWithoutWhatATechniqueNeeds() {
-        assertThrows(IllegalArgumentException.class, () -> new VulkanTechniqueContext(
+        assertThrows(IllegalArgumentException.class, () -> new SharedTargetContext(
                 null, AttachmentFormat.SWAPCHAIN, Optional.empty(), 800, 600, 42L),
                 "a technique that cannot reach a device cannot create a pipeline");
-        assertThrows(IllegalArgumentException.class, () -> new VulkanTechniqueContext(
+        assertThrows(IllegalArgumentException.class, () -> new SharedTargetContext(
                 null, AttachmentFormat.SWAPCHAIN, Optional.empty(), 800, 600, 0L),
                 "a render pass handle of 0 would let a pipeline be built against nothing");
     }

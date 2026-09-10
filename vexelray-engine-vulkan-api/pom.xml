@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-engine-vulkan-api</artifactId>
+
+    <description>
+        The Vulkan-bearing half of the technique SPI: VulkanTechniqueContext, the subtype a technique casts its
+        TechniqueContext to when it must create GPU objects (docs/refactor-decisions.md D3, D18).
+
+        It exists so that a technique module does not compile against the runtime *implementation*. Before it,
+        vexelray-technique-sdf and vexelray-technique-canvas both depended on vexelray-engine — the concrete
+        Vulkan engine, its frame loop and its window — to reach one accessor, which coupled every technique to
+        one runtime and pointed the dependency arrow the wrong way: the runtime should depend on what techniques
+        are written against, not the reverse. This module is that contract and nothing else.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+</project>

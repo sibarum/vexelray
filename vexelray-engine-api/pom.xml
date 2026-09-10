@@ -14,16 +14,23 @@
 
     <description>
         The public API: the pipeline-building DSL (RenderPipeline + builder, Target), the RenderTechnique SPI and
-        its realise/record contexts, and the VexelEngine facade. This is the front door a client writes against —
-        composing a pipeline (a shared target + ordered techniques) and running it. Depends only on vexelray-core
-        and the JDK; it exposes Vulkan handles as JDK primitives (long, MemorySegment) and never imports a Vulkan
-        binding, so the contract stays substrate-light. See docs/refactor-decisions.md (D2, D3).
+        its realise/record contexts, the engine's published events (EngineEvents), and the VexelEngine facade.
+        This is the front door a client writes against — composing a pipeline (a shared target + ordered
+        techniques) and running it. Depends on vexelray-core, the Atchung! event bus, and the JDK; it exposes
+        Vulkan handles as JDK primitives (long, MemorySegment) and never imports a Vulkan binding, so the
+        contract stays substrate-light. See docs/refactor-decisions.md (D2, D3, D17).
     </description>
 
     <dependencies>
         <dependency>
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-core</artifactId>
+        </dependency>
+        <!-- The engine is a publisher (D17). Topics and event records are declared here, in the front door,
+             so that "subscribe to the engine" is part of the API rather than something each runtime invents. -->
+        <dependency>
+            <groupId>sibarum.atchung</groupId>
+            <artifactId>atchung-core</artifactId>
         </dependency>
     </dependencies>
 </project>

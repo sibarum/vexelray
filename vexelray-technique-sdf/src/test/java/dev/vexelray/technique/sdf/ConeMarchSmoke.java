@@ -89,7 +89,7 @@ public final class ConeMarchSmoke {
         // The surface is in the scene for everything *except* its geometry: ConeField.compose does not compile
         // it, and the march reads the buffer instead. Passing the same stroke keeps the two lanes describing
         // the same subject, which is what makes the two smokes' pictures comparable.
-        SdfScene scene = SdfScene.of(stroke).withAlbedo(new SdfScene.Rgb(0.78, 0.80, 0.86));
+        SdfScene scene = SdfScene.of(stroke).withAlbedo(new Surface.Rgb(0.78, 0.80, 0.86));
         List<ComposedShader> composed = ConeField.compose(scene);
         byte[] vertex = composed.get(0).spirv();
         byte[] fragment = composed.get(1).spirv();
@@ -109,7 +109,7 @@ public final class ConeMarchSmoke {
             try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
                  StorageBuffer buffer = new StorageBuffer(device, packed.length, ConeField.BINDING)) {
 
-                SdfScene.Rgb sky = scene.sky();
+                Surface.Rgb sky = scene.sky();
                 double aspect = (double) width / height;
                 Smoke smoke = new Smoke("ConeMarchSmoke", width * height);
 
@@ -136,7 +136,7 @@ public final class ConeMarchSmoke {
     }
 
     private static byte[] march(VulkanDevice device, StorageBuffer buffer, int width, int height,
-                                byte[] vertex, byte[] fragment, SdfScene.Rgb sky, byte[] camera) {
+                                byte[] vertex, byte[] fragment, Surface.Rgb sky, byte[] camera) {
         return OffscreenRenderer.render(device, width, height, vertex, "main", fragment, "main", 3,
                 (float) sky.r(), (float) sky.g(), (float) sky.b(), 1f, camera,
                 new long[]{buffer.descriptorSetLayout()}, new long[]{buffer.descriptorSet()});
@@ -176,7 +176,7 @@ public final class ConeMarchSmoke {
         return new Surface.Stroke(vs, 4);
     }
 
-    private static int countNonSky(byte[] rgba, SdfScene.Rgb sky) {
+    private static int countNonSky(byte[] rgba, Surface.Rgb sky) {
         int r = (int) Math.round(sky.r() * 255);
         int g = (int) Math.round(sky.g() * 255);
         int b = (int) Math.round(sky.b() * 255);

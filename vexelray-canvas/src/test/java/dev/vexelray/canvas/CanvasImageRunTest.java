@@ -1,5 +1,6 @@
 package dev.vexelray.canvas;
 
+import dev.vexelray.target.ImageHandle;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -18,6 +19,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * picture that is wrong rather than a draw that fails.
  */
 class CanvasImageRunTest {
+
+    /**
+     * A distinct image handle carrying nothing.
+     *
+     * <p>{@code new Object()} until {@code Canvas.Run.image} became an {@link ImageHandle} — and that these
+     * lines had to change is the whole point of the change: a canvas run now cannot be handed something that
+     * is not an image. Identity is all these tests need, and all a marker interface has.
+     */
+    private static ImageHandle image() {
+        return new ImageHandle() {
+        };
+    }
 
     private static final int VERTS_PER_QUAD = 6;
 
@@ -51,7 +64,7 @@ class CanvasImageRunTest {
 
     @Test
     void imageBetweenShapesSplitsIntoThreeRuns() {
-        Object texture = new Object();
+        ImageHandle texture = image();
         Canvas canvas = new Canvas(200, 100).begin();
         canvas.fillRect(0, 0, 10, 10, Color.WHITE);      // run 0: no image
         canvas.image(20, 0, 40, 40, texture);            // run 1: the image
@@ -68,7 +81,7 @@ class CanvasImageRunTest {
 
     @Test
     void consecutiveDrawsOfTheSameImageShareOneRun() {
-        Object texture = new Object();
+        ImageHandle texture = image();
         Canvas canvas = new Canvas(200, 100).begin();
         canvas.image(0, 0, 10, 10, texture);
         canvas.image(20, 0, 10, 10, texture);
@@ -81,8 +94,8 @@ class CanvasImageRunTest {
 
     @Test
     void alternatingImagesCostARunEach() {
-        Object a = new Object();
-        Object b = new Object();
+        ImageHandle a = image();
+        ImageHandle b = image();
         Canvas canvas = new Canvas(200, 100).begin();
         canvas.image(0, 0, 10, 10, a);
         canvas.image(20, 0, 10, 10, b);
@@ -98,7 +111,7 @@ class CanvasImageRunTest {
 
     @Test
     void beginClearsRunsFromTheLastFrame() {
-        Object texture = new Object();
+        ImageHandle texture = image();
         Canvas canvas = new Canvas(200, 100).begin();
         canvas.image(0, 0, 10, 10, texture);
         assertEquals(1, canvas.runs().size());
@@ -113,7 +126,7 @@ class CanvasImageRunTest {
 
     @Test
     void runsIsNonMutatingSoItCanBeAskedTwice() {
-        Object texture = new Object();
+        ImageHandle texture = image();
         Canvas canvas = new Canvas(200, 100).begin();
         canvas.fillRect(0, 0, 10, 10, Color.WHITE);
         canvas.image(20, 0, 10, 10, texture);
@@ -125,7 +138,7 @@ class CanvasImageRunTest {
     @Test
     void imageVerticesCarryTheImageKind() {
         Canvas canvas = new Canvas(200, 100).begin();
-        canvas.image(0, 0, 10, 10, new Object());
+        canvas.image(0, 0, 10, 10, image());
 
         float[] v = canvas.toVertexArray();
         for (int i = 0; i < canvas.vertexCount(); i++) {
@@ -144,7 +157,7 @@ class CanvasImageRunTest {
         float w = 40f;
         float h = 20f;
         Canvas canvas = new Canvas(200, 100).begin();
-        canvas.image(0, 0, w, h, 0f, new Object(), 0.25f, 0.5f, 0.75f, 1.0f, Color.WHITE);
+        canvas.image(0, 0, w, h, 0f, image(), 0.25f, 0.5f, 0.75f, 1.0f, Color.WHITE);
 
         float[] v = canvas.toVertexArray();
         int stride = CanvasVertex.FLOATS_PER_VERTEX;

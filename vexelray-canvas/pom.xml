@@ -31,6 +31,12 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-shader</artifactId>
         </dependency>
+        <!-- Engine vocabulary: ImageHandle, what Canvas.image takes and Canvas.Run carries. A canvas must not
+             know what a texture is; core is where it learns that one exists without learning what it is. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-core</artifactId>
+        </dependency>
         <!-- SupirVast core IR for the uber-shader. -->
         <dependency>
             <groupId>dev.supirvast</groupId>

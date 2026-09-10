@@ -64,7 +64,7 @@ public final class HybridFrameSmoke {
                                 new Surface.Sphere(2.2, 0.6, 1.4, 0.6),
                                 new Surface.Sphere(-2.0, 0.8, -1.0, 0.8),
                                 Surface.Plane.ground()))
-                        .withAlbedo(new SdfScene.Rgb(0.78, 0.80, 0.86)));
+                        .withAlbedo(new Surface.Rgb(0.78, 0.80, 0.86)));
 
         CanvasTechnique chrome = new CanvasTechnique(900, 600);
 

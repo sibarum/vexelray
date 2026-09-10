@@ -13,6 +13,11 @@ import java.lang.foreign.MemorySegment;
  * through here — it reaches a technique via the technique's own API from the {@link VexelEngine} run callback
  * (D5); this context is the drawing surface, not the data channel.
  *
+ * <p>Valid only for the duration of the {@link RenderTechnique#record} call it was passed to, and only on the
+ * render thread ({@link RenderTechnique} states the contract). The command buffer is being recorded into by
+ * this thread and submitted by it; handing this record to another thread, or keeping it past the call, hands
+ * over a segment whose buffer may already have been submitted and reset.
+ *
  * @param commandBuffer the recording command buffer, inside a render pass the runtime has begun
  * @param frameIndex    monotonically increasing frame count since the pipeline started running
  * @param timeSeconds   seconds since the pipeline started running, for animation

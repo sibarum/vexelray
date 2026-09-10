@@ -52,6 +52,10 @@
         <!-- The Panama Vulkan runtime + resource implementation. Hosts the OS-activated selection profiles that
              add the matching platform module (so the platform dep never leaks into core/shader). -->
         <module>vexelray-vulkan</module>
+        <!-- The Vulkan half of the technique SPI: VulkanTechniqueContext, the subtype a technique casts to when
+             it must create GPU objects. Its own module so a technique compiles against the contract and not
+             against the concrete runtime below it (D18). -->
+        <module>vexelray-engine-vulkan-api</module>
         <module>vexelray-engine</module>
         <module>vexelray-technique-canvas</module>
         <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
@@ -84,6 +88,14 @@
             <dependency>
                 <groupId>sibarum.atchung</groupId>
                 <artifactId>atchung-probe</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
+            <!-- The event bus. Managed here because vexelray-engine-api publishes onto it: the engine is a
+                 publisher of frame, resize, device-lost and technique-lifecycle events, which is what gives
+                 event-based scripting a surface to attach to. -->
+            <dependency>
+                <groupId>sibarum.atchung</groupId>
+                <artifactId>atchung-core</artifactId>
                 <version>1.0-SNAPSHOT</version>
             </dependency>
             <!-- Reactor-internal modules: children reference these without a version. -->

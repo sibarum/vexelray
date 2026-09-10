@@ -152,7 +152,11 @@ public final class Fathom {
             System.out.println("Click the window, then look with the mouse and move with WASD (Escape pauses "
                     + "look). Walk into the sphere — you cannot enter it.");
             final int frameCap = maxFrames;
-            engine.run(renderPipeline, frame -> {
+            // The same bus the input fabric publishes on. That is the whole argument for the engine being a
+            // publisher rather than owning a second observer mechanism of its own: input edges and frame,
+            // resize and device-lost events arrive through one delivery model, one backpressure policy, and
+            // one thing to bridge when a replay or a remote viewer wants both halves of the run.
+            engine.run(renderPipeline, bus, frame -> {
                 if (frame.frameIndex() == 0) {
                     try {
                         input.attach(sibarum.tactroller.api.NativeWindow.ofHwnd(engine.windowHandle()));

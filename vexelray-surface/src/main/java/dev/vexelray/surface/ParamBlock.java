@@ -160,10 +160,26 @@ public final class ParamBlock {
     /** The values in slot order, as the floats a block or a buffer is filled with. */
     public float[] floats() {
         float[] out = new float[values.length];
-        for (int i = 0; i < values.length; i++) {
-            out[i] = (float) values[i];
-        }
+        writeFloats(out, 0);
         return out;
+    }
+
+    /**
+     * Write the values in slot order into {@code out} starting at {@code offset}, allocating nothing.
+     *
+     * <p>The overload {@link #floats()} cannot avoid an allocation because it returns the array, and a caller
+     * filling a push-constant block does that every frame. This one lets it keep one array for the run.
+     *
+     * @throws IllegalArgumentException if {@code out} cannot hold {@link #size()} floats from {@code offset}
+     */
+    public void writeFloats(float[] out, int offset) {
+        if (offset < 0 || out.length - offset < values.length) {
+            throw new IllegalArgumentException("need room for " + values.length + " floats at offset " + offset
+                    + " but the array is " + out.length + " long");
+        }
+        for (int i = 0; i < values.length; i++) {
+            out[offset + i] = (float) values[i];
+        }
     }
 
     /**

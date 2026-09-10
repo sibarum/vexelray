@@ -68,7 +68,17 @@ public final class Ffm {
         }
     }
 
+    /**
+     * Raise unless {@code result} is {@code VK_SUCCESS}.
+     *
+     * <p>Device loss gets its own type. Every other failure is one call reporting a fault with the device
+     * still healthy; that one means the device and everything made from it is gone, and the difference decides
+     * whether a caller retries or rebuilds. See {@link DeviceLostException}.
+     */
     public static void check(int result, String call) {
+        if (result == Vk.ERROR_DEVICE_LOST) {
+            throw new DeviceLostException(call);
+        }
         if (result != Vk.VK_SUCCESS) {
             throw new NativeException(call + " failed: VkResult " + result);
         }

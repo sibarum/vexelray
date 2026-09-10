@@ -8,21 +8,15 @@ import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.surface.ParamBlock;
 import dev.vexelray.surface.ParamId;
+import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
-import java.lang.invoke.MethodHandle;
 import java.util.List;
 
-import static java.lang.foreign.ValueLayout.ADDRESS;
-import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
-import static java.lang.foreign.ValueLayout.JAVA_INT;
-import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * The SDF ray-march as a {@link RenderTechnique} — the first real technique, and the one the whole pipeline
@@ -65,16 +59,18 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
     private double pitch;
 
     private GraphicsPipeline pipeline;
-    private MethodHandle bindPipeline;
-    private MethodHandle pushConstants;
-    private MethodHandle draw;
-    private MethodHandle setViewport;
-    private MethodHandle setScissor;
-    private Arena arena;
+    private DrawCommands cmds;
     private MemorySegment push;
-    private MemorySegment viewport;
-    private MemorySegment scissor;
     private int pushBytes;
+
+    /**
+     * This frame's push-constant values, reused for the life of the technique.
+     *
+     * <p>{@code record} used to call {@link SdfComposer#pushConstantBytes}, which rebuilds the scene's
+     * {@link ParamBlock} — a walk of the surface tree — and allocates a {@code float[]} and a {@code byte[]},
+     * every frame, a few lines from a comment about how carefully the arena is reused.
+     */
+    private float[] pushFloats;
 
     /**
      * A technique that marches {@code scene}.
@@ -124,20 +120,9 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 composed.get(0).spirv(), "main", composed.get(1).spirv(), "main", config);
 
-        this.bindPipeline = device.command("vkCmdBindPipeline",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        this.pushConstants = device.command("vkCmdPushConstants",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
-        this.draw = device.command("vkCmdDraw",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
-        FunctionDescriptor setVs = FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS);
-        this.setViewport = device.command("vkCmdSetViewport", setVs);
-        this.setScissor = device.command("vkCmdSetScissor", setVs);
-
-        this.arena = Arena.ofShared();
-        this.push = arena.allocate(pushBytes);
-        this.viewport = arena.allocate(JAVA_FLOAT, 6);
-        this.scissor = arena.allocate(JAVA_INT, 4);
+        this.cmds = new DrawCommands(device);
+        this.push = cmds.allocatePushConstants(pushBytes);
+        this.pushFloats = new float[pushBytes / Float.BYTES];
     }
 
     @Override
@@ -146,25 +131,22 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         int width = frame.width();
         int height = frame.height();
 
-        invoke(bindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-
-        viewport.setAtIndex(JAVA_FLOAT, 2, width);
-        viewport.setAtIndex(JAVA_FLOAT, 3, height);
-        viewport.setAtIndex(JAVA_FLOAT, 5, 1.0f);
-        invoke(setViewport, cmd, 0, 1, viewport);
-        scissor.setAtIndex(JAVA_INT, 2, width);
-        scissor.setAtIndex(JAVA_INT, 3, height);
-        invoke(setScissor, cmd, 0, 1, scissor);
+        // Viewport and scissor are the runtime's: it sets them to this frame's extent before the first
+        // technique records, being the only thing that knows the extent before anyone draws.
+        cmds.bindPipeline(cmd, pipeline);
 
         // Aspect is the frame's, never the caller's. A camera API that took it would make every application
         // responsible for noticing a resize, and one that used the realise-time extent would stretch the scene
         // for the rest of the run.
         double aspect = height == 0 ? 1.0 : (double) width / height;
-        byte[] bytes = SdfComposer.pushConstantBytes(scene, camX, camY, camZ, yaw, pitch, aspect, params);
-        MemorySegment.copy(bytes, 0, push, JAVA_BYTE, 0, bytes.length);
-        invoke(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0, pushBytes, push);
+        SdfComposer.writePushConstants(scene, camX, camY, camZ, yaw, pitch, aspect, params, pushFloats);
+        // JAVA_FLOAT is native order, which is the order a push constant is read in. The explicitly
+        // little-endian ByteBuffer in pushConstantBytes says the same thing for a byte[] that might outlive
+        // this machine.
+        MemorySegment.copy(pushFloats, 0, push, JAVA_FLOAT, 0, pushFloats.length);
+        cmds.pushFragment(cmd, pipeline, push, pushBytes);
 
-        invoke(draw, cmd, 3, 1, 0, 0);
+        cmds.draw(cmd, 3);
     }
 
     @Override
@@ -173,17 +155,9 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
             pipeline.close();
             pipeline = null;
         }
-        if (arena != null) {
-            arena.close();
-            arena = null;
-        }
-    }
-
-    private static void invoke(MethodHandle handle, Object... args) {
-        try {
-            handle.invokeWithArguments(args);
-        } catch (Throwable t) {
-            throw new IllegalStateException("downcall failed", t);
+        if (cmds != null) {
+            cmds.close();
+            cmds = null;
         }
     }
 }

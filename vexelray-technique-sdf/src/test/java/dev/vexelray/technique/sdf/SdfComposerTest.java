@@ -253,7 +253,7 @@ class SdfComposerTest {
         assertThrows(IllegalArgumentException.class, () -> Shadings.lambert(0, 1, 0, -1, 0));
         assertThrows(IllegalArgumentException.class,
                 () -> new SdfScene(Surface.Plane.ground(), Shadings.unlit(), MarchSettings.DEFAULT,
-                        new SdfScene.Rgb(1, 1, 1), new SdfScene.Rgb(0, 0, 0), 0));
+                        new Surface.Rgb(1, 1, 1), new Surface.Rgb(0, 0, 0), 0));
     }
 
     private static int firstWord(byte[] spirv) {

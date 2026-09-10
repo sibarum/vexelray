@@ -70,7 +70,7 @@ public final class StrokeMarchSmoke {
                 + ", half-extent " + fmt(box.halfExtent()));
         Surface framed = frame(awkward, box);
 
-        SdfScene scene = SdfScene.of(framed).withAlbedo(new SdfScene.Rgb(0.78, 0.80, 0.86));
+        SdfScene scene = SdfScene.of(framed).withAlbedo(new Surface.Rgb(0.78, 0.80, 0.86));
 
         List<ComposedShader> composed = new SdfComposer().compose(scene);
         byte[] vertex = composed.get(0).spirv();
@@ -87,7 +87,7 @@ public final class StrokeMarchSmoke {
             System.out.println("device         " + selection.deviceName());
 
             try (VulkanDevice device = new VulkanDevice(instance.handle(), selection)) {
-                SdfScene.Rgb sky = scene.sky();
+                Surface.Rgb sky = scene.sky();
                 double aspect = (double) width / height;
                 Smoke smoke = new Smoke("StrokeMarchSmoke", width * height);
 
@@ -138,7 +138,7 @@ public final class StrokeMarchSmoke {
     }
 
     private static byte[] march(VulkanDevice device, int width, int height,
-                                byte[] vertex, byte[] fragment, SdfScene.Rgb sky, byte[] camera) {
+                                byte[] vertex, byte[] fragment, Surface.Rgb sky, byte[] camera) {
         return OffscreenRenderer.render(device, width, height, vertex, "main", fragment, "main", 3,
                 (float) sky.r(), (float) sky.g(), (float) sky.b(), 1f, camera);
     }
@@ -167,7 +167,7 @@ public final class StrokeMarchSmoke {
         return new Surface.Stroke(vs, 4);
     }
 
-    private static int countNonSky(byte[] rgba, SdfScene.Rgb sky) {
+    private static int countNonSky(byte[] rgba, Surface.Rgb sky) {
         int r = (int) Math.round(sky.r() * 255);
         int g = (int) Math.round(sky.g() * 255);
         int b = (int) Math.round(sky.b() * 255);

@@ -57,18 +57,20 @@
         </dependency>
 
         <!--
-          The runtime this technique plugs into. Two edges arrive together and neither is avoidable:
-          vexelray-engine-api for the RenderTechnique SPI, and vexelray-engine for VulkanTechniqueContext, which
-          is the Vulkan-bearing subtype a technique must cast to in order to reach a device and build a pipeline
-          (docs/refactor-decisions.md D3).
+          The contracts this technique plugs into, and nothing below them. vexelray-engine-api is the
+          RenderTechnique SPI; vexelray-engine-vulkan-api is VulkanTechniqueContext, the Vulkan-bearing subtype
+          a technique casts to in order to reach a device and build a pipeline (D3).
 
-          Depending on the engine implementation is the cost of the deferred backend abstraction, paid where it
-          is visible. The alternative — putting VulkanTechniqueContext in vexelray-vulkan — would make the
-          substrate depend on the public API above it, which is worse.
+          This used to say vexelray-engine — the concrete runtime, its window and its frame loop — because that
+          is where VulkanTechniqueContext lived. Compiling a technique against a runtime is backwards: it
+          coupled every technique to one engine and pointed the dependency arrow the wrong way. Splitting the
+          contract out (D18) is what lets a second Vulkan runtime serve the techniques that already exist.
 
-          This is also why the march smokes moved here from vexelray-vulkan's test scope: the substrate cannot
-          test-depend on a technique that compile-depends on the substrate, and the pom comment that used to sit
-          on that dependency was already right about why it should not.
+          Depending on the *Vulkan* contract at all is still the cost of the deferred backend abstraction, paid
+          where it is visible.
+
+          It is also why the march smokes live here rather than in vexelray-vulkan's test scope: the substrate
+          cannot test-depend on a technique that compile-depends on the substrate.
         -->
         <dependency>
             <groupId>dev.vexelray</groupId>
@@ -77,11 +79,24 @@
         </dependency>
         <dependency>
             <groupId>dev.vexelray</groupId>
-            <artifactId>vexelray-engine</artifactId>
+            <artifactId>vexelray-engine-vulkan-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Test-only: the march smokes render headlessly and count pixels. -->
+        <!-- Test-only: the march smokes render headlessly and count pixels, and SdfEngineSmoke drives a real
+             engine — which is a ServiceLoader lookup, so the runtime is needed on the test path and only
+             there. Main source names no engine implementation. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-os-api</artifactId>

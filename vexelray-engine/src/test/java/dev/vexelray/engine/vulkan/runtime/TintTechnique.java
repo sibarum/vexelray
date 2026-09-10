@@ -1,4 +1,4 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.supirvast.vastir.core.CoreModule;
 import dev.supirvast.vastir.core.EntryPoint;
@@ -14,22 +14,18 @@ import dev.supirvast.vastir.type.Type;
 import dev.vexelray.engine.FrameContext;
 import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
+import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.ir.Ir;
 import dev.vexelray.shader.ComposedShader;
+import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
-import java.lang.invoke.MethodHandle;
 import java.util.List;
 
-import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
-import static java.lang.foreign.ValueLayout.JAVA_INT;
-import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * The first thing to implement {@link RenderTechnique} — a technique that fills a rounded region of the frame
@@ -66,15 +62,8 @@ final class TintTechnique implements RenderTechnique {
 
     private VulkanDevice device;
     private GraphicsPipeline pipeline;
-    private MethodHandle bindPipeline;
-    private MethodHandle pushConstants;
-    private MethodHandle draw;
-    private MethodHandle setViewport;
-    private MethodHandle setScissor;
-    private Arena arena;
+    private DrawCommands cmds;
     private MemorySegment push;
-    private MemorySegment viewport;
-    private MemorySegment scissor;
 
     private int realizeCount;
     private int recordCount;
@@ -110,20 +99,8 @@ final class TintTechnique implements RenderTechnique {
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 Fullscreen.triangleVertexWithUvSpirv(), "main", fragment(), "main", config);
 
-        this.bindPipeline = device.command("vkCmdBindPipeline",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        this.pushConstants = device.command("vkCmdPushConstants",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
-        this.draw = device.command("vkCmdDraw",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
-        FunctionDescriptor setVs = FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS);
-        this.setViewport = device.command("vkCmdSetViewport", setVs);
-        this.setScissor = device.command("vkCmdSetScissor", setVs);
-
-        this.arena = Arena.ofShared();
-        this.push = arena.allocate(PUSH_BYTES);
-        this.viewport = arena.allocate(JAVA_FLOAT, 6);
-        this.scissor = arena.allocate(JAVA_INT, 4);
+        this.cmds = new DrawCommands(device);
+        this.push = cmds.allocatePushConstants(PUSH_BYTES);
     }
 
     @Override
@@ -135,15 +112,7 @@ final class TintTechnique implements RenderTechnique {
         int width = frame.width();
         int height = frame.height();
 
-        Ffm.invokeVoid(bindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-
-        viewport.setAtIndex(JAVA_FLOAT, 2, width);
-        viewport.setAtIndex(JAVA_FLOAT, 3, height);
-        viewport.setAtIndex(JAVA_FLOAT, 5, 1.0f);
-        Ffm.invokeVoid(setViewport, cmd, 0, 1, viewport);
-        scissor.setAtIndex(JAVA_INT, 2, width);
-        scissor.setAtIndex(JAVA_INT, 3, height);
-        Ffm.invokeVoid(setScissor, cmd, 0, 1, scissor);
+        cmds.bindPipeline(cmd, pipeline);
 
         float halfW = width * 0.5f * (1 - inset);
         float halfH = height * 0.5f * (1 - inset);
@@ -155,10 +124,9 @@ final class TintTechnique implements RenderTechnique {
         push.setAtIndex(JAVA_FLOAT, 5, colour[0]);
         push.setAtIndex(JAVA_FLOAT, 6, colour[1]);
         push.setAtIndex(JAVA_FLOAT, 7, colour[2]);
-        Ffm.invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
-                PUSH_BYTES, push);
+        cmds.pushFragment(cmd, pipeline, push, PUSH_BYTES);
 
-        Ffm.invokeVoid(draw, cmd, 3, 1, 0, 0);
+        cmds.draw(cmd, 3);
     }
 
     @Override
@@ -168,9 +136,9 @@ final class TintTechnique implements RenderTechnique {
             pipeline.close();
             pipeline = null;
         }
-        if (arena != null) {
-            arena.close();
-            arena = null;
+        if (cmds != null) {
+            cmds.close();
+            cmds = null;
         }
     }
 
@@ -226,19 +194,5 @@ final class TintTechnique implements RenderTechnique {
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
         CoreModule module = new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
         return ComposedShader.lower(ShaderStage.FRAGMENT, module, "main").spirv();
-    }
-
-    /** The one downcall helper this needs, kept local so the test technique borrows nothing package-private. */
-    private static final class Ffm {
-        static void invokeVoid(MethodHandle handle, Object... args) {
-            try {
-                handle.invokeWithArguments(args);
-            } catch (Throwable t) {
-                throw new IllegalStateException("downcall failed", t);
-            }
-        }
-
-        private Ffm() {
-        }
     }
 }

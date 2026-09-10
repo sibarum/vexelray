@@ -35,16 +35,25 @@
             <artifactId>vexelray-engine-api</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <!-- For VulkanTechniqueContext — the Vulkan-bearing subtype a technique casts to (D3). -->
+        <!-- For VulkanTechniqueContext — the Vulkan-bearing subtype a technique casts to (D3). The contract
+             only: a technique that compiled against the concrete runtime could never be served by a second
+             one (D18). -->
         <dependency>
             <groupId>dev.vexelray</groupId>
-            <artifactId>vexelray-engine</artifactId>
+            <artifactId>vexelray-engine-vulkan-api</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-vulkan</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <!-- Test-only: the demos drive a real engine, which is a ServiceLoader lookup. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- Test-only: the demos below open windows and need the platform provider at runtime. -->

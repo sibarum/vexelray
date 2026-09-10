@@ -122,13 +122,19 @@ public final class WindowedPresenter implements AutoCloseable {
      * repository could appear in the same window.
      *
      * <p>The command buffer arrives inside a begun render pass with <b>nothing bound</b> — no pipeline, no
-     * descriptor sets, no vertex buffer, no dynamic viewport. A recorder binds what it needs, per pipeline it
-     * draws with, in the order it wants them composited. It must not begin or end the render pass, submit, or
-     * touch the swapchain.
+     * descriptor sets, no vertex buffer. A recorder binds what it needs, per pipeline it draws with, in the
+     * order it wants them composited. It must not begin or end the render pass, submit, or touch the swapchain.
      *
      * <p>{@code width} and {@code height} are this frame's extent, which is not the extent the pipeline was
-     * built at: a resize changes it without rebuilding anything. A recorder whose pipelines declared dynamic
-     * viewport must set viewport and scissor from these, every frame.
+     * built at: a resize changes it without rebuilding anything.
+     *
+     * <p><b>The dynamic viewport and scissor are already set to that extent.</b> They are the one piece of
+     * state this class sets before handing the buffer over, because they are the only thing every recorder
+     * needs identically and derives from a number only this class knows — and because the alternative was
+     * observed: four recorders each carrying the same {@code VkViewport} fill and the same two
+     * {@code vkCmdSet*} calls, where forgetting them draws nothing and reading a stale extent draws the
+     * previous size. A recorder that wants a sub-rectangle overrides them and is responsible for restoring
+     * them before the next pipeline that assumes the whole frame.
      */
     @FunctionalInterface
     public interface Recorder {
@@ -422,9 +428,15 @@ public final class WindowedPresenter implements AutoCloseable {
         sl(s.rpBegin, RENDER_PASS_BEGIN, "framebuffer", framebuffers.framebuffer(imageIndex));
         invokeVoid(beginRp, cmd, s.rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
         if (recorder != null) {
-            // The pass is begun and nothing is bound. Everything between here and endRp belongs to the caller,
-            // which is the whole seam: one render pass, one command buffer, N pipelines bound in turn. This
-            // class keeps acquire, sync, submit and present — the parts a technique must never touch.
+            // The pass is begun and nothing is bound except the frame's viewport and scissor. Everything
+            // between here and endRp belongs to the caller, which is the whole seam: one render pass, one
+            // command buffer, N pipelines bound in turn. This class keeps acquire, sync, submit and present —
+            // the parts a technique must never touch.
+            //
+            // Unconditionally, unlike the single-pipeline path below: there is no pipeline here to ask
+            // hasDynamicViewport() of, and setting state a later static-viewport pipeline ignores is legal and
+            // free, whereas leaving it unset makes every dynamic-viewport recorder draw nothing.
+            setFullViewport(s, cmd, extentW, extentH);
             recorder.record(cmd, extentW, extentH);
             invokeVoid(endRp, cmd);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
@@ -438,12 +450,7 @@ public final class WindowedPresenter implements AutoCloseable {
         // Only set dynamic viewport/scissor when the pipeline declared them dynamic; a fixed-viewport pipeline
         // must not receive these commands.
         if (pipeline.hasDynamicViewport()) {
-            sf(s.pViewport, VIEWPORT, "width", extentW);
-            sf(s.pViewport, VIEWPORT, "height", extentH);
-            invokeVoid(setViewport, cmd, 0, 1, s.pViewport);
-            si(s.pScissor, RECT2D, "extent_w", extentW);
-            si(s.pScissor, RECT2D, "extent_h", extentH);
-            invokeVoid(setScissor, cmd, 0, 1, s.pScissor);
+            setFullViewport(s, cmd, extentW, extentH);
         }
         if (descriptorSet != 0) {
             invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
@@ -489,6 +496,22 @@ public final class WindowedPresenter implements AutoCloseable {
      * <p>Extracted rather than duplicated because these are the steps a technique must never own, and two
      * copies of them is two places for a fence or a semaphore to drift out of agreement.
      */
+    /**
+     * Set the dynamic viewport and scissor to the whole of this frame's extent.
+     *
+     * <p>Only width and height are written: the other fields of both structs were filled once when
+     * {@link FrameState} was built ({@code x}, {@code y} and {@code minDepth} zero, {@code maxDepth} one,
+     * scissor offset zero) and nothing since changes them.
+     */
+    private void setFullViewport(FrameState s, MemorySegment cmd, int extentW, int extentH) {
+        sf(s.pViewport, VIEWPORT, "width", extentW);
+        sf(s.pViewport, VIEWPORT, "height", extentH);
+        invokeVoid(setViewport, cmd, 0, 1, s.pViewport);
+        si(s.pScissor, RECT2D, "extent_w", extentW);
+        si(s.pScissor, RECT2D, "extent_h", extentH);
+        invokeVoid(setScissor, cmd, 0, 1, s.pScissor);
+    }
+
     private boolean submitAndPresent(FrameState s) {
         try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
             check(invoke(submitCmd, device.queue(), 1, s.submit, inFlight), "vkQueueSubmit");

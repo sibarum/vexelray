@@ -1,6 +1,7 @@
 package dev.vexelray.engine;
 
 import dev.vexelray.runtime.EngineConfig;
+import sibarum.atchung.Atchung;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,6 +56,10 @@ public interface VexelEngine extends AutoCloseable {
      * simulation, then pushes the results to techniques through their own content APIs (never raw GPU bytes — see
      * D5). Returning {@code false} requests an orderly shutdown of the run loop.
      *
+     * <p>Called on the render thread, immediately before the techniques record — so writing a technique's
+     * per-frame state from here needs no synchronisation, and doing slow work here delays the frame it
+     * precedes rather than overlapping it.
+     *
      * @param frame the frame about to be rendered (index, clock, extent)
      * @return {@code true} to render this frame and continue; {@code false} to stop the loop
      */
@@ -81,8 +86,43 @@ public interface VexelEngine extends AutoCloseable {
      * Realise {@code pipeline} and render frames, invoking {@code onFrame} before each, until the callback returns
      * {@code false} or the window is closed. Drains the GPU and releases the realised pipeline before returning;
      * the engine stays open for another {@link #run}.
+     *
+     * <p>Publishes nothing. Use {@link #run(RenderPipeline, Atchung, FrameCallback)} to put the engine's frame,
+     * resize, device-lost and technique-lifecycle events on a bus.
+     *
+     * <p><b>This call defines the render thread.</b> The window is created here, the callback and every
+     * technique's {@code realize} / {@code record} / {@code close} run on the caller's thread, and the whole
+     * threading contract techniques are written against follows from that — see {@link RenderTechnique} for it
+     * in full. Call {@code run} from the thread that owns the application's main loop; on macOS that must be
+     * the process's first thread, because that is where a window may be created at all.
      */
-    void run(RenderPipeline pipeline, FrameCallback onFrame);
+    default void run(RenderPipeline pipeline, FrameCallback onFrame) {
+        run(pipeline, null, onFrame);
+    }
+
+    /**
+     * As {@link #run(RenderPipeline, FrameCallback)}, and publish this run's events on {@code bus}.
+     *
+     * <p>The engine becomes a publisher, which is what gives anything that is not the frame callback a way to
+     * observe a running frame loop — a script, a debug overlay, a recorder, a remote viewer over an
+     * {@code ElektroBridge}. {@link EngineEvents} declares every topic and says what each event costs; the
+     * short version is that inline subscribers run on the render thread and are therefore frame time, and
+     * everything else should subscribe async or pumped.
+     *
+     * <pre>{@code
+     * Atchung bus = Atchung.create();                  // the same bus Tactroller's input already reaches
+     * bus.subscribeAsync(EngineEvents.RESIZED, r -> layout.reflow(r.width(), r.height()), workers);
+     *
+     * engine.run(pipeline, bus, frame -> {
+     *     sim.advance(frame.deltaSeconds());
+     *     return true;
+     * });
+     * }</pre>
+     *
+     * @param bus     the bus to publish on, or {@code null} to publish nothing
+     * @param onFrame the per-frame hook, or {@code null} for a run driven entirely by subscribers
+     */
+    void run(RenderPipeline pipeline, Atchung bus, FrameCallback onFrame);
 
     /**
      * The OS handle of the window this engine is presenting to, or {@code 0} when it is not running a windowed

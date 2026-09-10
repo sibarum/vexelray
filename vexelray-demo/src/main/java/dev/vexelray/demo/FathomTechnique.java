@@ -4,20 +4,15 @@ import dev.vexelray.engine.FrameContext;
 import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
+import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
-import java.lang.invoke.MethodHandle;
 import java.util.List;
 
-import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
-import static java.lang.foreign.ValueLayout.JAVA_INT;
-import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * Fathom's world as a {@link RenderTechnique} — a technique written by the <em>application</em>, not by the
@@ -64,15 +59,8 @@ final class FathomTechnique implements RenderTechnique {
     private float pitch;
 
     private GraphicsPipeline pipeline;
-    private MethodHandle bindPipeline;
-    private MethodHandle pushConstants;
-    private MethodHandle draw;
-    private MethodHandle setViewport;
-    private MethodHandle setScissor;
-    private Arena arena;
+    private DrawCommands cmds;
     private MemorySegment push;
-    private MemorySegment viewport;
-    private MemorySegment scissor;
 
     FathomTechnique(byte[] vertexSpirv, byte[] fragmentSpirv) {
         this.vertexSpirv = vertexSpirv;
@@ -106,43 +94,25 @@ final class FathomTechnique implements RenderTechnique {
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 vertexSpirv, "main", fragmentSpirv, "main", config);
 
-        this.bindPipeline = device.command("vkCmdBindPipeline",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        this.pushConstants = device.command("vkCmdPushConstants",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
-        this.draw = device.command("vkCmdDraw",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
-        FunctionDescriptor setVs = FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS);
-        this.setViewport = device.command("vkCmdSetViewport", setVs);
-        this.setScissor = device.command("vkCmdSetScissor", setVs);
-
-        this.arena = Arena.ofShared();
-        this.push = arena.allocate(PUSH_BYTES);
-        this.viewport = arena.allocate(JAVA_FLOAT, 6);
-        this.scissor = arena.allocate(JAVA_INT, 4);
+        this.cmds = new DrawCommands(device);
+        this.push = cmds.allocatePushConstants(PUSH_BYTES);
     }
 
     @Override
     public void record(FrameContext frame) {
         MemorySegment cmd = frame.commandBuffer();
-        invoke(bindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-
-        viewport.setAtIndex(JAVA_FLOAT, 2, frame.width());
-        viewport.setAtIndex(JAVA_FLOAT, 3, frame.height());
-        viewport.setAtIndex(JAVA_FLOAT, 5, 1.0f);
-        invoke(setViewport, cmd, 0, 1, viewport);
-        scissor.setAtIndex(JAVA_INT, 2, frame.width());
-        scissor.setAtIndex(JAVA_INT, 3, frame.height());
-        invoke(setScissor, cmd, 0, 1, scissor);
+        // Dynamic viewport and scissor are already set to this frame's extent by the runtime, which is what
+        // makes the resizable window above cost this class nothing.
+        cmds.bindPipeline(cmd, pipeline);
 
         push.setAtIndex(JAVA_FLOAT, 0, camX);
         push.setAtIndex(JAVA_FLOAT, 1, camY);
         push.setAtIndex(JAVA_FLOAT, 2, camZ);
         push.setAtIndex(JAVA_FLOAT, 3, yaw);
         push.setAtIndex(JAVA_FLOAT, 4, pitch);
-        invoke(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0, PUSH_BYTES, push);
+        cmds.pushFragment(cmd, pipeline, push, PUSH_BYTES);
 
-        invoke(draw, cmd, 3, 1, 0, 0);
+        cmds.draw(cmd, 3);
     }
 
     @Override
@@ -151,17 +121,9 @@ final class FathomTechnique implements RenderTechnique {
             pipeline.close();
             pipeline = null;
         }
-        if (arena != null) {
-            arena.close();
-            arena = null;
-        }
-    }
-
-    private static void invoke(MethodHandle handle, Object... args) {
-        try {
-            handle.invokeWithArguments(args);
-        } catch (Throwable t) {
-            throw new IllegalStateException("downcall failed", t);
+        if (cmds != null) {
+            cmds.close();
+            cmds = null;
         }
     }
 }

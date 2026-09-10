@@ -34,6 +34,13 @@
             <artifactId>vexelray-engine-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- The Vulkan-bearing half of the SPI, which SharedTargetContext implements. A runtime depends on the
+             contract techniques are written against; the reverse edge is what D18 deleted. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-vulkan-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- The Vulkan object wrappers this orchestrates: device, swapchain, render pass, depth, presenter. -->
         <dependency>
             <groupId>dev.vexelray</groupId>
@@ -50,6 +57,10 @@
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-diagnostics</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>sibarum.atchung</groupId>
+            <artifactId>atchung-core</artifactId>
         </dependency>
         <dependency>
             <groupId>sibarum.atchung</groupId>

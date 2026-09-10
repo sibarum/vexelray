@@ -46,6 +46,35 @@ public final class GraphicsPipeline implements AutoCloseable {
 
     /** One interleaved vertex attribute: shader {@code location}, a {@code VK_FORMAT_*}, and its byte {@code offset}. */
     public record VertexAttribute(int location, int format, int offset) {
+
+        /**
+         * An attribute of {@code components} consecutive 32-bit floats — the only vertex layout anything in
+         * this repository uses.
+         *
+         * <p>Here because the {@code components -> VK_FORMAT_*} switch had been written four times, once in
+         * {@code CanvasTechnique} and once in each of three canvas demos, and every copy had the same three
+         * cases and the same {@code default -> throw}. It is Vulkan's mapping, so it belongs beside the type
+         * that carries a {@code VK_FORMAT_*}, not in each caller that happens to build one.
+         *
+         * @throws IllegalArgumentException for a component count with no float format — 3 among them, which
+         *         is <em>not</em> an oversight: {@code R32G32B32_SFLOAT} exists but is not guaranteed as a
+         *         vertex format on every device, and a vertex layout that works on the author's GPU and not
+         *         on the reader's is the failure this refuses rather than risks
+         */
+        public static VertexAttribute floats(int location, int components, int offset) {
+            return new VertexAttribute(location, floatFormat(components), offset);
+        }
+    }
+
+    /** The {@code VK_FORMAT_*} for {@code components} consecutive 32-bit floats. See {@link VertexAttribute#floats}. */
+    public static int floatFormat(int components) {
+        return switch (components) {
+            case 1 -> Vk.FORMAT_R32_SFLOAT;
+            case 2 -> Vk.FORMAT_R32G32_SFLOAT;
+            case 4 -> Vk.FORMAT_R32G32B32A32_SFLOAT;
+            default -> throw new IllegalArgumentException("no guaranteed float vertex format for " + components
+                    + " components; use 1, 2 or 4");
+        };
     }
 
     /**

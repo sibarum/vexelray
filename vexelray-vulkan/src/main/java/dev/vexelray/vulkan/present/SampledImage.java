@@ -1,5 +1,6 @@
 package dev.vexelray.vulkan.present;
 
+import dev.vexelray.target.ImageHandle;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
 /**
@@ -13,8 +14,12 @@ import dev.vexelray.vulkan.vk.VulkanDevice;
  *
  * <p>Implementations own the underlying objects and stay valid until closed; a set handed to a frame that is still
  * in flight must outlive it.
+ *
+ * <p>It extends {@link ImageHandle}, which is the same idea one layer down and with nothing Vulkan in it: the
+ * marker {@code vexelray-core} publishes so a drawing layer can hold an image without depending on this module,
+ * and this module can be held without depending on that layer. Neither side names the other; both name core.
  */
-public interface SampledImage {
+public interface SampledImage extends ImageHandle {
 
     /**
      * The {@code VkDescriptorSet} holding this image at binding 0, ready to bind at

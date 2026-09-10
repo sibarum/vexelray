@@ -8,7 +8,7 @@ import dev.vexelray.surface.Surface;
  * march, and how wide the lens is.
  *
  * <p>A record of records all the way down — {@link Surface} is a record tree, {@link Shading} models are
- * records, {@link MarchSettings} and {@link Rgb} are records — so structural equality holds for the whole scene
+ * records, {@link MarchSettings} and {@link Surface.Rgb} are records — so structural equality holds for the whole scene
  * and {@code ShaderKey}'s default fingerprint is correct with nothing written to support it. Two scenes built
  * independently but describing the same thing share one compiled shader set.
  *
@@ -30,7 +30,7 @@ import dev.vexelray.surface.Surface;
  *                     constant
  */
 public record SdfScene(Surface surface, Shading shading, MarchSettings march,
-                       Rgb albedo, Rgb sky, double focalLength) {
+                       Surface.Rgb albedo, Surface.Rgb sky, double focalLength) {
 
     public SdfScene {
         if (surface == null || shading == null || march == null || albedo == null || sky == null) {
@@ -44,7 +44,7 @@ public record SdfScene(Surface surface, Shading shading, MarchSettings march,
     /** A scene with the defaults the demo uses: one key light, a neutral surface, a cool sky, a 1.4 lens. */
     public static SdfScene of(Surface surface) {
         return new SdfScene(surface, dev.vexelray.shader.Shadings.defaultKeyLight(), MarchSettings.DEFAULT,
-                new Rgb(0.8, 0.8, 0.8), new Rgb(0.10, 0.12, 0.16), 1.4);
+                new Surface.Rgb(0.8, 0.8, 0.8), new Surface.Rgb(0.10, 0.12, 0.16), 1.4);
     }
 
     public SdfScene withShading(Shading shading) {
@@ -55,11 +55,8 @@ public record SdfScene(Surface surface, Shading shading, MarchSettings march,
         return new SdfScene(surface, shading, march, albedo, sky, focalLength);
     }
 
-    public SdfScene withAlbedo(Rgb albedo) {
+    public SdfScene withAlbedo(Surface.Rgb albedo) {
         return new SdfScene(surface, shading, march, albedo, sky, focalLength);
     }
 
-    /** A linear-RGB colour. Linear, not sRGB: shading arithmetic is only correct in a linear space. */
-    public record Rgb(double r, double g, double b) {
-    }
 }

@@ -755,7 +755,16 @@ public sealed interface Surface {
      * that reaches the compiler has already stopped being something a human picked in a colour wheel.
      *
      * <p>Lives here rather than downstream because a surface that carries colour has to name it, and
-     * {@code vexelray-surface} sits below anything that knows what a renderer is.
+     * {@code vexelray-surface} sits below anything that knows what a renderer is. {@code SdfScene}'s albedo
+     * and sky are this type for that reason — they used to be an identical nested record of their own, in a
+     * module that already depended on this one.
+     *
+     * <p><b>The other colour type, and why.</b> {@code dev.vexelray.canvas.Color} is {@code float} RGBA. This
+     * one is {@code double} RGB, and the two differences are the boundary: {@code double} because a colour
+     * here is an operand in a compiler whose every other number is {@code double} and which rounds once at
+     * lowering; no alpha because a signed-distance surface either is or is not at a point, and there is no
+     * expression in the field for half of one. Coverage belongs to the compositing layer, which is exactly
+     * where {@code Color} lives. Both are linear, so the difference is never colour space.
      */
     record Rgb(double r, double g, double b) {
         public Rgb {

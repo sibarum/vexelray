@@ -1,6 +1,7 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.vexelray.diag.Diagnostics;
+import dev.vexelray.engine.EngineEvents;
 import dev.vexelray.engine.FrameContext;
 import dev.vexelray.engine.RenderPipeline;
 import dev.vexelray.engine.RenderTechnique;
@@ -15,10 +16,13 @@ import dev.vexelray.vulkan.present.DepthAttachment;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
 import dev.vexelray.vulkan.present.WindowedPresenter;
+import dev.vexelray.vulkan.vk.DeviceLostException;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VkLoader;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 import dev.vexelray.vulkan.vk.VulkanInstance;
+import sibarum.atchung.Atchung;
+import sibarum.atchung.Topic;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -51,18 +55,41 @@ import java.util.Optional;
  * window, surface, swapchain, render pass, depth — is built when a pipeline is realised, and torn down when
  * {@code run} returns. The engine survives to run another pipeline, which is exactly why the surface could not
  * stay on the config.
+ *
+ * <h2>Threading</h2>
+ *
+ * <p>{@link #run} is the render thread: it creates the window on the caller's thread, pumps that window's
+ * events there, and calls every technique's {@code realize}, {@code record} and {@code close} — and the
+ * application callback — from it. Nothing here starts a thread. {@link RenderTechnique} states the contract
+ * techniques are written against; this class is what makes it true, and the only field that crosses threads
+ * is {@link #windowHandle}.
+ *
+ * <h2>What it publishes</h2>
+ *
+ * <p>Given a bus, it publishes {@link EngineEvents}: the run starting and ending, each frame, each resize,
+ * each technique realised and closed, and device loss. All from the render thread, so an inline subscriber's
+ * cost is frame time. Given no bus it publishes nothing and builds no event objects at all — the
+ * {@link Events} holder below is the one place that knows which of those is happening.
  */
 public final class VulkanEngine implements VexelEngine {
 
     /** Diagnostic key for a target asking for a colour format this runtime does not honour. */
     private static final String DIAG_COLOR_FORMAT = "engine.target.colorFormat";
 
+    /** What {@link EngineEvents.RunStarted} reports as the runtime that drew — the provider's own name. */
+    static final String ENGINE_NAME = "vexelray-engine (Vulkan, Panama)";
+
     private final EngineConfig config;
     private final NativePlatform platform;
 
     /**
-     * The running window's OS handle, or 0. Volatile because a platform-pulled frame (a Win32 modal resize) can
-     * reach the application callback from the OS's own loop, and the handle must be visible there too.
+     * The running window's OS handle, or 0.
+     *
+     * <p>Volatile because {@link #windowHandle()} is the one method here an application may legitimately call
+     * from a thread that is not the render thread — an input or watchdog thread asking whether there is a
+     * window yet. Everything else in this class, and every technique it drives, is single-threaded (see
+     * {@link RenderTechnique}'s threading contract); this field is the exception, and it is a {@code long}
+     * written once and cleared once so volatile is the whole of what it needs.
      */
     private volatile long windowHandle;
 
@@ -78,7 +105,7 @@ public final class VulkanEngine implements VexelEngine {
     }
 
     @Override
-    public void run(RenderPipeline pipeline, FrameCallback onFrame) {
+    public void run(RenderPipeline pipeline, Atchung bus, FrameCallback onFrame) {
         if (closed) {
             throw new IllegalStateException("engine is closed");
         }
@@ -89,18 +116,32 @@ public final class VulkanEngine implements VexelEngine {
             throw new UnsupportedOperationException(
                     "this runtime presents to a window; Target.Kind." + target.kind() + " is not implemented yet");
         }
-        runWindowed(pipeline, target, onFrame);
+        runWindowed(pipeline, target, new Events(bus), onFrame);
     }
 
-    private void runWindowed(RenderPipeline pipeline, Target target, FrameCallback onFrame) {
+    private void runWindowed(RenderPipeline pipeline, Target target, Events events, FrameCallback onFrame) {
+        RuntimeException failure = null;
         try {
-            presentWindowed(pipeline, target, onFrame);
+            presentWindowed(pipeline, target, events, onFrame);
+        } catch (DeviceLostException e) {
+            // Told apart from every other failure because the recovery is different in kind: a subscriber
+            // hearing this must rebuild the engine, not retry the frame. It is published *and* rethrown —
+            // an event is a notification, never a way of swallowing an exception.
+            failure = e;
+            events.publish(EngineEvents.DEVICE_LOST, new EngineEvents.DeviceLost(e.call(), e));
+            throw e;
+        } catch (RuntimeException e) {
+            failure = e;
+            throw e;
         } finally {
             windowHandle = 0;
+            // Last thing before returning, on every path including the throwing ones — the case a subscriber
+            // most needs to hear about is the run that stopped without being asked to.
+            events.publish(EngineEvents.RUN_ENDED, new EngineEvents.RunEnded(events.frames, failure));
         }
     }
 
-    private void presentWindowed(RenderPipeline pipeline, Target target, FrameCallback onFrame) {
+    private void presentWindowed(RenderPipeline pipeline, Target target, Events events, FrameCallback onFrame) {
         List<RenderTechnique> techniques = pipeline.techniques();
         int depthFormat = target.hasDepth() ? DepthAttachment.FORMAT : VulkanRenderPass.NO_DEPTH;
 
@@ -127,17 +168,20 @@ public final class VulkanEngine implements VexelEngine {
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
                          window, depthFormat)) {
 
-                realizeAll(techniques, device, target, swapchain, renderPass);
+                realizeAll(techniques, device, target, swapchain, renderPass, events);
+                events.publish(EngineEvents.RUN_STARTED, new EngineEvents.RunStarted(
+                        config.applicationName(), ENGINE_NAME, swapchain.width(), swapchain.height(),
+                        target.hasDepth(), techniques.size()));
                 RuntimeException primary = null;
                 try {
-                    loop(techniques, presenter, swapchain, onFrame);
+                    loop(techniques, presenter, swapchain, events, onFrame);
                 } catch (RuntimeException e) {
                     primary = e;
                     throw e;
                 } finally {
                     // The GPU must be idle before a technique frees anything it may still be reading.
                     device.waitIdle();
-                    List<Throwable> failures = closeAll(techniques);
+                    List<Throwable> failures = closeAll(techniques, events);
                     if (!failures.isEmpty()) {
                         // Suppression rather than a log line, and rather than the first failure winning: a
                         // technique that throws on close must not strand the ones after it, must not replace an
@@ -165,17 +209,19 @@ public final class VulkanEngine implements VexelEngine {
      * the third one — so the leak is invisible and attributed elsewhere.
      */
     private void realizeAll(List<RenderTechnique> techniques, VulkanDevice device, Target target,
-                            VulkanSwapchain swapchain, VulkanRenderPass renderPass) {
-        VulkanTechniqueContext ctx = new VulkanTechniqueContext(device, target.colorFormat(),
+                            VulkanSwapchain swapchain, VulkanRenderPass renderPass, Events events) {
+        SharedTargetContext ctx = new SharedTargetContext(device, target.colorFormat(),
                 target.depthFormat(), swapchain.width(), swapchain.height(), renderPass.handle());
         List<RenderTechnique> realized = new ArrayList<>(techniques.size());
         try {
             for (RenderTechnique technique : techniques) {
                 technique.realize(ctx);
+                events.publish(EngineEvents.TECHNIQUE_REALIZED,
+                        new EngineEvents.TechniqueRealized(technique, realized.size()));
                 realized.add(technique);
             }
         } catch (RuntimeException | Error e) {
-            closeAll(realized).forEach(e::addSuppressed);
+            closeAll(realized, events).forEach(e::addSuppressed);
             throw e;
         }
     }
@@ -188,14 +234,19 @@ public final class VulkanEngine implements VexelEngine {
      * to whichever exception is actually travelling — a close failure is an error, not a dropped capability, so
      * {@link Diagnostics} is the wrong channel for it.
      */
-    private List<Throwable> closeAll(List<RenderTechnique> techniques) {
+    private List<Throwable> closeAll(List<RenderTechnique> techniques, Events events) {
         List<Throwable> failures = new ArrayList<>();
         for (int i = techniques.size() - 1; i >= 0; i--) {
+            RenderTechnique technique = techniques.get(i);
+            Throwable failed = null;
             try {
-                techniques.get(i).close();
+                technique.close();
             } catch (RuntimeException | Error e) {
+                failed = e;
                 failures.add(e);
             }
+            events.publish(EngineEvents.TECHNIQUE_CLOSED,
+                    new EngineEvents.TechniqueClosed(technique, i, failed));
         }
         return failures;
     }
@@ -208,21 +259,38 @@ public final class VulkanEngine implements VexelEngine {
      * knowing what a camera is.
      */
     private void loop(List<RenderTechnique> techniques, WindowedPresenter presenter, VulkanSwapchain swapchain,
-                      FrameCallback onFrame) {
+                      Events events, FrameCallback onFrame) {
         long[] frameIndex = {0};
         double[] elapsed = {0};
+        double[] delta = {0};
         boolean[] running = {true};
+        int[] lastExtent = {swapchain.width(), swapchain.height()};
 
         WindowedPresenter.Frame perFrame = (dt, push) -> {
             elapsed[0] += dt;
+            delta[0] = dt;
+            int width = swapchain.width();
+            int height = swapchain.height();
+            if (events.on()) {
+                // Resize first, so a subscriber that reflows on RESIZED has done it before the FrameStarted
+                // that carries the new extent — and before the callback that may read the reflowed result.
+                if (width != lastExtent[0] || height != lastExtent[1]) {
+                    events.publish(EngineEvents.RESIZED,
+                            new EngineEvents.Resized(width, height, lastExtent[0], lastExtent[1]));
+                }
+                events.publish(EngineEvents.FRAME_STARTED,
+                        new EngineEvents.FrameStarted(frameIndex[0], elapsed[0], dt, width, height));
+            }
+            lastExtent[0] = width;
+            lastExtent[1] = height;
             if (onFrame != null && !onFrame.onFrame(new FrameInfo(frameIndex[0], elapsed[0], dt,
-                    swapchain.width(), swapchain.height()))) {
+                    width, height))) {
                 running[0] = false;
             }
         };
 
         WindowedPresenter.Recorder recorder = (cmd, width, height) -> {
-            FrameContext frame = new FrameContext(cmd, frameIndex[0], elapsed[0], 0, width, height);
+            FrameContext frame = new FrameContext(cmd, frameIndex[0], elapsed[0], delta[0], width, height);
             for (RenderTechnique technique : techniques) {
                 technique.record(frame);
             }
@@ -230,6 +298,7 @@ public final class VulkanEngine implements VexelEngine {
 
         while (running[0] && presenter.frame(0, perFrame, recorder)) {
             frameIndex[0]++;
+            events.frames = frameIndex[0];
         }
     }
 
@@ -265,5 +334,34 @@ public final class VulkanEngine implements VexelEngine {
     @Override
     public void close() {
         closed = true;
+    }
+
+    /**
+     * This run's publishing, and the frame count {@link EngineEvents.RunEnded} reports.
+     *
+     * <p>One place that knows the bus may be absent, so no call site has to. {@link #on()} exists for the
+     * per-frame publishes only: {@link #publish} already tolerates no bus, but the <em>argument</em> to it is
+     * a record that would be built and thrown away every frame, and a run with no bus should cost exactly
+     * nothing. Where a bus is present the record is built whether or not anything subscribed — that is
+     * deliberate, and {@link EngineEvents} says why.
+     */
+    private static final class Events {
+
+        private final Atchung bus;
+        private long frames;
+
+        Events(Atchung bus) {
+            this.bus = bus;
+        }
+
+        boolean on() {
+            return bus != null;
+        }
+
+        <T> void publish(Topic<T> topic, T event) {
+            if (bus != null) {
+                bus.publish(topic, event);
+            }
+        }
     }
 }

@@ -59,7 +59,7 @@ final class SdfEngineSmoke {
                 Surface.Plane.ground());
 
         SdfRaymarchTechnique march = new SdfRaymarchTechnique(
-                SdfScene.of(scene).withAlbedo(new SdfScene.Rgb(0.78, 0.80, 0.86)));
+                SdfScene.of(scene).withAlbedo(new Surface.Rgb(0.78, 0.80, 0.86)));
 
         RenderPipeline pipeline = RenderPipeline.builder()
                 .target(Target.windowed("VexelRay — SDF through the engine", 900, 600)

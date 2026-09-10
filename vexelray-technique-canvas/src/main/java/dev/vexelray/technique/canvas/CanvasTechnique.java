@@ -8,24 +8,17 @@ import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.vulkan.present.AtlasTexture;
+import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.present.SampledImage;
 import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.vexelray.vulkan.vk.Vk;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
-import java.lang.invoke.MethodHandle;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
-
-import static java.lang.foreign.ValueLayout.ADDRESS;
-import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
-import static java.lang.foreign.ValueLayout.JAVA_INT;
-import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * A {@link Canvas} batch as a {@link RenderTechnique} — 2D shapes, text and sampled images recorded into a frame
@@ -68,18 +61,7 @@ public final class CanvasTechnique implements RenderTechnique {
     private int vertexCount;
     private List<Canvas.Run> runs = List.of();
 
-    private MethodHandle bindPipeline;
-    private MethodHandle bindVertexBuffers;
-    private MethodHandle bindDescriptorSets;
-    private MethodHandle draw;
-    private MethodHandle setViewport;
-    private MethodHandle setScissor;
-    private Arena arena;
-    private MemorySegment pVertexBuffers;
-    private MemorySegment pVertexOffsets;
-    private MemorySegment pSet;
-    private MemorySegment viewport;
-    private MemorySegment scissor;
+    private DrawCommands cmds;
 
     /**
      * How many floats the vertex buffer is allocated for.
@@ -161,7 +143,7 @@ public final class CanvasTechnique implements RenderTechnique {
 
         List<GraphicsPipeline.VertexAttribute> attrs = new ArrayList<>();
         for (CanvasVertex.Attr a : CanvasVertex.ATTRIBUTES) {
-            attrs.add(new GraphicsPipeline.VertexAttribute(a.location(), vkFormat(a.components()), a.offset()));
+            attrs.add(GraphicsPipeline.VertexAttribute.floats(a.location(), a.components(), a.offset()));
         }
         // Two set layouts, not one: set 0 is the glyph atlas and set 1 is whatever image a run binds. The
         // pipeline layout has to declare both even for a canvas that draws no images, or a frame that later
@@ -175,27 +157,7 @@ public final class CanvasTechnique implements RenderTechnique {
                 CanvasShader.vertex().spirv(), "main", CanvasShader.fragment().spirv(), "main", config);
         this.vertices = new VertexBuffer(device, capacityFloats);
 
-        this.bindPipeline = device.command("vkCmdBindPipeline",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        this.bindVertexBuffers = device.command("vkCmdBindVertexBuffers",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
-        this.bindDescriptorSets = device.command("vkCmdBindDescriptorSets",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT,
-                        ADDRESS));
-        this.draw = device.command("vkCmdDraw",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
-        FunctionDescriptor setVs = FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS);
-        this.setViewport = device.command("vkCmdSetViewport", setVs);
-        this.setScissor = device.command("vkCmdSetScissor", setVs);
-
-        this.arena = Arena.ofShared();
-        this.pVertexBuffers = arena.allocate(JAVA_LONG);
-        this.pVertexOffsets = arena.allocate(JAVA_LONG);
-        this.pSet = arena.allocate(JAVA_LONG);
-        this.viewport = arena.allocate(JAVA_FLOAT, 6);
-        this.scissor = arena.allocate(JAVA_INT, 4);
-        pVertexBuffers.set(JAVA_LONG, 0, vertices.handle());
-        pVertexOffsets.set(JAVA_LONG, 0, 0L);
+        this.cmds = new DrawCommands(device);
     }
 
     @Override
@@ -212,22 +174,15 @@ public final class CanvasTechnique implements RenderTechnique {
             canvas.resize(frame.width(), frame.height());
         }
 
-        invoke(bindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-
-        viewport.setAtIndex(JAVA_FLOAT, 2, frame.width());
-        viewport.setAtIndex(JAVA_FLOAT, 3, frame.height());
-        viewport.setAtIndex(JAVA_FLOAT, 5, 1.0f);
-        invoke(setViewport, cmd, 0, 1, viewport);
-        scissor.setAtIndex(JAVA_INT, 2, frame.width());
-        scissor.setAtIndex(JAVA_INT, 3, frame.height());
-        invoke(setScissor, cmd, 0, 1, scissor);
-
-        bindSet(cmd, CanvasShader.ATLAS_SET, atlas.descriptorSet());
-        invoke(bindVertexBuffers, cmd, 0, 1, pVertexBuffers, pVertexOffsets);
+        // Viewport and scissor are already this frame's extent: the runtime sets them before the first
+        // technique records, which is also why resizing the canvas above is all this needs to do about resize.
+        cmds.bindPipeline(cmd, pipeline);
+        cmds.bindDescriptorSet(cmd, pipeline, CanvasShader.ATLAS_SET, atlas.descriptorSet());
+        cmds.bindVertexBuffer(cmd, vertices.handle());
 
         List<Canvas.Run> frameRuns = runs;
         if (frameRuns.isEmpty()) {
-            invoke(draw, cmd, vertexCount, 1, 0, 0);
+            cmds.draw(cmd, vertexCount);
             return;
         }
         // Set 1 is rebound only when a run changes it — the same economy the presenter's Run loop had, moved to
@@ -241,16 +196,10 @@ public final class CanvasTechnique implements RenderTechnique {
             long set = run.image() instanceof SampledImage image ? image.descriptorSet() : atlas.descriptorSet();
             if (set != bound) {
                 bound = set;
-                bindSet(cmd, CanvasShader.IMAGE_SET, set);
+                cmds.bindDescriptorSet(cmd, pipeline, CanvasShader.IMAGE_SET, set);
             }
-            invoke(draw, cmd, run.vertexCount(), 1, run.firstVertex(), 0);
+            cmds.draw(cmd, run.vertexCount(), run.firstVertex());
         }
-    }
-
-    private void bindSet(MemorySegment cmd, int index, long set) {
-        pSet.set(JAVA_LONG, 0, set);
-        invoke(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                index, 1, pSet, 0, MemorySegment.NULL);
     }
 
     @Override
@@ -267,26 +216,9 @@ public final class CanvasTechnique implements RenderTechnique {
             atlas.close();
             atlas = null;
         }
-        if (arena != null) {
-            arena.close();
-            arena = null;
-        }
-    }
-
-    private static int vkFormat(int components) {
-        return switch (components) {
-            case 1 -> Vk.FORMAT_R32_SFLOAT;
-            case 2 -> Vk.FORMAT_R32G32_SFLOAT;
-            case 4 -> Vk.FORMAT_R32G32B32A32_SFLOAT;
-            default -> throw new IllegalArgumentException("unsupported component count " + components);
-        };
-    }
-
-    private static void invoke(MethodHandle handle, Object... args) {
-        try {
-            handle.invokeWithArguments(args);
-        } catch (Throwable t) {
-            throw new IllegalStateException("downcall failed", t);
+        if (cmds != null) {
+            cmds.close();
+            cmds = null;
         }
     }
 }

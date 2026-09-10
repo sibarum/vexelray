@@ -19,6 +19,7 @@ import dev.vexelray.shader.ShaderComposer;
 import dev.vexelray.shader.ShadingPoint;
 import dev.vexelray.surface.Field;
 import dev.vexelray.surface.ParamBlock;
+import dev.vexelray.surface.Surface;
 import dev.vexelray.ir.Ir;
 import dev.vexelray.surface.SurfaceCompiler;
 
@@ -200,7 +201,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     /** The scene-wide albedo as a constant, and what {@link Ir#SCENE_ALBEDO} resolves to. */
     private static Expr sceneAlbedo(SdfScene scene) {
-        SdfScene.Rgb rgb = scene.albedo();
+        Surface.Rgb rgb = scene.albedo();
         return Ir.v3(rgb.r(), rgb.g(), rgb.b());
     }
 
@@ -235,16 +236,47 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                             + " and the block holds " + values + "; rebuild it with paramBlock(scene) and carry "
                             + "the old values across with ParamBlock.carryFrom");
         }
-        float[] params = values.floats();
-        ByteBuffer buffer = ByteBuffer.allocate((FIRST_PARAM_MEMBER + params.length) * 4)
-                .order(ByteOrder.LITTLE_ENDIAN);
-        buffer.putFloat((float) x).putFloat((float) y).putFloat((float) z);
-        buffer.putFloat((float) yaw).putFloat((float) pitch).putFloat((float) aspect);
-        buffer.putFloat((float) scene.focalLength());
-        for (float value : params) {
+        float[] floats = new float[FIRST_PARAM_MEMBER + values.size()];
+        writePushConstants(scene, x, y, z, yaw, pitch, aspect, values, floats);
+        ByteBuffer buffer = ByteBuffer.allocate(floats.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (float value : floats) {
             buffer.putFloat(value);
         }
         return buffer.array();
+    }
+
+    /**
+     * The same block as {@link #pushConstantBytes}, written into {@code out} as floats and allocating nothing.
+     *
+     * <p>This is the overload a technique calls every frame. {@link #pushConstantBytes} cannot avoid garbage —
+     * it rebuilds the scene's {@link ParamBlock} to check the layout, converts the values to a new
+     * {@code float[]}, and returns a {@code byte[]} — which is fine for a one-shot render and is three
+     * allocations and a walk of the surface tree per frame in a loop.
+     *
+     * <p>It therefore does <em>not</em> re-derive the scene's layout to compare against {@code values}. A
+     * caller that obtained {@code values} from {@link #paramBlock paramBlock(scene)} for the same scene has
+     * that guarantee by construction, and a caller that did not is checking a fact that cannot change between
+     * frames once per frame. Use {@link #pushConstantBytes} if the block's provenance is genuinely unknown.
+     *
+     * @param out at least {@code FIRST_PARAM_MEMBER + values.size()} floats long; only that prefix is written
+     * @throws IllegalArgumentException if {@code out} is too short
+     */
+    public static void writePushConstants(SdfScene scene, double x, double y, double z, double yaw,
+                                          double pitch, double aspect, ParamBlock values, float[] out) {
+        int count = FIRST_PARAM_MEMBER + values.size();
+        if (out.length < count) {
+            throw new IllegalArgumentException("this scene's block is " + count + " floats and the array holds "
+                    + out.length + "; size it with pushBytes(scene) / 4");
+        }
+        // Members 0..FIRST_PARAM_MEMBER-1, in the order the generated fragment declares them.
+        out[0] = (float) x;
+        out[1] = (float) y;
+        out[2] = (float) z;
+        out[3] = (float) yaw;
+        out[4] = (float) pitch;
+        out[5] = (float) aspect;
+        out[6] = (float) scene.focalLength();
+        values.writeFloats(out, FIRST_PARAM_MEMBER);
     }
 
     /**
@@ -439,7 +471,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     }
 
     private static Region miss(SdfScene scene, InterfaceVar fragColor) {
-        SdfScene.Rgb sky = scene.sky();
+        Surface.Rgb sky = scene.sky();
         return Region.of(new Statement.InterfaceWrite(fragColor,
                 opaque(Ir.v3(sky.r(), sky.g(), sky.b()))));
     }

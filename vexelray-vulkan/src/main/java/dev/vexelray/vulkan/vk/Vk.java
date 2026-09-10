@@ -125,6 +125,12 @@ public final class Vk {
 
     public static final int SUBOPTIMAL_KHR = 1000001003;
     public static final int ERROR_OUT_OF_DATE_KHR = -1000001004;
+    /**
+     * VkResult: the device is gone — a GPU reset, a driver crash, a hot-unplugged eGPU. Unrecoverable at the
+     * call site and recoverable only by rebuilding everything made from the device, which is why
+     * {@link Ffm#check} raises it as its own exception type rather than as one more failed call.
+     */
+    public static final int ERROR_DEVICE_LOST = -4;
 
     // Command pool flags
     public static final int COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x0002;

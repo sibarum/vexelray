@@ -1,25 +1,23 @@
-package dev.vexelray.engine.vulkan;
+package dev.vexelray.engine.vulkan.runtime;
 
 import dev.vexelray.engine.TechniqueContext;
+import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.target.AttachmentFormat;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
 import java.util.Optional;
 
 /**
- * The {@link TechniqueContext} this runtime hands to a technique at realise time — the Vulkan-bearing subtype
- * {@code RenderTechnique}'s javadoc tells techniques to cast to (docs/refactor-decisions.md D3).
+ * What this runtime hands a technique at realise time: the shape of the shared colour+depth target, the render
+ * pass built over it, and the device — {@link VulkanTechniqueContext} as one immutable value.
  *
- * <p>The split is deliberate and worth stating from this side of it. {@link TechniqueContext} carries formats,
- * an extent, and a render-pass handle as plain values, so a technique that only needs to build a pipeline
- * compiles against {@code vexelray-engine-api} and never sees Vulkan. A technique that must <em>create</em>
- * objects — a buffer, a descriptor set, a sampled image — needs the device, and there is no honest way to hand
- * that over without naming Vulkan. So it is named here, in the runtime, rather than smuggled into the public
- * contract as an opaque {@code long} that only one implementation could interpret.
+ * <p>The interface is the contract and lives in {@code vexelray-engine-vulkan-api}, where a technique can
+ * depend on it without depending on this engine. This record is one runtime's answer to it, and is
+ * package-visible to no technique: a second Vulkan runtime — an offscreen one, or one embedding into somebody
+ * else's swapchain — supplies its own and the techniques that already exist do not notice.
  *
- * <p>A technique that casts has coupled itself to this runtime, and that is the intended trade rather than a
- * leak: it is what "a backend abstraction is deferred — YAGNI until a second backend exists" costs, paid at the
- * point where it is visible.
+ * <p>Built once per realise from the swapchain's extent, which is why {@link #width()} carries the warning it
+ * does.
  *
  * @param device      the device every object a technique creates must belong to
  * @param colorFormat the shared colour attachment's engine-level format
@@ -28,11 +26,11 @@ import java.util.Optional;
  * @param height      the target's extent at realise time
  * @param renderPass  the {@code VkRenderPass} a technique's pipeline must be built against
  */
-public record VulkanTechniqueContext(VulkanDevice device, AttachmentFormat colorFormat,
-                                     Optional<AttachmentFormat> depthFormat, int width, int height,
-                                     long renderPass) implements TechniqueContext {
+public record SharedTargetContext(VulkanDevice device, AttachmentFormat colorFormat,
+                                  Optional<AttachmentFormat> depthFormat, int width, int height,
+                                  long renderPass) implements VulkanTechniqueContext {
 
-    public VulkanTechniqueContext {
+    public SharedTargetContext {
         if (device == null) {
             throw new IllegalArgumentException("device must not be null");
         }
