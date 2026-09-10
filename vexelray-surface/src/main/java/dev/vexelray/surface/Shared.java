@@ -48,20 +48,78 @@ final class Shared {
     private Shared() {
     }
 
-    /** The node instances worth emitting once and calling. */
-    static Set<Surface> of(Surface root) {
+    /**
+     * Which nodes to emit as functions, and what each one's shape is.
+     *
+     * <p>Two answers rather than one because the compiler needs both, and they are asked by different keys.
+     * "Is this node shared?" is asked of an instance — a node is or is not one of the ones this walk picked
+     * out. "Have I emitted this already?" is asked of a <em>shape</em>, because two separately authored
+     * copies of one subtree are two instances that must reach one function; keyed by instance, each would
+     * get its own, which is a size regression with nothing to fail.
+     *
+     * @param shared the node instances worth emitting once and calling
+     * @param shapes each node paired with itself minus its identities, for the compiler's memo to key on
+     */
+    record Sharing(Set<Surface> shared, Map<Surface, Surface> shapes) {
+
+        boolean shares(Surface node) {
+            return shared.contains(node);
+        }
+
+        /** This node as a shape — equal to any other node that lowers to the same thing. */
+        Surface shapeOf(Surface node) {
+            return shapes.get(node);
+        }
+    }
+
+    /** The node instances worth emitting once and calling, with the shape of each. */
+    static Sharing of(Surface root) {
+        // Counted on the tree with its identities flattened away, because identity is exactly what the
+        // distance field does not depend on. Two spheres of one radius are two objects and one shape, and it
+        // is the shape that decides whether a function is worth emitting. Without this, adding NodeId in P2
+        // would have turned every shared subtree back into a copy — silently, as a size regression.
+        Map<Surface, Surface> shapes = shapesOf(root);
+
         Map<Key, Long> lowerings = new HashMap<>();
         List<Surface> nodes = new ArrayList<>();
-        count(root, 1, lowerings, nodes);
+        count(root, 1, lowerings, nodes, shapes);
 
         Set<Surface> shared = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Surface node : nodes) {
-            if (worthSharing(node, lowerings.getOrDefault(new Key(node), 0L)) && !carriesColour(node)) {
+            long count = lowerings.getOrDefault(new Key(shapes.get(node)), 0L);
+            if (worthSharing(node, count) && !carriesColour(node)) {
                 shared.add(node);
             }
         }
-        return shared;
+        return new Sharing(shared, shapes);
     }
+
+    /**
+     * Each node of {@code root} paired with the same node as a <em>shape</em>: identities flattened to one
+     * value, so that structural equality answers "is this the same shape" rather than "is this the same
+     * object".
+     *
+     * <p>Built in one pass by mapping the whole tree and then walking the two in lockstep, rather than
+     * canonicalising each subtree separately — the second is the same answer and quadratic.
+     */
+    private static Map<Surface, Surface> shapesOf(Surface root) {
+        Surface flattened = Scalars.map(root, scalar -> scalar, id -> ANONYMOUS);
+        Map<Surface, Surface> shapes = new IdentityHashMap<>();
+        pair(root, flattened, shapes);
+        return shapes;
+    }
+
+    private static void pair(Surface node, Surface shape, Map<Surface, Surface> shapes) {
+        shapes.put(node, shape);
+        List<Surface> children = Scalars.children(node);
+        List<Surface> shapeChildren = Scalars.children(shape);
+        for (int i = 0; i < children.size(); i++) {
+            pair(children.get(i), shapeChildren.get(i), shapes);
+        }
+    }
+
+    /** The one identity every node wears while it is being compared as a shape. */
+    private static final NodeId ANONYMOUS = NodeId.of(0);
 
     /**
      * Whether a function is worth what it costs.
@@ -96,36 +154,13 @@ final class Shared {
         };
     }
 
-    private static void count(Surface surface, long lowerings, Map<Key, Long> counts, List<Surface> nodes) {
-        counts.merge(new Key(surface), lowerings, Shared::saturating);
+    private static void count(Surface surface, long lowerings, Map<Key, Long> counts, List<Surface> nodes,
+                              Map<Surface, Surface> shapes) {
+        counts.merge(new Key(shapes.get(surface)), lowerings, Shared::saturating);
         nodes.add(surface);                     // every instance, since the answer is by identity
         long inner = lowerings * multiplier(surface);
-        switch (surface) {
-            case Surface.Translate t -> count(t.of(), inner, counts, nodes);
-            case Surface.Scale s -> count(s.of(), inner, counts, nodes);
-            case Surface.Rotate r -> count(r.of(), inner, counts, nodes);
-            case Surface.Mirror m -> count(m.of(), inner, counts, nodes);
-            case Surface.Repeat r -> count(r.of(), inner, counts, nodes);
-            case Surface.PolarRepeat r -> count(r.of(), inner, counts, nodes);
-            case Surface.Twist t -> count(t.of(), inner, counts, nodes);
-            case Surface.Bend b -> count(b.of(), inner, counts, nodes);
-            case Surface.Shell s -> count(s.of(), inner, counts, nodes);
-            case Surface.Round r -> count(r.of(), inner, counts, nodes);
-            case Surface.Difference d -> {
-                count(d.from(), inner, counts, nodes);
-                count(d.remove(), inner, counts, nodes);
-            }
-            case Surface.SmoothDifference d -> {
-                count(d.from(), inner, counts, nodes);
-                count(d.remove(), inner, counts, nodes);
-            }
-            case Surface.Union u -> u.of().forEach(child -> count(child, inner, counts, nodes));
-            case Surface.Intersection i -> i.of().forEach(child -> count(child, inner, counts, nodes));
-            case Surface.SmoothUnion s -> s.of().forEach(child -> count(child, inner, counts, nodes));
-            case Surface.SmoothIntersection s -> s.of().forEach(child -> count(child, inner, counts, nodes));
-            default -> {
-                // A leaf: a primitive, a stroke, or an implicit. No children to charge.
-            }
+        for (Surface child : Scalars.children(surface)) {
+            count(child, inner, counts, nodes, shapes);
         }
     }
 
@@ -172,26 +207,15 @@ final class Shared {
 
     /** Whether anything in this subtree names a colour of its own. */
     private static boolean carriesColour(Surface surface) {
-        return switch (surface) {
-            case Surface.Stroke s -> s.hasColour();
-            case Surface.Translate t -> carriesColour(t.of());
-            case Surface.Scale s -> carriesColour(s.of());
-            case Surface.Rotate r -> carriesColour(r.of());
-            case Surface.Mirror m -> carriesColour(m.of());
-            case Surface.Repeat r -> carriesColour(r.of());
-            case Surface.PolarRepeat r -> carriesColour(r.of());
-            case Surface.Twist t -> carriesColour(t.of());
-            case Surface.Bend b -> carriesColour(b.of());
-            case Surface.Shell s -> carriesColour(s.of());
-            case Surface.Round r -> carriesColour(r.of());
-            case Surface.Difference d -> carriesColour(d.from()) || carriesColour(d.remove());
-            case Surface.SmoothDifference d -> carriesColour(d.from()) || carriesColour(d.remove());
-            case Surface.Union u -> u.of().stream().anyMatch(Shared::carriesColour);
-            case Surface.Intersection i -> i.of().stream().anyMatch(Shared::carriesColour);
-            case Surface.SmoothUnion s -> s.of().stream().anyMatch(Shared::carriesColour);
-            case Surface.SmoothIntersection s -> s.of().stream().anyMatch(Shared::carriesColour);
-            default -> false;
-        };
+        if (surface instanceof Surface.Stroke s && s.hasColour()) {
+            return true;
+        }
+        for (Surface child : Scalars.children(surface)) {
+            if (carriesColour(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

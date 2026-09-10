@@ -14,7 +14,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Lowers a {@link Surface} to {@code core} IR, tracking as it goes whether the result can actually be marched.
@@ -63,15 +62,15 @@ public final class SurfaceCompiler {
     /** Subtrees already emitted as functions, so the second site calls the first site's function. */
     private final Map<Surface, Helper> memo = new HashMap<>();
 
-    /** Subtrees the lowering would otherwise write out more than once — {@link Shared#of}. */
-    private final Set<Surface> shared;
+    /** Which subtrees to emit as functions, and the shape each one is keyed by — {@link Shared#of}. */
+    private final Shared.Sharing sharing;
 
     /** Names every local in this compile, so two functions cannot declare the same one. */
     private int nextLocal;
 
-    private SurfaceCompiler(ParamStore params, Set<Surface> shared) {
+    private SurfaceCompiler(ParamStore params, Shared.Sharing sharing) {
         this.params = params;
-        this.shared = shared;
+        this.sharing = sharing;
         this.scopes.push(new Scope());
     }
 
@@ -157,7 +156,7 @@ public final class SurfaceCompiler {
      * many times the body reads it.
      */
     private Field lower(Surface surface, Expr p) {
-        if (shared.contains(surface)) {
+        if (sharing.shares(surface)) {
             Helper helper = helperFor(surface);
             return new Field(new Expr.Call(helper.function(), List.of(p)), helper.lipschitz());
         }
@@ -173,7 +172,10 @@ public final class SurfaceCompiler {
      * with nothing to substitute.
      */
     private Helper helperFor(Surface surface) {
-        Helper existing = memo.get(surface);
+        // Keyed by shape rather than by node: two separately authored copies of one subtree are two
+        // instances of one shape, and they must reach one function.
+        Surface shape = sharing.shapeOf(surface);
+        Helper existing = memo.get(shape);
         if (existing != null) {
             return existing;
         }
@@ -195,7 +197,7 @@ public final class SurfaceCompiler {
         // calls — the order a module wants.
         helpers.add(function);
         Helper helper = new Helper(function, body.lipschitz());
-        memo.put(surface, helper);
+        memo.put(shape, helper);
         return helper;
     }
 

@@ -207,8 +207,15 @@ class SdfComposerTest {
     void cacheCollapsesEqualScenesOnly() {
         ShaderCache cache = new ShaderCache();
         SdfScene one = scene();
-        SdfScene other = scene();                       // built separately, structurally equal
-        assertEquals(one, other);
+        SdfScene other = scene();                       // built separately, the same shape
+
+        // Since P2 they are not equal: every node carries a NodeId, so two authorings of one design are two
+        // sets of objects. The cache collapses them anyway, because SdfComposer.keyFor fingerprints the
+        // surface's normal form rather than the surface — identity is not something the lowering reads, and
+        // a cache that missed on it would compile the same SPIR-V twice and stall the presenting thread for
+        // five seconds doing it.
+        assertNotEquals(one, other);
+        assertEquals(composer.keyFor(one), composer.keyFor(other));
 
         List<ComposedShader> first = cache.shadersFor(composer, one);
         List<ComposedShader> second = cache.shadersFor(composer, other);
@@ -289,7 +296,7 @@ class SdfComposerTest {
         assertThrows(IllegalArgumentException.class, () -> Shadings.lambert(0, 1, 0, -1, 0));
         assertThrows(IllegalArgumentException.class,
                 () -> new SdfScene(Surface.Plane.ground(), Shadings.unlit(), MarchSettings.DEFAULT,
-                        new Surface.Rgb(1, 1, 1), new Surface.Rgb(0, 0, 0), 0));
+                        new Surface.Rgb(1, 1, 1), new Surface.Rgb(0, 0, 0), 0, 0.05));
     }
 
     private static int firstWord(byte[] spirv) {

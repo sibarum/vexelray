@@ -16,11 +16,13 @@ import dev.supirvast.vastir.type.Type;
 import dev.vexelray.shader.Bindings;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.shader.ShaderComposer;
+import dev.vexelray.shader.ShaderKey;
 import dev.vexelray.shader.ShadingPoint;
 import dev.vexelray.surface.Field;
+import dev.vexelray.surface.NodeId;
 import dev.vexelray.surface.ParamBlock;
-import dev.vexelray.surface.Surface;
 import dev.vexelray.ir.Ir;
+import dev.vexelray.surface.Surface;
 import dev.vexelray.surface.SurfaceCompiler;
 
 import java.nio.ByteBuffer;
@@ -92,6 +94,31 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     @Override
     public List<ShaderStage> stages() {
         return List.of(ShaderStage.VERTEX, ShaderStage.FRAGMENT);
+    }
+
+    /**
+     * The cache key: the scene, with everything the shader cannot see taken out of the surface.
+     *
+     * <p>Overridden rather than left to the default — the description's own {@code equals} — because two of
+     * the things a {@link Surface} now carries are deliberately invisible to the lowering. A parameter's
+     * live value lives in a {@link ParamBlock} and its identity is a slot (P0a); a node's {@link NodeId} is
+     * which object it is, and a distance field does not depend on which object anything is (P2). Left to
+     * structural equality, two designs that compose to byte-identical SPIR-V would compile twice — and the
+     * second of those would be a five-second stall on the thread that presents.
+     *
+     * <p>{@link Surface#shaderKey()} is the normal form; everything else about the scene — shading, march
+     * settings, colours, the planes — is compared as it stands, because all of it reaches the shader.
+     *
+     * <p>A whole {@link SdfScene} is rebuilt here rather than a list of the parts that matter being
+     * assembled, and that is deliberate: a component added to the scene stops this compiling, which is a
+     * demand that somebody decide whether it belongs in the key. A list would keep compiling and silently
+     * leave the new field out — a cache hit that renders the wrong picture, which is exactly the failure the
+     * differently-lit scene below is here to catch.
+     */
+    @Override
+    public ShaderKey keyFor(SdfScene scene) {
+        return ShaderKey.of(getClass(), new SdfScene(scene.surface().shaderKey(), scene.shading(),
+                scene.march(), scene.albedo(), scene.sky(), scene.focalLength(), scene.nearPlane()));
     }
 
     /**
@@ -359,11 +386,14 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         PushConstants camera = pushConstants(paramBlock(scene));
 
         Expr eye = Ir.v3(camera.read(0), camera.read(1), camera.read(2));
-        Expr rayDirection = primaryRay(vUv, camera.read(3), camera.read(4), camera.read(5), camera.read(6));
+        PrimaryRay ray = primaryRay(vUv, camera.read(3), camera.read(4), camera.read(5), camera.read(6));
 
         LocalVar ro = new LocalVar("ro", Ir.V3);
         LocalVar rd = new LocalVar("rd", Ir.V3);
         LocalVar t = new LocalVar("t", F32);
+        // Bound once, outside the march: it depends only on the pixel, so recomputing it in each branch would
+        // pay for a sqrt and a divide twice to get the same number.
+        LocalVar cosForward = new LocalVar("cosForward", F32);
         LocalVar i = new LocalVar("i", Type.int32());
         LocalVar p = new LocalVar("p", Ir.V3);
         LocalVar d = new LocalVar("d", F32);
@@ -384,7 +414,8 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
         Region body = Region.of(
                 new Statement.DeclareVar(ro, eye),
-                new Statement.DeclareVar(rd, rayDirection),
+                new Statement.DeclareVar(rd, ray.direction()),
+                new Statement.DeclareVar(cosForward, ray.cosForward()),
                 new Statement.DeclareVar(t, Ir.f(0.0)),
                 new Statement.DeclareVar(i, new Expr.ConstInt(Type.int32(), 0)),
                 new Statement.DeclareVar(p, Ir.v3(0, 0, 0)),
@@ -392,8 +423,12 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 new Statement.While(keepMarching, step),
                 new Statement.Assign(p, Ir.add(read(ro), Ir.scale(read(rd), read(t)))),
                 new Statement.Assign(d, call(sdf, read(p))),
+                // Both branches write gl_FragDepth, and that is the rule rather than symmetry for its own
+                // sake: a fragment shader that writes the built-in on one path leaves it undefined on every
+                // path that did not, and the symptom is geometry occluding intermittently rather than
+                // anything a validator reports. See Builtin.FRAG_DEPTH.
                 new Statement.If(hitTest(march, read(d), read(t)),
-                        hit(scene, sdf, albedoFn, fragColor, p, rd, t),
+                        hit(scene, sdf, albedoFn, fragColor, p, rd, t, cosForward),
                         miss(scene, fragColor)),
                 new Statement.ReturnVoid());
 
@@ -411,16 +446,36 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     }
 
     /**
+     * A pixel's primary ray, and the one other number a depth-writing march needs from the camera.
+     *
+     * @param direction  the unit ray to march along
+     * @param cosForward cosine of the angle between that ray and the camera's forward axis, which is what
+     *                   turns the march's radial {@code t} into the planar view-space depth a rasteriser
+     *                   would have written. See {@link ClipDepth} for why conflating the two is a bug that
+     *                   presents as bad modelling
+     */
+    private record PrimaryRay(Expr direction, Expr cosForward) {
+    }
+
+    /**
      * The primary ray for a pixel: screen coordinates through a focal length, pitched then yawed.
      *
      * <p>Horizontal screen coordinates are scaled by the aspect ratio, so a wide window shows more of the world
      * sideways rather than stretching what it already had.
+     *
+     * <p>{@code cosForward} comes out of the same three numbers and is computed <em>before</em> the rotation,
+     * which is not an optimisation but the reason it is correct: the rotation is rigid, so the angle between
+     * the ray and the camera's forward axis is the angle between {@code (sx, sy, focal)} and {@code (0, 0,
+     * focal)} whichever way the camera is pointing, and that is {@code focal / length(sx, sy, focal)}. Yaw
+     * and pitch never enter it.
      */
-    private static Expr primaryRay(InterfaceVar vUv, Expr yaw, Expr pitch, Expr aspect, Expr focal) {
+    private static PrimaryRay primaryRay(InterfaceVar vUv, Expr yaw, Expr pitch, Expr aspect, Expr focal) {
         Expr u = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 0);
         Expr v = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 1);
         Expr sx = Ir.mul(Ir.sub(Ir.mul(u, Ir.f(2.0)), Ir.f(1.0)), aspect);
         Expr sy = Ir.sub(Ir.f(1.0), Ir.mul(v, Ir.f(2.0)));
+
+        Expr cosForward = Ir.div(focal, Ir.length(Ir.v3(sx, sy, focal)));
 
         Expr cosPitch = Expr.MathCall.cos(pitch);
         Expr sinPitch = Expr.MathCall.sin(pitch);
@@ -432,7 +487,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         Expr rx = Ir.add(Ir.mul(sx, cosYaw), Ir.mul(pz, sinYaw));
         Expr rz = Ir.sub(Ir.mul(pz, cosYaw), Ir.mul(sx, sinYaw));
 
-        return Expr.MathCall.normalize(Ir.v3(rx, py, rz));
+        return new PrimaryRay(Expr.MathCall.normalize(Ir.v3(rx, py, rz)), cosForward);
     }
 
     /** Distance-relative hit threshold: a far pixel covers more world, so it may not demand the same precision. */
@@ -442,7 +497,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     }
 
     private static Region hit(SdfScene scene, Function sdf, Function albedoFn, InterfaceVar fragColor,
-                              LocalVar p, LocalVar rd, LocalVar t) {
+                              LocalVar p, LocalVar rd, LocalVar t, LocalVar cosForward) {
         // Finite-difference normal, sampled at a width that grows with distance. At a fixed near-field width a
         // far hit point's neighbours differ only by float noise, so normalize() amplifies it and the normal
         // flips sign — black scribbles across distant grazing slopes. Widening makes the normal describe the
@@ -471,6 +526,10 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         List<Statement> statements = new ArrayList<>(bindings.statements());
         statements.add(new Statement.DeclareVar(colour, shaded));
         statements.add(new Statement.InterfaceWrite(fragColor, opaque(read(colour))));
+        // The march's own hit distance, as a depth anything sharing this attachment can be compared against.
+        // t is radial — distance along a unit ray — and a depth buffer holds the planar distance, which is
+        // what cosForward converts; ClipDepth is where that difference is written down and why it matters.
+        statements.add(scene.clipDepth().write(read(t), read(cosForward)));
         return new Region(statements);
     }
 
@@ -500,8 +559,12 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     private static Region miss(SdfScene scene, InterfaceVar fragColor) {
         Surface.Rgb sky = scene.sky();
-        return Region.of(new Statement.InterfaceWrite(fragColor,
-                opaque(Ir.v3(sky.r(), sky.g(), sky.b()))));
+        return Region.of(
+                new Statement.InterfaceWrite(fragColor, opaque(Ir.v3(sky.r(), sky.g(), sky.b()))),
+                // The far plane, not a skipped write. A ray that reached farPlane without hitting anything
+                // has established that nothing occupies the space in front of it, which is what a depth of 1
+                // means — and a branch that wrote no depth at all would leave this pixel's depth undefined.
+                scene.clipDepth().missed());
     }
 
     /** {@code sdf(p + offset) - sdf(p - offset)} — one axis of the gradient, by central difference. */

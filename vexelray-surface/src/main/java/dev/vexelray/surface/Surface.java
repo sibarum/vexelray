@@ -24,12 +24,26 @@ import java.util.List;
  */
 public sealed interface Surface {
 
+    /**
+     * Which node this is — see {@link NodeId}. Every case carries one, minted at construction unless a
+     * caller supplies it, so a click can name a shape and an edit can leave its siblings alone.
+     *
+     * <p>Declared here rather than only on the records so that anything walking the tree can ask without a
+     * switch over every case, which is what a selection, a payload and an edit all need to do.
+     */
+    NodeId id();
+
     // --- primitives: exact, 1-Lipschitz signed distance fields ---
 
     /** Sphere of radius {@code radius} centred at {@code (cx, cy, cz)}. */
-    record Sphere(Scalar cx, Scalar cy, Scalar cz, Scalar radius) implements Surface {
+    record Sphere(NodeId id, Scalar cx, Scalar cy, Scalar cz, Scalar radius) implements Surface {
         public Sphere {
+            requireIdentity(id);
             requirePositive(radius, "radius");
+        }
+
+        public Sphere(Scalar cx, Scalar cy, Scalar cz, Scalar radius) {
+            this(NodeId.fresh(), cx, cy, cz, radius);
         }
 
         public Sphere(double cx, double cy, double cz, double radius) {
@@ -38,11 +52,17 @@ public sealed interface Surface {
     }
 
     /** Axis-aligned box centred at {@code (cx, cy, cz)} with half-extents {@code (hx, hy, hz)}. */
-    record Box(Scalar cx, Scalar cy, Scalar cz, Scalar hx, Scalar hy, Scalar hz) implements Surface {
+    record Box(NodeId id, Scalar cx, Scalar cy, Scalar cz, Scalar hx, Scalar hy,
+               Scalar hz) implements Surface {
         public Box {
+            requireIdentity(id);
             requirePositive(hx, "hx");
             requirePositive(hy, "hy");
             requirePositive(hz, "hz");
+        }
+
+        public Box(Scalar cx, Scalar cy, Scalar cz, Scalar hx, Scalar hy, Scalar hz) {
+            this(NodeId.fresh(), cx, cy, cz, hx, hy, hz);
         }
 
         public Box(double cx, double cy, double cz, double hx, double hy, double hz) {
@@ -62,8 +82,9 @@ public sealed interface Surface {
      * emits, and nothing in the design tool yet wants to sweep one. A known limit, recorded rather than
      * discovered — to turn a plane, wrap it in a {@link Rotate}, whose angle <em>is</em> a {@link Scalar}.
      */
-    record Plane(double nx, double ny, double nz, Scalar offset) implements Surface {
+    record Plane(NodeId id, double nx, double ny, double nz, Scalar offset) implements Surface {
         public Plane {
+            requireIdentity(id);
             double len = Math.sqrt(nx * nx + ny * ny + nz * nz);
             if (len < 1e-12) {
                 throw new IllegalArgumentException("plane normal must be non-degenerate");
@@ -72,6 +93,10 @@ public sealed interface Surface {
             ny /= len;
             nz /= len;
             requireNonNull(offset, "offset");
+        }
+
+        public Plane(double nx, double ny, double nz, Scalar offset) {
+            this(NodeId.fresh(), nx, ny, nz, offset);
         }
 
         public Plane(double nx, double ny, double nz, double offset) {
@@ -85,10 +110,15 @@ public sealed interface Surface {
     }
 
     /** Round-ended segment from {@code a} to {@code b} with radius {@code radius}. */
-    record Capsule(Scalar ax, Scalar ay, Scalar az, Scalar bx, Scalar by, Scalar bz,
+    record Capsule(NodeId id, Scalar ax, Scalar ay, Scalar az, Scalar bx, Scalar by, Scalar bz,
                    Scalar radius) implements Surface {
         public Capsule {
+            requireIdentity(id);
             requirePositive(radius, "radius");
+        }
+
+        public Capsule(Scalar ax, Scalar ay, Scalar az, Scalar bx, Scalar by, Scalar bz, Scalar radius) {
+            this(NodeId.fresh(), ax, ay, az, bx, by, bz, radius);
         }
 
         public Capsule(double ax, double ay, double az, double bx, double by, double bz, double radius) {
@@ -98,10 +128,16 @@ public sealed interface Surface {
     }
 
     /** Torus in the XZ plane centred at {@code (cx, cy, cz)}: ring radius {@code major}, tube {@code minor}. */
-    record Torus(Scalar cx, Scalar cy, Scalar cz, Scalar major, Scalar minor) implements Surface {
+    record Torus(NodeId id, Scalar cx, Scalar cy, Scalar cz, Scalar major,
+                 Scalar minor) implements Surface {
         public Torus {
+            requireIdentity(id);
             requirePositive(major, "major");
             requirePositive(minor, "minor");
+        }
+
+        public Torus(Scalar cx, Scalar cy, Scalar cz, Scalar major, Scalar minor) {
+            this(NodeId.fresh(), cx, cy, cz, major, minor);
         }
 
         public Torus(double cx, double cy, double cz, double major, double minor) {
@@ -112,9 +148,14 @@ public sealed interface Surface {
     // --- domain transforms ---
 
     /** {@code of}, moved by {@code (dx, dy, dz)}. Distance-preserving. */
-    record Translate(Scalar dx, Scalar dy, Scalar dz, Surface of) implements Surface {
+    record Translate(NodeId id, Scalar dx, Scalar dy, Scalar dz, Surface of) implements Surface {
         public Translate {
+            requireIdentity(id);
             requireNonNull(of);
+        }
+
+        public Translate(Scalar dx, Scalar dy, Scalar dz, Surface of) {
+            this(NodeId.fresh(), dx, dy, dz, of);
         }
 
         public Translate(double dx, double dy, double dz, Surface of) {
@@ -123,10 +164,15 @@ public sealed interface Surface {
     }
 
     /** {@code of}, uniformly scaled about the origin. Distances scale with it, so the field stays exact. */
-    record Scale(Scalar factor, Surface of) implements Surface {
+    record Scale(NodeId id, Scalar factor, Surface of) implements Surface {
         public Scale {
+            requireIdentity(id);
             requirePositive(factor, "factor");
             requireNonNull(of);
+        }
+
+        public Scale(Scalar factor, Surface of) {
+            this(NodeId.fresh(), factor, of);
         }
 
         public Scale(double factor, Surface of) {
@@ -152,8 +198,10 @@ public sealed interface Surface {
      * re-normalised whenever it changes, the normalisation is nonlinear, and nothing yet wants to sweep one.
      * Recorded as a known limit rather than as an oversight; a swept axis is two rotations composed.
      */
-    record Rotate(double ax, double ay, double az, Scalar angle, Surface of) implements Surface {
+    record Rotate(NodeId id, double ax, double ay, double az, Scalar angle,
+                  Surface of) implements Surface {
         public Rotate {
+            requireIdentity(id);
             double len = Math.sqrt(ax * ax + ay * ay + az * az);
             if (len < 1e-12) {
                 throw new IllegalArgumentException("rotation axis must be non-degenerate");
@@ -163,6 +211,10 @@ public sealed interface Surface {
             ay /= len;
             az /= len;
             requireNonNull(of);
+        }
+
+        public Rotate(double ax, double ay, double az, Scalar angle, Surface of) {
+            this(NodeId.fresh(), ax, ay, az, angle, of);
         }
 
         public Rotate(double ax, double ay, double az, double angle, Surface of) {
@@ -191,9 +243,14 @@ public sealed interface Surface {
      *
      * <p>Mirroring about a plane elsewhere is this wrapped in {@link Translate}.
      */
-    record Mirror(boolean x, boolean y, boolean z, Surface of) implements Surface {
+    record Mirror(NodeId id, boolean x, boolean y, boolean z, Surface of) implements Surface {
         public Mirror {
+            requireIdentity(id);
             requireNonNull(of);
+        }
+
+        public Mirror(boolean x, boolean y, boolean z, Surface of) {
+            this(NodeId.fresh(), x, y, z, of);
         }
     }
 
@@ -213,7 +270,7 @@ public sealed interface Surface {
      * {@code n} repeated axes. Repeats nest multiplicatively; {@link SurfaceLimits#maxCompiledNodes} is what
      * stops that running away.
      */
-    record Repeat(Axis x, Axis y, Axis z, Surface of) implements Surface {
+    record Repeat(NodeId id, Axis x, Axis y, Axis z, Surface of) implements Surface {
 
         /**
          * How one axis repeats: cells {@code period} apart, indices {@code from}..{@code to} inclusive, with cell
@@ -298,11 +355,16 @@ public sealed interface Surface {
         }
 
         public Repeat {
+            requireIdentity(id);
             if (x == null || y == null || z == null) {
                 throw new IllegalArgumentException(
                         "every axis must be given; use Axis.NONE for one that does not repeat");
             }
             requireNonNull(of);
+        }
+
+        public Repeat(Axis x, Axis y, Axis z, Surface of) {
+            this(NodeId.fresh(), x, y, z, of);
         }
 
         /** Repeat on {@code X} alone. */
@@ -343,12 +405,17 @@ public sealed interface Surface {
      * <p>Around another axis, wrap this in {@link Rotate}. Note that a child straddling a sector wall is cut by
      * it rather than repeated whole: the sector is where the geometry has to live.
      */
-    record PolarRepeat(int count, Surface of) implements Surface {
+    record PolarRepeat(NodeId id, int count, Surface of) implements Surface {
         public PolarRepeat {
+            requireIdentity(id);
             if (count < 1) {
                 throw new IllegalArgumentException("count must be at least 1, got " + count);
             }
             requireNonNull(of);
+        }
+
+        public PolarRepeat(int count, Surface of) {
+            this(NodeId.fresh(), count, of);
         }
     }
 
@@ -372,11 +439,16 @@ public sealed interface Surface {
      * two-thirds of the distance it could have been, and the penalty is linear in {@code rate*radius} after that.
      * Twist tightly and locally, not across a world.
      */
-    record Twist(Scalar rate, Scalar radius, Surface of) implements Surface {
+    record Twist(NodeId id, Scalar rate, Scalar radius, Surface of) implements Surface {
         public Twist {
+            requireIdentity(id);
             requireNonNull(rate, "rate");
             requirePositive(radius, "radius");
             requireNonNull(of);
+        }
+
+        public Twist(Scalar rate, Scalar radius, Surface of) {
+            this(NodeId.fresh(), rate, radius, of);
         }
 
         public Twist(double rate, double radius, Surface of) {
@@ -395,11 +467,16 @@ public sealed interface Surface {
      * value at {@code extent} to keep the field marchable: within {@code extent} of the {@code Z} axis the field
      * is conservative, and outside it, it can overshoot.
      */
-    record Bend(Scalar rate, Scalar extent, Surface of) implements Surface {
+    record Bend(NodeId id, Scalar rate, Scalar extent, Surface of) implements Surface {
         public Bend {
+            requireIdentity(id);
             requireNonNull(rate, "rate");
             requirePositive(extent, "extent");
             requireNonNull(of);
+        }
+
+        public Bend(Scalar rate, Scalar extent, Surface of) {
+            this(NodeId.fresh(), rate, extent, of);
         }
 
         public Bend(double rate, double extent, Surface of) {
@@ -410,24 +487,39 @@ public sealed interface Surface {
     // --- combinators ---
 
     /** Everything in {@code of} — a pointwise {@code min}. Conservative, associative, order-free. */
-    record Union(List<Surface> of) implements Surface {
+    record Union(NodeId id, List<Surface> of) implements Surface {
         public Union {
+            requireIdentity(id);
             of = requireNonEmpty(of);
+        }
+
+        public Union(List<Surface> of) {
+            this(NodeId.fresh(), of);
         }
     }
 
     /** The overlap of everything in {@code of} — a pointwise {@code max}. Conservative but not exact near edges. */
-    record Intersection(List<Surface> of) implements Surface {
+    record Intersection(NodeId id, List<Surface> of) implements Surface {
         public Intersection {
+            requireIdentity(id);
             of = requireNonEmpty(of);
+        }
+
+        public Intersection(List<Surface> of) {
+            this(NodeId.fresh(), of);
         }
     }
 
     /** {@code from} with {@code remove} carved out of it — {@code max(from, -remove)}. */
-    record Difference(Surface from, Surface remove) implements Surface {
+    record Difference(NodeId id, Surface from, Surface remove) implements Surface {
         public Difference {
+            requireIdentity(id);
             requireNonNull(from);
             requireNonNull(remove);
+        }
+
+        public Difference(Surface from, Surface remove) {
+            this(NodeId.fresh(), from, remove);
         }
     }
 
@@ -447,10 +539,15 @@ public sealed interface Surface {
      *
      * @param sharpness larger is crisper; as it grows the blend approaches a hard {@link Union}
      */
-    record SmoothUnion(Scalar sharpness, List<Surface> of) implements Surface {
+    record SmoothUnion(NodeId id, Scalar sharpness, List<Surface> of) implements Surface {
         public SmoothUnion {
+            requireIdentity(id);
             requirePositive(sharpness, "sharpness");
             of = requireNonEmpty(of);
+        }
+
+        public SmoothUnion(Scalar sharpness, List<Surface> of) {
+            this(NodeId.fresh(), sharpness, of);
         }
 
         public SmoothUnion(double sharpness, List<Surface> of) {
@@ -472,10 +569,15 @@ public sealed interface Surface {
      *
      * @param sharpness larger is crisper; as it grows the fillet approaches a hard {@link Intersection}
      */
-    record SmoothIntersection(Scalar sharpness, List<Surface> of) implements Surface {
+    record SmoothIntersection(NodeId id, Scalar sharpness, List<Surface> of) implements Surface {
         public SmoothIntersection {
+            requireIdentity(id);
             requirePositive(sharpness, "sharpness");
             of = requireNonEmpty(of);
+        }
+
+        public SmoothIntersection(Scalar sharpness, List<Surface> of) {
+            this(NodeId.fresh(), sharpness, of);
         }
 
         public SmoothIntersection(double sharpness, List<Surface> of) {
@@ -494,11 +596,17 @@ public sealed interface Surface {
      *
      * @param sharpness larger is crisper; as it grows the fillet approaches a hard {@link Difference}
      */
-    record SmoothDifference(Scalar sharpness, Surface from, Surface remove) implements Surface {
+    record SmoothDifference(NodeId id, Scalar sharpness, Surface from,
+                            Surface remove) implements Surface {
         public SmoothDifference {
+            requireIdentity(id);
             requirePositive(sharpness, "sharpness");
             requireNonNull(from);
             requireNonNull(remove);
+        }
+
+        public SmoothDifference(Scalar sharpness, Surface from, Surface remove) {
+            this(NodeId.fresh(), sharpness, from, remove);
         }
 
         public SmoothDifference(double sharpness, Surface from, Surface remove) {
@@ -507,10 +615,15 @@ public sealed interface Surface {
     }
 
     /** The hollow shell of {@code of}, {@code thickness} thick — {@code |d| - thickness}. */
-    record Shell(Scalar thickness, Surface of) implements Surface {
+    record Shell(NodeId id, Scalar thickness, Surface of) implements Surface {
         public Shell {
+            requireIdentity(id);
             requirePositive(thickness, "thickness");
             requireNonNull(of);
+        }
+
+        public Shell(Scalar thickness, Surface of) {
+            this(NodeId.fresh(), thickness, of);
         }
 
         public Shell(double thickness, Surface of) {
@@ -519,10 +632,15 @@ public sealed interface Surface {
     }
 
     /** {@code of}, inflated by {@code radius} — rounds its edges by the same amount. */
-    record Round(Scalar radius, Surface of) implements Surface {
+    record Round(NodeId id, Scalar radius, Surface of) implements Surface {
         public Round {
+            requireIdentity(id);
             requirePositive(radius, "radius");
             requireNonNull(of);
+        }
+
+        public Round(Scalar radius, Surface of) {
+            this(NodeId.fresh(), radius, of);
         }
 
         public Round(double radius, Surface of) {
@@ -572,7 +690,7 @@ public sealed interface Surface {
      *                          {@code vertices * (1 + segmentsPerCorner)} cones, and each cone is a few dozen
      *                          nodes. Corners at zero curvature emit none of them.
      */
-    record Stroke(List<Vertex> through, int segmentsPerCorner) implements Surface {
+    record Stroke(NodeId id, List<Vertex> through, int segmentsPerCorner) implements Surface {
 
         /** The default corner sampling: smooth enough to read as a curve, cheap enough to spend on every joint. */
         public static final int DEFAULT_SEGMENTS_PER_CORNER = 8;
@@ -621,6 +739,7 @@ public sealed interface Surface {
         }
 
         public Stroke {
+            requireIdentity(id);
             if (through == null || through.isEmpty()) {
                 throw new IllegalArgumentException("a stroke needs at least one vertex");
             }
@@ -643,6 +762,10 @@ public sealed interface Surface {
                         "segmentsPerCorner must be even and at least 2 — an odd count puts no sample on the "
                                 + "vertex, which is the one thing a stroke promises; got " + segmentsPerCorner);
             }
+        }
+
+        public Stroke(List<Vertex> through, int segmentsPerCorner) {
+            this(NodeId.fresh(), through, segmentsPerCorner);
         }
 
         /** A stroke at the default corner sampling. */
@@ -708,7 +831,11 @@ public sealed interface Surface {
      * correction, not a proof (docs/surface-compiler.md §7); interval arithmetic is what will eventually
      * guarantee it.
      */
-    record Implicit(Expr f, double lipschitzBound) implements Surface {
+    record Implicit(NodeId id, Expr f, double lipschitzBound) implements Surface {
+
+        public Implicit(Expr f, double lipschitzBound) {
+            this(NodeId.fresh(), f, lipschitzBound);
+        }
 
         /**
          * An implicit whose bound is unknown, so the compiler derives one pointwise from the expression's own
@@ -719,6 +846,7 @@ public sealed interface Surface {
         }
 
         public Implicit {
+            requireIdentity(id);
             requireNonNull(f);
             if (!Ir.F32.equals(f.type())) {
                 throw new IllegalArgumentException("an implicit surface must be a scalar float expression, got "
@@ -806,20 +934,30 @@ public sealed interface Surface {
     }
 
     /**
-     * This surface with every parameter's <em>identity and value</em> erased and only its slot and range kept —
-     * the normal form two surfaces must agree on to share a compiled pipeline.
+     * This surface with everything the shader cannot see erased — <b>the normal form two designs must agree
+     * on to share a compiled pipeline</b>.
      *
-     * <p>The key to R1: moving a slider does not change the tree at all (a live value lives in a
-     * {@link ParamBlock}, never here), and re-authoring the same shape under fresh {@link ParamId}s, or with a
-     * different starting value, still lands on one pipeline. What survives is what the lowering actually
-     * emitted — a read of slot <i>k</i> — plus the range, which is compile-time and may yet inform the lowering.
+     * <p>Two things are erased, and they are erased for the same reason: the lowering does not read them.
      *
-     * <p>Use this to key a shader cache; do not render it. It is a {@link Surface} only because that is the
-     * cheapest thing with the right structural equality.
+     * <ul>
+     *   <li><b>A parameter's identity and value</b>, leaving its slot and range. Moving a slider does not
+     *       change the tree at all — a live value lives in a {@link ParamBlock}, never here — and
+     *       re-authoring the same shape under fresh {@link ParamId}s, or with a different starting value,
+     *       still lands on one pipeline. What survives is what was emitted: a read of slot <i>k</i>.</li>
+     *   <li><b>Every {@link NodeId}</b>, replaced by the node's position in the walk. Identity is what makes
+     *       two identical spheres two objects, and it is precisely what the distance field does not depend
+     *       on: two designs that differ only in which objects they are compile to the same SPIR-V, so they
+     *       must not compile twice. Without this, adding identity in P2 would have quietly turned every
+     *       cache hit into a miss and every shared subtree back into a copy.</li>
+     * </ul>
+     *
+     * <p>Use this to key a shader cache; do not render it, and do not select in it — the ids are positions,
+     * not identities. It is a {@link Surface} only because that is the cheapest thing with the right
+     * structural equality.
      */
     default Surface shaderKey() {
         ParamBlock block = ParamBlock.of(this);
-        return Scalars.map(this, scalar -> scalar instanceof Scalar.Param p
+        return Scalars.canonical(this, scalar -> scalar instanceof Scalar.Param p
                 ? new Scalar.Param(ParamId.of(block.slotOf(p.id())), p.min(), p.max(), p.min())
                 : scalar);
     }
@@ -839,6 +977,13 @@ public sealed interface Surface {
     private static void requireNonNull(Scalar s, String name) {
         if (s == null) {
             throw new IllegalArgumentException(name + " must not be null");
+        }
+    }
+
+    private static void requireIdentity(NodeId id) {
+        if (id == null) {
+            throw new IllegalArgumentException(
+                    "every node needs an identity; use the constructor that mints one, or NodeId.fresh()");
         }
     }
 

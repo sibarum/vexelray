@@ -10,6 +10,7 @@ import java.util.List;
 
 import static dev.vexelray.ir.Ir.POINT;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -272,16 +273,24 @@ class SurfaceCompilerTest {
     }
 
     @Test
-    @DisplayName("identical surfaces are equal, so the shader cache can collapse them")
-    void structuralEqualityHolds() {
-        // ShaderKey fingerprints a description by its own equals(); this is what makes that work for free.
+    @DisplayName("identical surfaces are two documents and one shader")
+    void identicalSurfacesShareAShaderAndNothingElse() {
         Surface one = Surface.smoothUnion(4.0,
                 new Surface.Sphere(0, 0, 0, 1), new Surface.Box(1, 1, 1, 0.5, 0.5, 0.5));
         Surface other = Surface.smoothUnion(4.0,
                 new Surface.Sphere(0, 0, 0, 1), new Surface.Box(1, 1, 1, 0.5, 0.5, 0.5));
-        assertEquals(one, other);
-        assertEquals(one.hashCode(), other.hashCode());
-        assertEquals(SurfaceCompiler.compile(one).distance(), SurfaceCompiler.compile(other).distance());
+
+        // Not equal, since P2: every node carries a NodeId, and two spheres in the same place are two things
+        // a person can select, drag and delete separately. This assertion used to be the opposite one, and
+        // the change is exactly what identity costs.
+        assertNotEquals(one, other);
+
+        // What the shader cache actually needs, and what it now asks for. The normal form erases identity —
+        // and a parameter's value — because the lowering reads neither, so two authorings of one shape still
+        // compile once. The identical lowered fields are the proof that erasing them was safe.
+        assertEquals(one.shaderKey(), other.shaderKey());
+        assertEquals(one.shaderKey().hashCode(), other.shaderKey().hashCode());
+        assertEquals(SurfaceCompiler.compile(one).at(POINT), SurfaceCompiler.compile(other).at(POINT));
     }
 
     @Test
