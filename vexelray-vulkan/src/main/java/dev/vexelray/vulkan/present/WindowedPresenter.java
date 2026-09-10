@@ -29,11 +29,37 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
- * Drives the windowed present loop for a {@link GraphicsPipeline}: owns the per-image framebuffers, the frame
- * synchronisation (one frame in flight), and a command buffer, and runs acquire → render pass → draw → submit →
- * present each frame until the window closes (or a frame cap is hit). Recreates the swapchain + framebuffers on
- * resize. This is the reusable present machinery a client app (or the future {@code RuntimeManager}) drives
- * instead of hand-rolling Vulkan.
+ * Drives the windowed present loop for a {@link GraphicsPipeline}: owns the per-image framebuffers and depth,
+ * the frame synchronisation, and the command buffers, and runs acquire → render pass → draw → submit →
+ * present each frame until the window closes (or a frame cap is hit). Recreates the swapchain and everything
+ * sized to it on resize. This is the reusable present machinery a client app drives instead of hand-rolling
+ * Vulkan.
+ *
+ * <h2>Frames in flight</h2>
+ *
+ * <p>The presenter records {@code framesInFlight} frames ahead of the GPU. What that changes is one number —
+ * how old the frame is that the fence at the top of a frame waits for — and what it costs is a duplicated set
+ * of GPU objects, described where they are declared below. <b>It does not change the threading contract.</b>
+ * Every frame is still recorded on the thread that called in, one at a time; what overlaps is the CPU's
+ * recording of frame N+1 with the GPU's execution of frame N, and that overlap is the GPU's, not a second
+ * thread's.
+ *
+ * <p>Three kinds of object come in sets, and which set an object belongs to is the whole of the design:
+ *
+ * <ul>
+ *   <li><b>Per slot</b> ({@code framesInFlight} of them) — command buffer, in-flight fence, and the
+ *       image-available semaphore. These are what a frame holds for as long as it is unfinished.</li>
+ *   <li><b>Per swapchain image</b> — depth attachment, framebuffer, and the render-finished semaphore. Two
+ *       frames in flight are drawing into two different images, so anything hung off an image has to come in
+ *       image-many copies or the later frame stamps on the earlier.</li>
+ *   <li><b>Shared</b> — the native structs. Every Vulkan call reads its host memory during the call, so one
+ *       {@code VkSubmitInfo} rewritten per frame is not a hazard; the objects it points at are.</li>
+ * </ul>
+ *
+ * <p>The two mistakes this arrangement exists to avoid are both silent. A render-finished semaphore per slot
+ * rather than per image can be re-signalled while a present is still waiting on it, because a present's wait
+ * has no fence to observe it. And an acquire may return an image whose previous frame is still running, which
+ * the acquire semaphore covers for the swapchain image and not at all for the depth image beside it.
  *
  * <p>v0 draws a fixed vertex count with no per-frame data (the fullscreen triangle); per-frame push constants
  * (camera, time) arrive with the pipeline-layout work in a later step.
@@ -70,15 +96,73 @@ public final class WindowedPresenter implements AutoCloseable {
     private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, draw, endRp, pushConstants;
     private final MethodHandle bindVertexBuffers, bindDescriptorSets, setViewport, setScissor;
     private final MethodHandle destroySem, destroyFence, destroyPool;
+    /** Kept because {@link #rebuild()} makes a fresh render-finished semaphore per swapchain image. */
+    private final MethodHandle createSem;
 
-    private final long imageAvailable, renderFinished, inFlight, pool;
-    private final MemorySegment cmd;
+    /**
+     * How many frames the CPU may record ahead of the GPU — the number of <em>slots</em> below.
+     *
+     * <p>At one, the fence wait at the top of a frame is the CPU waiting for the GPU to finish the previous
+     * frame, and the two never overlap. At two or three, the wait is for the frame <em>N slots</em> ago, so
+     * the CPU can be recording frame N+1 while the GPU is still drawing frame N. What that buys is
+     * throughput; what it costs is latency, because a frame the CPU records is now one or two frames from
+     * being on screen. It never costs a thread: everything here still happens on the caller's.
+     */
+    private final int framesInFlight;
+
+    // --- per slot: the objects a frame owns for as long as it is in flight -------------------------------
+    //
+    // A command buffer must not be re-recorded while the GPU is still executing it, and a fence cannot
+    // describe two frames at once. So there is one of each per slot, and slot = frameCounter % framesInFlight.
+    // The imageAvailable semaphore is per slot too, because it is signalled by the acquire that begins a
+    // frame and waited by that frame's own submit.
+    private final long[] inFlight;
+    private final long[] imageAvailable;
+    private final MemorySegment[] cmds;
+    private final long pool;
+
+    /** Which slot the next frame uses; the only reason this class counts frames at all. */
+    private long frameCounter;
+
+    // --- per swapchain image: rebuilt with the swapchain ---------------------------------------------------
 
     private SwapchainFramebuffers framebuffers;
+
+    /**
+     * One depth image per swapchain image, or null for a colour-only pass.
+     *
+     * <p>Per image rather than per slot, which is the arrangement that keeps framebuffers one-to-one with
+     * images: a framebuffer names its attachments, so a depth image shared by fewer objects than there are
+     * images would need a framebuffer per (image, slot) pair. One depth image per image is one more image
+     * than the minimum and a great deal less bookkeeping.
+     */
+    private DepthAttachment[] depths;
+
+    /**
+     * The semaphore each image's render signals and its present waits on — <b>per image, not per slot.</b>
+     *
+     * <p>The subtle one. A semaphore may not be signalled again until the wait on it has completed, and
+     * {@code vkQueuePresentKHR}'s wait completes at a moment the application has no way to observe: there is
+     * no fence for it. With a per-slot semaphore and more images than slots, a later frame can reach its
+     * submit while an earlier present on the same semaphore is still outstanding, which is a validation
+     * error on a good day and a hang on a bad one. Tying the semaphore to the image makes the acquire that
+     * returns the image the proof that its previous present has finished.
+     */
+    private long[] renderFinished;
+
+    /**
+     * For each swapchain image, the fence of the frame currently using it, or 0.
+     *
+     * <p>Acquire is free to hand back an image whose previous frame is still in flight — with three images
+     * and two slots it is uncommon, but nothing forbids it, and a mailbox present mode makes it ordinary.
+     * The acquire semaphore orders access to the swapchain image itself; it says nothing about the depth
+     * image and framebuffer this class hung off it. So before drawing into an image, wait for whoever had it
+     * last.
+     */
+    private long[] imageInFlight;
+
     /** The depth format this presenter's render pass was built with, or {@link VulkanRenderPass#NO_DEPTH}. */
     private final int depthFormat;
-    /** The depth image behind {@link #framebuffers}, or null for a colour-only pass. Replaced on resize. */
-    private DepthAttachment depth;
     // Teardown happens once. Destroying an already-destroyed VkCommandPool (or fence, or semaphore) is undefined
     // behaviour that corrupts the loader's own heap — the same heap the device dispatch table lives on — so the
     // symptom surfaces much later, as a call through an entry point that is no longer code. Being idempotent is far
@@ -171,12 +255,34 @@ public final class WindowedPresenter implements AutoCloseable {
      */
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              NativeWindow window, int depthFormat) {
-        this(device, swapchain, renderPass, null, window, depthFormat);
+        this(device, swapchain, renderPass, null, window, depthFormat, 1);
+    }
+
+    /**
+     * The same, recording {@code framesInFlight} frames ahead of the GPU.
+     *
+     * <p>Separate from the constructor above rather than defaulted into it, because every caller that does
+     * not say has a reason not to: the single-pipeline demos drive one frame at a time deliberately, and an
+     * engine passes what its {@code EngineConfig} was given.
+     */
+    public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
+                             NativeWindow window, int depthFormat, int framesInFlight) {
+        this(device, swapchain, renderPass, null, window, depthFormat, framesInFlight);
     }
 
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              GraphicsPipeline pipeline, NativeWindow window, int depthFormat) {
+        this(device, swapchain, renderPass, pipeline, window, depthFormat, 1);
+    }
+
+    public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
+                             GraphicsPipeline pipeline, NativeWindow window, int depthFormat,
+                             int framesInFlight) {
+        if (framesInFlight < 1) {
+            throw new IllegalArgumentException("framesInFlight must be at least 1, got " + framesInFlight);
+        }
         Probe.opened(Lane.GPU, "WindowedPresenter", this);
+        this.framesInFlight = framesInFlight;
         this.depthFormat = depthFormat;
         this.device = device;
         this.dev = device.handle();
@@ -215,16 +321,62 @@ public final class WindowedPresenter implements AutoCloseable {
         this.destroyFence = device.command("vkDestroyFence", DL);
         this.destroyPool = device.command("vkDestroyCommandPool", DL);
 
-        this.imageAvailable = createSemaphore(createSem);
-        this.renderFinished = createSemaphore(createSem);
-        this.inFlight = createFenceSignaled(createFence);
         this.pool = createPool(createPool);
-        this.cmd = allocateCommandBuffer(allocCmd);
-        this.depth = depthFormat == VulkanRenderPass.NO_DEPTH
-                ? null
-                : new DepthAttachment(device, swapchain.width(), swapchain.height());
-        this.framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass,
-                depth == null ? SwapchainFramebuffers.NO_DEPTH_VIEW : depth.view());
+        this.inFlight = new long[framesInFlight];
+        this.imageAvailable = new long[framesInFlight];
+        this.cmds = new MemorySegment[framesInFlight];
+        for (int slot = 0; slot < framesInFlight; slot++) {
+            // Signalled, so the first frame in every slot waits on a fence that is already done rather than
+            // one nothing has submitted against.
+            inFlight[slot] = createFenceSignaled(createFence);
+            imageAvailable[slot] = createSemaphore(createSem);
+            cmds[slot] = allocateCommandBuffer(allocCmd);
+        }
+        this.createSem = createSem;
+        buildPerImage();
+    }
+
+    /**
+     * Create everything sized to the swapchain: a depth image and a render-finished semaphore per image, the
+     * framebuffers over them, and the empty in-flight table.
+     *
+     * <p>Called from the constructor and again from {@link #rebuild()}, because a recreated swapchain may
+     * hand back a different number of images — so the arrays are not merely re-filled, they are re-sized.
+     */
+    private void buildPerImage() {
+        int images = swapchain.images().length;
+        this.renderFinished = new long[images];
+        for (int i = 0; i < images; i++) {
+            renderFinished[i] = createSemaphore(createSem);
+        }
+        this.imageInFlight = new long[images];
+        if (depthFormat == VulkanRenderPass.NO_DEPTH) {
+            this.depths = null;
+            this.framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass);
+            return;
+        }
+        this.depths = new DepthAttachment[images];
+        long[] depthViews = new long[images];
+        for (int i = 0; i < images; i++) {
+            depths[i] = new DepthAttachment(device, swapchain.width(), swapchain.height());
+            depthViews[i] = depths[i].view();
+        }
+        this.framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass, depthViews);
+    }
+
+    /** Destroy what {@link #buildPerImage} made. The caller must have waited for the device to go idle. */
+    private void destroyPerImage() {
+        framebuffers.close();
+        if (depths != null) {
+            for (DepthAttachment d : depths) {
+                d.close();
+            }
+            depths = null;
+        }
+        for (long semaphore : renderFinished) {
+            invokeVoid(destroySem, dev, semaphore, MemorySegment.NULL);
+        }
+        renderFinished = new long[0];
     }
 
     /** Run until the window closes, or until {@code maxFrames} presented if {@code maxFrames > 0}. No push constants. */
@@ -319,23 +471,51 @@ public final class WindowedPresenter implements AutoCloseable {
             s.pushSeg = a.allocate(pushConstantBytes);
             s.pushCapacity = pushConstantBytes;
         }
-        // The single most diagnostic number in this whole file. One frame is in flight, so this fence is the
-        // CPU waiting for the GPU to finish the *previous* frame - and a loop that is GPU-bound spends its
-        // budget here and nowhere else. A "driver overload" report with a large fence wait and a small
-        // everything-else is not an application problem at all, and this is the line that says so.
+        int slot = (int) (frameCounter % framesInFlight);
+        MemorySegment cmd = cmds[slot];
+
+        // The single most diagnostic number in this whole file. This is the CPU waiting for the GPU to
+        // finish the frame *framesInFlight ago* - so at one frame in flight it is the previous frame, and a
+        // loop that is GPU-bound spends its budget here and nowhere else. A "driver overload" report with a
+        // large fence wait and a small everything-else is not an application problem at all, and this is the
+        // line that says so. Raising framesInFlight is precisely the move that shrinks this number, by
+        // giving the CPU an older frame to wait on.
+        s.pFence.set(JAVA_LONG, 0, inFlight[slot]);
         try (Zone w = Probe.zone(Lane.GPU, "wait fence")) {
             check(invoke(waitFences, dev, 1, s.pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
         }
         int acq;
         try (Zone w = Probe.zone(Lane.GPU, "acquire image")) {
-            acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, s.pImageIndex);
+            acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable[slot], 0L,
+                    s.pImageIndex);
         }
         if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
             rebuild();
+            // Not counted: the slot's fence is still signalled and its imageAvailable semaphore was never
+            // waited on, so the next frame must reuse this slot rather than move past it. Advancing here
+            // would leave a semaphore signalled with nothing to consume it.
             return true;   // skip this frame; the window is still open
         }
-        check(invoke(resetFences, dev, 1, s.pFence), "vkResetFences");
         int imageIndex = s.pImageIndex.get(JAVA_INT, 0);
+
+        // This image may still belong to a frame that has not finished. The acquire semaphore orders the
+        // swapchain image itself; it says nothing about the depth image and framebuffer hung off it here.
+        if (imageInFlight[imageIndex] != 0 && imageInFlight[imageIndex] != inFlight[slot]) {
+            s.pImageFence.set(JAVA_LONG, 0, imageInFlight[imageIndex]);
+            try (Zone w = Probe.zone(Lane.GPU, "wait image")) {
+                check(invoke(waitFences, dev, 1, s.pImageFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+            }
+        }
+        imageInFlight[imageIndex] = inFlight[slot];
+
+        // Reset after every wait above, and only once this frame is certain to submit: a fence reset on a
+        // frame that then returned early would never be signalled again, and the next visit to this slot
+        // would wait on it for ever.
+        check(invoke(resetFences, dev, 1, s.pFence), "vkResetFences");
+        s.pCmd.set(ADDRESS, 0, cmd);
+        s.waitSems.set(JAVA_LONG, 0, imageAvailable[slot]);
+        s.signalSems.set(JAVA_LONG, 0, renderFinished[imageIndex]);
+        frameCounter++;
 
         long now = System.nanoTime();
         double dt = (now - s.previousNanos) / 1_000_000_000.0;
@@ -371,7 +551,7 @@ public final class WindowedPresenter implements AutoCloseable {
             recorder.record(cmd, extentW, extentH);
             invokeVoid(endRp, cmd);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
-            return submitAndPresent(s);
+            return submitAndPresent(s, inFlight[slot]);
         }
         if (pipeline == null) {
             throw new IllegalStateException("this presenter was built without a pipeline, so every frame needs a "
@@ -417,7 +597,7 @@ public final class WindowedPresenter implements AutoCloseable {
         }
         invokeVoid(endRp, cmd);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
-        return submitAndPresent(s);
+        return submitAndPresent(s, inFlight[slot]);
     }
 
     /**
@@ -443,9 +623,9 @@ public final class WindowedPresenter implements AutoCloseable {
         invokeVoid(setScissor, cmd, 0, 1, s.pScissor);
     }
 
-    private boolean submitAndPresent(FrameState s) {
+    private boolean submitAndPresent(FrameState s, long fence) {
         try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
-            check(invoke(submitCmd, device.queue(), 1, s.submit, inFlight), "vkQueueSubmit");
+            check(invoke(submitCmd, device.queue(), 1, s.submit, fence), "vkQueueSubmit");
         }
         s.pSwapchains.set(JAVA_LONG, 0, swapchain.handle());
         int res;
@@ -471,7 +651,10 @@ public final class WindowedPresenter implements AutoCloseable {
     /** The loop-invariant native structs, built once on the first {@link #frame} and reused every frame. */
     private final class FrameState {
         final MemorySegment pImageIndex = a.allocate(JAVA_INT);
+        /** This slot's fence, rewritten each frame — the structs are shared, the objects are not. */
         final MemorySegment pFence = a.allocate(JAVA_LONG);
+        /** The fence of whoever last used this frame's image, when there is one to wait for. */
+        final MemorySegment pImageFence = a.allocate(JAVA_LONG);
         final MemorySegment waitSems = a.allocate(JAVA_LONG);
         final MemorySegment signalSems = a.allocate(JAVA_LONG);
         final MemorySegment waitStages = a.allocate(JAVA_INT);
@@ -497,11 +680,12 @@ public final class WindowedPresenter implements AutoCloseable {
         boolean shown = false;
 
         FrameState() {
-            pFence.set(JAVA_LONG, 0, inFlight);
-            waitSems.set(JAVA_LONG, 0, imageAvailable);
-            signalSems.set(JAVA_LONG, 0, renderFinished);
+            // pFence, waitSems, signalSems and pCmd are deliberately *not* filled here: they name the
+            // slot's fence, the slot's semaphore, the image's semaphore and the slot's command buffer, none
+            // of which is known until a frame has picked a slot and acquired an image. Sharing one set of
+            // structs across slots is safe because every Vulkan call reads its host memory during the call
+            // and nothing here is threaded; what cannot be shared is the objects they point at.
             waitStages.set(JAVA_INT, 0, Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            pCmd.set(ADDRESS, 0, cmd);
             pVertexOffsets.set(JAVA_LONG, 0, 0L);
 
             si(submit, VkStructs.SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
@@ -540,18 +724,16 @@ public final class WindowedPresenter implements AutoCloseable {
         // a full device idle, and the frame times it produces look like a rendering problem rather than the
         // resize it actually is.
         try (Zone z = Probe.zone(Lane.GPU, "swapchain rebuild")) {
+            // Everything per-image is destroyed and remade, not patched: a recreated swapchain may return a
+            // different number of images, which changes the length of three arrays and the identity of
+            // every semaphore in one of them. The previous version kept one depth image and reallocated it
+            // only when the extent changed; that saving is gone with per-image depth, and paying it back on
+            // a resize — an operation that already does a full device idle — is the cheap half of the
+            // trade.
             device.waitIdle();
-            framebuffers.close();
+            destroyPerImage();
             swapchain.recreate(window.width(), window.height());
-            // Depth is sized to the extent, so it goes with the framebuffers. Only when the extent actually
-            // changed: a rebuild triggered by OUT_OF_DATE on an unchanged window (which happens) would
-            // otherwise destroy and reallocate a full-screen image for nothing.
-            if (depth != null && !depth.matches(swapchain.width(), swapchain.height())) {
-                depth.close();
-                depth = new DepthAttachment(device, swapchain.width(), swapchain.height());
-            }
-            framebuffers = new SwapchainFramebuffers(device, swapchain, renderPass,
-                    depth == null ? SwapchainFramebuffers.NO_DEPTH_VIEW : depth.view());
+            buildPerImage();
         }
     }
 
@@ -604,13 +786,11 @@ public final class WindowedPresenter implements AutoCloseable {
         Probe.closed(Lane.GPU, "WindowedPresenter", this);
         device.waitIdle();
         invokeVoid(destroyPool, dev, pool, MemorySegment.NULL);
-        invokeVoid(destroyFence, dev, inFlight, MemorySegment.NULL);
-        invokeVoid(destroySem, dev, renderFinished, MemorySegment.NULL);
-        invokeVoid(destroySem, dev, imageAvailable, MemorySegment.NULL);
-        framebuffers.close();
-        if (depth != null) {
-            depth.close();
+        for (int slot = 0; slot < framesInFlight; slot++) {
+            invokeVoid(destroyFence, dev, inFlight[slot], MemorySegment.NULL);
+            invokeVoid(destroySem, dev, imageAvailable[slot], MemorySegment.NULL);
         }
+        destroyPerImage();
         a.close();
     }
 }

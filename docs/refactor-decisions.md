@@ -685,14 +685,90 @@ mechanism.
   breaking the cosine: the marched wall drops from 16384 pixels to 4208 — a bowl, exactly as predicted —
   while `MarchDepthTest` goes on passing.
 
+## 21. Frames in flight, and what the validation layer found (D25)
+
+**DECISION (D25, DONE).** The windowed runtime honours `EngineConfig.framesInFlight` for real. The default
+stays at one, and the reason it stays changed.
+
+**Which objects come in sets.** That is the whole design, and getting an object into the wrong set is a bug
+no picture shows.
+
+- **Per slot** (`framesInFlight` of them): the command buffer, the in-flight fence, and the image-available
+  semaphore. A command buffer must not be re-recorded while the GPU is executing it, and a fence cannot
+  describe two frames at once.
+- **Per swapchain image**: the depth attachment, the framebuffer, and the render-finished semaphore. Two
+  frames in flight are drawing into two different images, so anything hung off an image needs image-many
+  copies.
+- **Shared**: the native structs. Every Vulkan call reads its host memory *during the call*, so one
+  `VkSubmitInfo` rewritten per frame is not a hazard.
+
+That last point falsifies part of what this item's TODO entry predicted. It said per-frame-slot copies of
+each technique's push-constant arena would be needed. They are not: `vkCmdPushConstants` copies the values
+into the command buffer at record time, so the arena is consumed before the call returns. What cannot be
+shared is the objects, not the host memory that names them.
+
+**The render-finished semaphore is per image, not per slot** — the one that is easy to get wrong and hard to
+diagnose. A semaphore may not be signalled again until the wait on it has completed, and
+`vkQueuePresentKHR`'s wait completes at a moment the application cannot observe: there is no fence for it.
+With a per-slot semaphore and more images than slots, a later frame can reach its submit while an earlier
+present is still outstanding. Tying the semaphore to the image makes the acquire that returns the image the
+proof its previous present has finished.
+
+**And an in-flight table**, because acquire may hand back an image whose previous frame is still running.
+The acquire semaphore orders the swapchain image; it says nothing about the depth image beside it.
+
+**The default stays at one.** It used to be one because that was all the runtime did — a reason that has now
+expired — and it is one now because that is what *both* present paths do. An offscreen run is always one
+frame in flight, and D23's whole argument is that a headless capture is evidence about what a window would
+show. A default that made the two paths differ would trade that property, across every test in the build,
+for throughput no test wants. An offscreen run asked for more reports it through `Diagnostics` rather than
+ignoring it.
+
+### The validation layer as the measurement, and the two bugs it found
+
+Frames in flight changes no picture: two frames overlapping produce exactly what one at a time would, or the
+synchronisation is wrong. There is nothing to count. So the check is that the Vulkan validation layer
+reports nothing new across a run — which is demanding, because re-recording a live command buffer,
+re-signalling a semaphore whose wait has not completed, and drawing into an image a frame still holds are
+each an error it names.
+
+Making that check honest took a new predicate. `VulkanDebugMessenger.available()` tests the *extension*,
+which comes from the loader and is present nearly everywhere; the *layer* ships with the SDK and usually is
+not. Gating on the extension made the assertion vacuous — it passed while the error count could not move.
+`VulkanInstance.validationLayerActive()` asks the question that matters, and the tests skip on it.
+
+Pointed at a full run, the layer immediately found two pre-existing bugs, both invisible without it:
+
+- **The engine leaked a `VkSurfaceKHR` per windowed run.** Every hand-wired demo calls
+  `instance.destroySurface`; the engine that was supposed to make hand-wiring unnecessary never did. It
+  surfaced as "1 leaked object" at `vkDestroyInstance`.
+- **`GraphicsPipeline` omitted `pDepthStencilState` for `Depth.NONE`**, which is invalid whenever the pass
+  *has* depth — precisely the hybrid frame's canvas technique, a combination the enum's own javadoc
+  describes as supported. It is now always supplied, switched off for `NONE`; a pass without depth ignores
+  it.
+
+One validation error remains in a full run, recorded in `TODO.md` P2: a fragment shader declares a storage
+buffer without `NonWritable`. It wants a decoration upstream in SupirVast rather than the
+`fragmentStoresAndAtomics` device feature, because the field genuinely only reads.
+
+`FramesInFlightTest` covers one and three frames in flight through the engine; `PresenterResizeTest` covers
+the rebuild, where the per-image arrays change length and every semaphore in one of them is a new object.
+Both were verified by breaking the code they cover — the resize test produces five distinct VUID violations
+when the rebuild is removed.
+
 ## Open questions (to revisit as phases land)
 
-- **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need
+- ~~**Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need
   per-frame-slot copies — a technique's arena is one block written each frame, which is safe only because the
   previous frame has been waited on. So does the depth image: `DepthAttachment` is one image shared by every
   swapchain image. `EngineConfig.framesInFlight` accepts 1–3 and the runtime honours exactly 1, with
   `EngineConfigTest` pinning the default to what the presenter actually does rather than to what the config
-  claims. Still open, and it now depends on D20's threading contract being the thing that does *not* change.
+  claims. Still open, and it now depends on D20's threading contract being the thing that does *not* change.~~
+  **Closed by D25**, and half of it was wrong. The depth image did need to be per-swapchain-image, and is.
+  The push-constant arenas did **not**: `vkCmdPushConstants` copies the values into the command buffer at
+  record time, so a technique's one block is consumed before the call returns and can be reused freely. What
+  needed duplicating was the command buffer, the fence and two semaphores — objects, not host memory. D20's
+  threading contract was indeed the thing that did not change.
 - ~~**Writing `gl_FragDepth` needs `core` to be able to say it.** `Builtin` has `POSITION` and
   `VERTEX_INDEX`; there is no `FRAG_DEPTH`, and adding one means a SupirVast change (the enum, its type and
   direction, the `BuiltIn` decoration in `CoreToSpirv`, and the `DepthReplacing` execution mode). Authoring

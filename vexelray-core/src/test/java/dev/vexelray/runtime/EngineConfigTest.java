@@ -28,10 +28,12 @@ class EngineConfigTest {
 
         assertEquals("Fathom", config.applicationName());
         assertTrue(config.validation(), "a development default loads validation layers");
-        // Pinned deliberately. WindowedPresenter waits on a single fence, so one frame is what the runtime
-        // actually does; raising this default without raising the runtime's sync objects would be a config that
-        // promises depth of pipelining the engine does not have. If the presenter grows frames-in-flight, this
-        // assertion is the reminder that the default may follow it -- not before.
+        // Pinned deliberately, and the reason changed when the presenter grew frames-in-flight rather than
+        // going away. It is no longer "one is all the runtime does" -- the windowed path honours up to
+        // MAX_FRAMES_IN_FLIGHT. It is that one is what *both* present paths do: an offscreen run is always
+        // one frame in flight, and a headless capture is only evidence about a windowed frame while the two
+        // paths differ in the presenter and nowhere else. Raising this default would trade that property,
+        // across every test in the build, for throughput no test wants.
         assertEquals(1, config.framesInFlight());
     }
 

@@ -276,6 +276,21 @@ public final class VulkanInstance implements AutoCloseable {
         return List.of(VALIDATION_LAYER);
     }
 
+    /**
+     * Whether an instance created now would actually be validated: the layer was asked for <em>and</em> the
+     * loader can find it.
+     *
+     * <p>Public because a test that brackets its work with {@link VulkanDebugMessenger#errorCount()} needs to
+     * know whether that number can move. Without the layer it cannot, so such a test passes while measuring
+     * nothing — and a check that cannot fail is worse than an absent one, because it reads in the build log
+     * exactly like a check that can. {@code VulkanDebugMessenger.available()} is not the same question: the
+     * extension comes from the loader and is present almost everywhere, while the layer ships with the SDK
+     * and usually is not.
+     */
+    public static boolean validationLayerActive() {
+        return validationRequested() && layerAvailable(VALIDATION_LAYER);
+    }
+
     /** The system property wins over the environment variable; a bare {@code -D} with no value counts as on. */
     private static boolean validationRequested() {
         String property = System.getProperty("vexelray.vulkan.validation");

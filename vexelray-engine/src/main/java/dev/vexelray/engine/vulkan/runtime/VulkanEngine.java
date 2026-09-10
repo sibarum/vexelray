@@ -100,6 +100,9 @@ public final class VulkanEngine implements VexelEngine {
      */
     private static final String DIAG_COLOR_FORMAT_OFFSCREEN = "engine.target.colorFormat.offscreen";
 
+    /** Diagnostic key for an offscreen run asked to keep more than one frame in flight. */
+    private static final String DIAG_FRAMES_IN_FLIGHT_OFFSCREEN = "engine.framesInFlight.offscreen";
+
     /** What {@link EngineEvents.RunStarted} reports as the runtime that drew — the provider's own name. */
     static final String ENGINE_NAME = "vexelray-engine (Vulkan, Panama)";
 
@@ -204,35 +207,47 @@ public final class VulkanEngine implements VexelEngine {
 
             long surface = window.createVulkanSurface(instance.handleAddress(),
                     VkLoader.getInstanceProcAddrPointer());
-            VulkanInstance.DeviceSelection selection = instance.selectGraphicsPresentDevice(surface)
-                    .orElseThrow(() -> new IllegalStateException("no graphics+present capable device"));
+            try {
+                VulkanInstance.DeviceSelection selection = instance.selectGraphicsPresentDevice(surface)
+                        .orElseThrow(() -> new IllegalStateException("no graphics+present capable device"));
 
-            try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
-                 VulkanSwapchain swapchain = new VulkanSwapchain(instance.handle(), device, surface,
-                         window.width(), window.height());
-                 VulkanRenderPass renderPass = new VulkanRenderPass(device,
-                         colorFormat(target, swapchain), Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, depthFormat);
-                 WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
-                         window, depthFormat)) {
+                try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
+                     VulkanSwapchain swapchain = new VulkanSwapchain(instance.handle(), device, surface,
+                             window.width(), window.height());
+                     VulkanRenderPass renderPass = new VulkanRenderPass(device,
+                             colorFormat(target, swapchain), Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR, depthFormat);
+                     WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
+                             window, depthFormat, config.framesInFlight())) {
 
-                // The extent is the swapchain's and it is read every frame, not captured: a drag-resize
-                // changes it without re-realising anything.
-                driveTechniques(techniques, device, target, renderPass, events, new FrameTarget() {
-                    @Override
-                    public boolean frame(FrameUpdate perFrameUpdate, Recorder recorder) {
-                        return presenter.frame(0, perFrameUpdate, recorder);
-                    }
+                    // The extent is the swapchain's and it is read every frame, not captured: a drag-resize
+                    // changes it without re-realising anything.
+                    driveTechniques(techniques, device, target, renderPass, events, new FrameTarget() {
+                        @Override
+                        public boolean frame(FrameUpdate perFrameUpdate, Recorder recorder) {
+                            return presenter.frame(0, perFrameUpdate, recorder);
+                        }
 
-                    @Override
-                    public int width() {
-                        return swapchain.width();
-                    }
+                        @Override
+                        public int width() {
+                            return swapchain.width();
+                        }
 
-                    @Override
-                    public int height() {
-                        return swapchain.height();
-                    }
-                }, onFrame);
+                        @Override
+                        public int height() {
+                            return swapchain.height();
+                        }
+                    }, onFrame);
+                }
+            } finally {
+                // The surface is not a try-with-resources because it is a bare handle, and it was leaked for
+                // exactly that reason: every hand-wired demo destroys one, and the engine — the thing that
+                // was supposed to make hand-wiring unnecessary — did not. One leaked VkSurfaceKHR per run is
+                // invisible to an application that runs once and reported by nothing except the validation
+                // layer at vkDestroyInstance, which is where it finally turned up.
+                //
+                // After the inner block, so the swapchain built on it is already gone; before the instance
+                // closes, because the surface belongs to the instance.
+                instance.destroySurface(surface);
             }
         }
     }
@@ -255,12 +270,22 @@ public final class VulkanEngine implements VexelEngine {
     private void renderOffscreen(RenderPipeline pipeline, Target target, Events events, FrameCallback onFrame) {
         List<RenderTechnique> techniques = pipeline.techniques();
         int depthFormat = target.hasDepth() ? DepthAttachment.FORMAT : VulkanRenderPass.NO_DEPTH;
+        if (config.framesInFlight() > 1) {
+            Diagnostics.dropped(DIAG_FRAMES_IN_FLIGHT_OFFSCREEN,
+                    config.framesInFlight() + " frames in flight for an offscreen run",
+                    "an offscreen run renders one frame at a time so that lastFrameRgba() is the frame the "
+                            + "run finished on rather than whichever of several was furthest along; "
+                            + "rendering one at a time instead");
+        }
 
         try (VulkanInstance instance = new VulkanInstance(config.applicationName(), List.of())) {
             VulkanInstance.DeviceSelection selection = instance.selectGraphicsDevice()
                     .orElseThrow(() -> new IllegalStateException("no graphics-capable device"));
 
-            try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
+            try (// No VK_KHR_swapchain: the instance enabled no extensions, and that device extension is
+                 // only permitted on one that enabled VK_KHR_surface. Every driver here creates the device
+                 // anyway, so this was wrong and silent until the validation layer said so.
+                 VulkanDevice device = new VulkanDevice(instance.handle(), selection, false);
                  // TRANSFER_SRC_OPTIMAL rather than PRESENT_SRC_KHR is the whole difference in the pass: the
                  // frame's next reader is a copy, not a presentation engine. VulkanRenderPass adds the
                  // outgoing subpass dependency for it without being told which of the two this is.

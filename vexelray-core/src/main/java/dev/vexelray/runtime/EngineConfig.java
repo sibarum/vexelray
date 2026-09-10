@@ -23,13 +23,23 @@ package dev.vexelray.runtime;
  *                        target's, and letting this stand in for it would recreate in miniature the duplication
  *                        the class note above describes
  * @param validation      load the Vulkan validation layers — development on, native-image/release off
- * @param framesInFlight  how many frames the CPU may record ahead of the GPU (1 is the simplest correct value)
+ * @param framesInFlight  how many frames the CPU may record ahead of the GPU. Raising it buys throughput —
+ *                        the CPU records frame N+1 while the GPU draws frame N — and costs latency, because
+ *                        a frame is now that many frames from the screen. It costs GPU memory too: the
+ *                        windowed runtime duplicates command buffers and sync per frame, and depth per
+ *                        swapchain image. It does <b>not</b> start a thread; see {@code RenderTechnique}'s
+ *                        threading contract, which is unaffected. Honoured by the windowed path only — an
+ *                        offscreen run is always one, and says so through {@code Diagnostics} if asked for
+ *                        more
  */
 public record EngineConfig(String applicationName, boolean validation, int framesInFlight) {
 
     /**
      * The most frames any implementation here accepts. Not a hardware limit — a statement that the sync objects
      * are sized in the runtime and a caller asking for more has misunderstood what this dial does.
+     *
+     * <p>Three is already past the point of diminishing returns: two is enough to keep the GPU fed while the
+     * CPU records, and each further frame buys less throughput for another whole frame of latency.
      */
     public static final int MAX_FRAMES_IN_FLIGHT = 3;
 
@@ -46,9 +56,16 @@ public record EngineConfig(String applicationName, boolean validation, int frame
     /**
      * A development configuration: validation on, one frame in flight.
      *
-     * <p>One, not two, because that is what the runtime does today — {@code WindowedPresenter} waits on a single
-     * fence, and a config promising two would be a number the engine quietly ignores. A default that lies about
-     * the implementation is worse than a conservative one.
+     * <p>Still one now that the runtime honours more, and the reason has changed rather than expired. It used
+     * to be that a config promising two would be a number the engine quietly ignored. Now it is that one is
+     * the value <em>both</em> present paths do identically: an offscreen run is always one frame in flight,
+     * and D23's whole argument for headless capture is that a captured frame is evidence about what a window
+     * would show. A default that made the two paths differ in how many frames are in flight would weaken
+     * that for every test in the build, in exchange for throughput no test wants.
+     *
+     * <p>So the choice is deliberate rather than conservative, and it is one call to change:
+     * {@code EngineConfig.of("app").withFramesInFlight(2)} is what an interactive application that is
+     * CPU-bound on recording should say.
      */
     public static EngineConfig of(String applicationName) {
         return new EngineConfig(applicationName, true, 1);

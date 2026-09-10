@@ -427,19 +427,28 @@ public final class GraphicsPipeline implements AutoCloseable {
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pViewportState", viewportState);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pRasterizationState", rasterizer);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pMultisampleState", multisample);
-            if (config.depth() != Config.Depth.NONE) {
-                MemorySegment depthStencil = arena.allocate(DEPTH_STENCIL_STATE);
-                si(depthStencil, DEPTH_STENCIL_STATE, "sType",
-                        Vk.STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
-                si(depthStencil, DEPTH_STENCIL_STATE, "depthTestEnable", Vk.VK_TRUE);
-                si(depthStencil, DEPTH_STENCIL_STATE, "depthWriteEnable",
-                        config.depth() == Config.Depth.TEST_AND_WRITE ? Vk.VK_TRUE : 0);
-                // LESS, paired with DepthAttachment.CLEAR_DEPTH of 1.0: nearer wins, and an untouched pixel is
-                // as far away as possible. The two constants are one decision and must move together.
-                si(depthStencil, DEPTH_STENCIL_STATE, "depthCompareOp", Vk.COMPARE_OP_LESS);
-                sf(depthStencil, DEPTH_STENCIL_STATE, "maxDepthBounds", 1.0f);
-                sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pDepthStencilState", depthStencil);
-            }
+            // Always supplied, even for Depth.NONE, where it is a state with everything switched off.
+            //
+            // Not symmetry: it is what the two cases each require. A subpass with a depth attachment demands
+            // a non-null pDepthStencilState whatever the pipeline intends to do with it
+            // (VUID-VkGraphicsPipelineCreateInfo-renderPass-09028), and Depth.NONE against a pass that has
+            // depth is a supported combination here — a fullscreen technique that covers every pixel and
+            // wants neither to test nor to be tested. Meanwhile a pass with no depth attachment ignores this
+            // struct entirely, so providing one costs a few bytes of arena and nothing else. Omitting it was
+            // wrong in exactly one of the four combinations, and silent in all of them until the validation
+            // layer was pointed at a hybrid frame.
+            MemorySegment depthStencil = arena.allocate(DEPTH_STENCIL_STATE);
+            si(depthStencil, DEPTH_STENCIL_STATE, "sType",
+                    Vk.STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+            si(depthStencil, DEPTH_STENCIL_STATE, "depthTestEnable",
+                    config.depth() == Config.Depth.NONE ? 0 : Vk.VK_TRUE);
+            si(depthStencil, DEPTH_STENCIL_STATE, "depthWriteEnable",
+                    config.depth() == Config.Depth.TEST_AND_WRITE ? Vk.VK_TRUE : 0);
+            // LESS, paired with DepthAttachment.CLEAR_DEPTH of 1.0: nearer wins, and an untouched pixel is
+            // as far away as possible. The two constants are one decision and must move together.
+            si(depthStencil, DEPTH_STENCIL_STATE, "depthCompareOp", Vk.COMPARE_OP_LESS);
+            sf(depthStencil, DEPTH_STENCIL_STATE, "maxDepthBounds", 1.0f);
+            sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pDepthStencilState", depthStencil);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pColorBlendState", colorBlend);
             sa(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "pDynamicState", dynamicState);
             sl(pipelineInfo, GRAPHICS_PIPELINE_CREATE_INFO, "layout", pipelineLayout);

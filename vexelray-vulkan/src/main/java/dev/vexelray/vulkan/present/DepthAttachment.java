@@ -38,11 +38,12 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  *
  * <h2>Not owned by the swapchain, and rebuilt with it</h2>
  *
- * <p>One depth image serves every swapchain image rather than one per frame. That is safe only because a single
- * frame is in flight: the fence in {@link WindowedPresenter} means frame N+1 does not begin until frame N has
- * finished reading and writing depth. Raising frames-in-flight makes this a hazard — two frames would share one
- * depth buffer — so it is called out here rather than discovered later, and
- * {@code EngineConfig.framesInFlight} is deliberately capped at what the runtime honours.
+ * <p>One of these per swapchain image, which is what makes more than one frame in flight possible: two frames
+ * rendering at once are rendering into two different swapchain images, and a depth buffer they shared would
+ * be cleared by the later one while the earlier was still reading it. It was one image for all of them until
+ * frames-in-flight arrived, correct at exactly one frame and called out here as the hazard it would become —
+ * {@link WindowedPresenter} now owns the array and says which objects belong to a frame slot and which to an
+ * image.
  *
  * <p>The image is sized to an extent and so must be recreated when the window resizes, exactly as the
  * framebuffers over the swapchain images are. The render pass need not be: it depends on the depth

@@ -92,7 +92,21 @@ public final class VulkanDevice implements AutoCloseable {
     private final MethodHandle vkDeviceWaitIdle;
     private final MethodHandle vkDestroyDevice;
 
+    /** A device that can present: {@code VK_KHR_swapchain} enabled, which is what a windowed run needs. */
     public VulkanDevice(MemorySegment instance, VulkanInstance.DeviceSelection selection) {
+        this(instance, selection, true);
+    }
+
+    /**
+     * @param swapchain enable the {@code VK_KHR_swapchain} device extension. <b>False for a headless
+     *                  device</b>, and not merely as a saving: that extension is only permitted on an
+     *                  instance that enabled {@code VK_KHR_surface}, and a headless instance enables no
+     *                  extensions at all. Asking anyway is
+     *                  {@code VUID-vkCreateDevice-ppEnabledExtensionNames-01387} — which every driver here
+     *                  honours by creating the device regardless, so the fault is invisible until something
+     *                  turns the validation layer on
+     */
+    public VulkanDevice(MemorySegment instance, VulkanInstance.DeviceSelection selection, boolean swapchain) {
         this.physicalDevice = selection.physicalDevice();
         this.queueFamilyIndex = selection.queueFamilyIndex();
 
@@ -110,14 +124,19 @@ public final class VulkanDevice implements AutoCloseable {
             QCI_queueCount.set(queueInfo, 1);
             QCI_pQueuePriorities.set(queueInfo, temp.allocateFrom(JAVA_FLOAT, 1.0f));
 
-            MemorySegment extArray = temp.allocate(ADDRESS, 1);
-            extArray.setAtIndex(ADDRESS, 0, temp.allocateFrom("VK_KHR_swapchain"));
+            // Not a ternary at the set() below: VarHandle.set is signature-polymorphic and reads the static
+            // type of its argument, so a conditional expression arrives as Object and fails at runtime.
+            MemorySegment extArray = MemorySegment.NULL;
+            if (swapchain) {
+                extArray = temp.allocate(ADDRESS, 1);
+                extArray.setAtIndex(ADDRESS, 0, temp.allocateFrom("VK_KHR_swapchain"));
+            }
 
             MemorySegment createInfo = temp.allocate(DEVICE_CREATE_INFO);
             DCI_sType.set(createInfo, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
             DCI_queueCreateInfoCount.set(createInfo, 1);
             DCI_pQueueCreateInfos.set(createInfo, queueInfo);
-            DCI_enabledExtensionCount.set(createInfo, 1);
+            DCI_enabledExtensionCount.set(createInfo, swapchain ? 1 : 0);
             DCI_ppEnabledExtensionNames.set(createInfo, extArray);
 
             MemorySegment pDevice = temp.allocate(ADDRESS);

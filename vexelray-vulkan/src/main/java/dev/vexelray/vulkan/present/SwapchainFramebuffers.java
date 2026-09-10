@@ -27,11 +27,15 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * per swapchain image, which is what the windowed present loop draws into. Rebuilt whenever the swapchain is
  * recreated (resize). {@link #close()} destroys both sets.
  *
- * <p>When the render pass has a depth attachment, every framebuffer attaches the <b>same</b> depth view
- * alongside its own colour view — one depth image serving all swapchain images. That is correct only while a
- * single frame is in flight; {@link DepthAttachment} carries the argument and the hazard. The depth view is
- * owned by the caller, not here: it outlives individual framebuffer rebuilds when only the extent is unchanged,
- * and this class destroys only the views it made itself.
+ * <p>When the render pass has a depth attachment, each framebuffer attaches <b>its own</b> depth view
+ * alongside its own colour view — one depth image per swapchain image. That is what lets more than one frame
+ * be in flight: two frames rendering at once are rendering into two different swapchain images, and if they
+ * shared a depth buffer the later one would clear it out from under the earlier. It used to be one view for
+ * all of them, which was correct at exactly one frame in flight and is the hazard {@link DepthAttachment}
+ * describes.
+ *
+ * <p>The depth views are owned by the caller, not here: they outlive individual framebuffer rebuilds when the
+ * extent is unchanged, and this class destroys only the views it made itself.
  */
 public final class SwapchainFramebuffers implements AutoCloseable {
 
@@ -51,9 +55,6 @@ public final class SwapchainFramebuffers implements AutoCloseable {
             JAVA_INT.withName("width"), JAVA_INT.withName("height"), JAVA_INT.withName("layers"),
             MemoryLayout.paddingLayout(4)).withName("VkFramebufferCreateInfo");
 
-    /** Passed as {@code depthView} for colour-only framebuffers over a render pass that has no depth. */
-    public static final long NO_DEPTH_VIEW = 0L;
-
     private final VulkanDevice device;
     private final MethodHandle vkDestroyImageView;
     private final MethodHandle vkDestroyFramebuffer;
@@ -62,18 +63,25 @@ public final class SwapchainFramebuffers implements AutoCloseable {
 
     /** Colour-only framebuffers — the spelling every caller predating depth uses. */
     public SwapchainFramebuffers(VulkanDevice device, VulkanSwapchain swapchain, long renderPass) {
-        this(device, swapchain, renderPass, NO_DEPTH_VIEW);
+        this(device, swapchain, renderPass, null);
     }
 
     /**
-     * Framebuffers attaching {@code depthView} at slot 1 behind each swapchain image's colour view, or
-     * colour-only when it is {@link #NO_DEPTH_VIEW}.
+     * Framebuffers attaching {@code depthViews[i]} at slot 1 behind swapchain image {@code i}'s colour view,
+     * or colour-only when {@code depthViews} is null.
      *
-     * <p>The count and order here must match the render pass's attachment list exactly — colour at 0, depth at
-     * 1 — and mismatching them is undefined behaviour rather than an error the loader reports, so a pass built
-     * with depth must be given a view and one built without must not.
+     * <p>The count and order must match the render pass's attachment list exactly — colour at 0, depth at 1 —
+     * and mismatching them is undefined behaviour rather than an error the loader reports, so a pass built
+     * with depth must be given views and one built without must not.
+     *
+     * @param depthViews one view per swapchain image, or null for a colour-only pass
+     * @throws IllegalArgumentException if the array is present and does not have one view per image. Checked
+     *                                  rather than trusted: a short array would be an out-of-bounds here,
+     *                                  but a <em>long</em> one is a silent mismatch between what the caller
+     *                                  thinks it allocated and what the swapchain actually returned
      */
-    public SwapchainFramebuffers(VulkanDevice device, VulkanSwapchain swapchain, long renderPass, long depthView) {
+    public SwapchainFramebuffers(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
+                                 long[] depthViews) {
         Probe.opened(Lane.GPU, "SwapchainFramebuffers", this);
         this.device = device;
         MemorySegment dev = device.handle();
@@ -87,6 +95,10 @@ public final class SwapchainFramebuffers implements AutoCloseable {
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS));
 
         long[] images = swapchain.images();
+        if (depthViews != null && depthViews.length != images.length) {
+            throw new IllegalArgumentException("a depth view is needed per swapchain image: "
+                    + images.length + " images, " + depthViews.length + " views");
+        }
         this.views = new long[images.length];
         this.framebuffers = new long[images.length];
         try (Arena arena = Arena.ofConfined()) {
@@ -103,11 +115,11 @@ public final class SwapchainFramebuffers implements AutoCloseable {
                 check(invoke(vkCreateImageView, dev, viewInfo, MemorySegment.NULL, pView), "vkCreateImageView");
                 views[i] = pView.get(JAVA_LONG, 0);
 
-                int attachmentCount = depthView == NO_DEPTH_VIEW ? 1 : 2;
+                int attachmentCount = depthViews == null ? 1 : 2;
                 MemorySegment pAttach = arena.allocate(JAVA_LONG, attachmentCount);
                 pAttach.setAtIndex(JAVA_LONG, 0, views[i]);
                 if (attachmentCount == 2) {
-                    pAttach.setAtIndex(JAVA_LONG, 1, depthView);
+                    pAttach.setAtIndex(JAVA_LONG, 1, depthViews[i]);
                 }
                 MemorySegment fbInfo = arena.allocate(FRAMEBUFFER_CREATE_INFO);
                 si(fbInfo, FRAMEBUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
