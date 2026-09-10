@@ -98,7 +98,7 @@ public final class ConeMarchSmoke {
 
                 buffer.update(packed, packed.length);
                 byte[] rgba = march(device, buffer, width, height, vertex, fragment, sky,
-                        camera(YAW, YAW, aspect));
+                        camera(scene, YAW, YAW, aspect));
                 smoke.measured("the cone chain", countNonSky(rgba, sky));
                 write(out, rgba, width, height);
 
@@ -106,12 +106,12 @@ public final class ConeMarchSmoke {
                 buffer.update(empty, empty.length);
                 smoke.control("empty buffer",
                         countNonSky(march(device, buffer, width, height, vertex, fragment, sky,
-                                camera(YAW, YAW, aspect)), sky));
+                                camera(scene, YAW, YAW, aspect)), sky));
 
                 buffer.update(packed, packed.length);
                 smoke.control("camera turned away",
                         countNonSky(march(device, buffer, width, height, vertex, fragment, sky,
-                                camera(YAW, YAW + Math.PI, aspect)), sky));
+                                camera(scene, YAW, YAW + Math.PI, aspect)), sky));
 
                 if (!smoke.verdict()) {
                     System.exit(1);
@@ -136,12 +136,20 @@ public final class ConeMarchSmoke {
      * same subject and drew 97% of the subject's pixel count — a control that changes the number without
      * establishing anything, and one {@link Smoke} passed. The knob has to be absurd, not merely different.
      */
-    private static byte[] camera(double orbitYaw, double lookYaw, double aspect) {
+    private static byte[] camera(SdfScene scene, double orbitYaw, double lookYaw, double aspect) {
         double cp = Math.cos(PITCH);
         double[] forward = {cp * Math.sin(orbitYaw), cp * Math.cos(orbitYaw), -Math.sin(PITCH)};
         double[] at = {-DISTANCE * forward[0], -DISTANCE * forward[1], -DISTANCE * forward[2]};
         // The plot's z is the world's y, and the plot's y is the world's z -- the swap every renderer here makes.
-        return SdfComposer.cameraBytes(at[0], at[2], at[1], lookYaw, PITCH, aspect);
+        //
+        // pushConstantBytes, not the deprecated cameraBytes. This smoke used the six-float form, and when the
+        // block grew focalLength as its seventh member (79ed04c) the lens stopped being written: it read as
+        // whatever was last in the command buffer, which for a fresh offscreen render is zero. A focal length of
+        // zero collapses every primary ray onto the screen plane, so the march found nothing and the smoke drew
+        // pure sky -- an instrument reporting NOTHING DRAWN about a field that was fine. Exactly what the
+        // deprecation note predicted, and it went unnoticed because a main() is not run by surefire.
+        return SdfComposer.pushConstantBytes(scene, at[0], at[2], at[1], lookYaw, PITCH, aspect,
+                SdfComposer.paramBlock(scene));
     }
 
     private static Surface.Stroke zigzag(int vertices) {

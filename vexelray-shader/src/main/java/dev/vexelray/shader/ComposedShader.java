@@ -36,8 +36,19 @@ public record ComposedShader(ShaderStage stage, byte[] spirv, String entryPoint)
     /**
      * Lower a composed {@code core} module to a stage of SPIR-V via SupirVast. The single seam through which all
      * runtime-generated shaders in VexelRay reach the GPU.
+     *
+     * <p>{@link CoreCheck} runs first, and being the single seam is what makes that worth doing: a module that
+     * is not well-typed is refused here, with the faults named, rather than lowered into SPIR-V that the driver
+     * may fault on instead of rejecting. That is not hypothetical — see {@code CoreCheck}'s note for the crash
+     * that prompted it.
+     *
+     * <p>The cost is a tree walk per composed shader, once per pipeline build, against a lowering pass that
+     * already walks the same tree. It is not on the frame path.
+     *
+     * @throws IllegalArgumentException if {@code module} is not well-typed
      */
     public static ComposedShader lower(ShaderStage stage, CoreModule module, String entryPoint) {
+        CoreCheck.require(module, "the " + stage + " module '" + entryPoint + "'");
         byte[] spirv = new CoreToSpirv().lower(module).toByteArray();
         return new ComposedShader(stage, spirv, entryPoint);
     }
