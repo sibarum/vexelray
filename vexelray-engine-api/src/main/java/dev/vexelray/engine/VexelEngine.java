@@ -84,6 +84,32 @@ public interface VexelEngine extends AutoCloseable {
      */
     void run(RenderPipeline pipeline, FrameCallback onFrame);
 
+    /**
+     * The OS handle of the window this engine is presenting to, or {@code 0} when it is not running a windowed
+     * pipeline.
+     *
+     * <p>The one thing an application legitimately needs back from the runtime it handed a target to. Input is
+     * not the engine's — devices come from Tactroller, events from Atchung — but focus gating and pointer lock
+     * are properties of a <em>window</em>, and the engine is what created it. Without this an application can
+     * either not gate input on focus (so a game keeps walking while the user types in another window) or create
+     * a second window of its own, which is worse.
+     *
+     * <p>Valid only while {@link #run} is executing, because that is when the window exists — which is why it is
+     * a method here rather than a field on {@link FrameInfo} or {@code EngineConfig}. The config predates the
+     * window; a per-frame record would invite reading it every frame, when the correct number of times is once.
+     * Read it on the first frame:
+     *
+     * <pre>{@code
+     * engine.run(pipeline, frame -> {
+     *     if (frame.frameIndex() == 0) {
+     *         input.attach(NativeWindow.ofHwnd(engine.windowHandle()));
+     *     }
+     *     ...
+     * });
+     * }</pre>
+     */
+    long windowHandle();
+
     @Override
     void close();
 }

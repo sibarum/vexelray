@@ -16,11 +16,12 @@ import dev.supirvast.vastir.type.Type;
 import dev.supirvast.vast.CoreToTruffle;
 import com.oracle.truffle.api.CallTarget;
 
-import java.lang.foreign.MemorySegment;
-import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
+import dev.vexelray.engine.RenderPipeline;
+import dev.vexelray.engine.VexelEngine;
+import dev.vexelray.runtime.EngineConfig;
+import dev.vexelray.target.AttachmentFormat;
+import dev.vexelray.target.Target;
 import dev.vexelray.os.NativePlatform;
-import dev.vexelray.os.NativeWindow;
-import dev.vexelray.os.WindowConfig;
 import sibarum.atchung.Atchung;
 import sibarum.tactroller.api.BackendException;
 import sibarum.tactroller.api.InputEvent;
@@ -30,12 +31,6 @@ import sibarum.tactroller.api.Tactroller;
 import sibarum.tactroller.atchung.TactrollerInputBridge;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
-import dev.vexelray.vulkan.present.GraphicsPipeline;
-import dev.vexelray.vulkan.present.VulkanRenderPass;
-import dev.vexelray.vulkan.present.VulkanSwapchain;
-import dev.vexelray.vulkan.present.WindowedPresenter;
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VkLoader;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 import dev.vexelray.vulkan.vk.VulkanInstance;
 
@@ -108,115 +103,122 @@ public final class Fathom {
             return;
         }
 
-        try (NativeWindow window = platform.createWindow(new WindowConfig("Fathom", 800, 600, true));
-             VulkanInstance instance = new VulkanInstance("Fathom", platform.requiredVulkanInstanceExtensions());
-             Tactroller input = Tactroller.open()) {
-            long surface = window.createVulkanSurface(instance.handleAddress(), VkLoader.getInstanceProcAddrPointer());
-            VulkanInstance.DeviceSelection selection = instance.selectGraphicsPresentDevice(surface)
-                    .orElseThrow(() -> new IllegalStateException("no graphics+present device"));
-            System.out.println("device: " + selection.deviceName());
+        // The runtime, composed rather than constructed. Everything this block used to build — instance,
+        // physical-device selection, device, surface, swapchain, render pass, pipeline, presenter, and the frame
+        // loop — is the engine's now, and what is left is the two things a client is supposed to write: how
+        // techniques compose, and what happens each frame.
+        FathomTechnique world = new FathomTechnique(vertexSpirv, fragmentSpirv);
+        RenderPipeline renderPipeline = RenderPipeline.builder()
+                .target(Target.windowed("Fathom", 800, 600)
+                        .color(AttachmentFormat.SWAPCHAIN)
+                        .depth(AttachmentFormat.DEPTH32F))
+                .technique(world)
+                .build();
 
-            try (VulkanDevice device = new VulkanDevice(instance.handle(), selection);
-                 VulkanSwapchain swapchain = new VulkanSwapchain(instance.handle(), device, surface,
-                         window.width(), window.height());
-                 VulkanRenderPass renderPass = new VulkanRenderPass(device, swapchain.format(),
-                         Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR);
-                 GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(),
-                         swapchain.width(), swapchain.height(),
-                         vertexSpirv, "main", fragmentSpirv, "main", 20);
-                 WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
-                         pipeline, window)) {
-                // v2c: WASD steers the camera; the CPU collides it against the SAME SDF the GPU renders —
-                // render/sim unity, driven by you. (Facing is fixed +z for now; turning/mouse-look is next.)
-                //
-                // Input now flows through the suite's fabric rather than window.isKeyDown: Tactroller reads the
-                // device, the tactroller-atchung bridge publishes discrete edges onto an Atchung! bus, and this
-                // demo is just a consumer — it folds KeyPressed/KeyReleased into a held-set. Focus is arbitrated
-                // by Tactroller (attached to the window's HWND), so movement only happens when Fathom is focused.
-                input.attach(sibarum.tactroller.api.NativeWindow.ofHwnd(window.osHandle()));
-                Atchung bus = Atchung.create();
-                TactrollerInputBridge inputBridge = new TactrollerInputBridge(input, bus);
-                java.util.EnumSet<Key> held = java.util.EnumSet.noneOf(Key.class);
-                int[] lookDelta = {0, 0};                       // this frame's summed pointer motion, from the bus
-                bus.subscribe(inputBridge.events(), e -> {
-                    if (e instanceof InputEvent.KeyPressed k) {
-                        held.add(k.key());
-                    } else if (e instanceof InputEvent.KeyReleased k) {
-                        held.remove(k.key());
-                    } else if (e instanceof InputEvent.PointerMoved m) {
-                        lookDelta[0] += m.dx();                 // sum: pump() may emit several between reads
-                        lookDelta[1] += m.dy();
-                    }
-                });
+        try (Tactroller input = Tactroller.open();
+             VexelEngine engine = VexelEngine.create(EngineConfig.of("Fathom"))) {
+            // v2c: WASD steers the camera; the CPU collides it against the SAME SDF the GPU renders —
+            // render/sim unity, driven by you.
+            //
+            // Input flows through the suite's fabric rather than window.isKeyDown: Tactroller reads the
+            // device, the tactroller-atchung bridge publishes discrete edges onto an Atchung! bus, and this
+            // demo is just a consumer — it folds KeyPressed/KeyReleased into a held-set. Focus is arbitrated
+            // by Tactroller (attached to the window's HWND), so movement only happens when Fathom is focused.
+            //
+            // The HWND now comes from the engine, because the engine is what made the window. It is attached
+            // on the first frame rather than here: VexelEngine.windowHandle() is only valid while run() is
+            // executing, which is the honest lifetime of a window the runtime owns.
+            Atchung bus = Atchung.create();
+            TactrollerInputBridge inputBridge = new TactrollerInputBridge(input, bus);
+            java.util.EnumSet<Key> held = java.util.EnumSet.noneOf(Key.class);
+            int[] lookDelta = {0, 0};                       // this frame's summed pointer motion, from the bus
+            bus.subscribe(inputBridge.events(), e -> {
+                if (e instanceof InputEvent.KeyPressed k) {
+                    held.add(k.key());
+                } else if (e instanceof InputEvent.KeyReleased k) {
+                    held.remove(k.key());
+                } else if (e instanceof InputEvent.PointerMoved m) {
+                    lookDelta[0] += m.dx();                 // sum: pump() may emit several between reads
+                    lookDelta[1] += m.dy();
+                }
+            });
 
-                CallTarget cpu = lowerSdf();
-                float[] cam = {0.0f, 1.2f, -3.0f};
-                float[] look = {0.0f, 0.0f};                    // yaw, pitch (radians)
-                boolean[] paused = {false};                     // Escape pauses look until the window is refocused
-                boolean[] locked = {false};                     // tracks the RAW pointer-lock state we own
-                final float lookSens = 0.0025f;                 // radians per pixel of mouse motion
-                System.out.println("Click the window, then look with the mouse and move with WASD (Escape pauses "
-                        + "look). Walk into the sphere — you cannot enter it.");
-                presenter.run(maxFrames, 20, (dt, pc) -> {
-                    // Input flows Tactroller -> tactroller-atchung bridge -> Atchung!, consumed here. Mouselook uses
-                    // a RAW pointer lock: RawInput device deltas, so motion never clamps at the screen edge and the
-                    // camera keeps every degree of freedom. We hold the lock only while actively looking and release
-                    // it when paused/unfocused so the OS cursor reappears for interacting with the window.
-                    //
-                    // pump() is the SOLE drain of Tactroller's motion accumulator: it publishes this frame's delta as
-                    // an InputEvent.PointerMoved, which our subscriber sums into lookDelta. We must not also call
-                    // pollPointerDelta() — a second drain would race pump() for the same accumulator and win/lose at
-                    // random, freezing the camera. So: reset the accumulator, set the lock mode, then pump.
-                    lookDelta[0] = 0;
-                    lookDelta[1] = 0;
-                    boolean focused = input.isFocused();
-
-                    if (held.contains(Key.ESCAPE)) {
-                        paused[0] = true;
-                    }
-                    if (!focused) {
-                        paused[0] = false;                      // regaining focus resumes look
-                    }
-
-                    // Reconcile the lock BEFORE pumping so this frame's snapshot drains in the right mode.
-                    // lockPointer(RAW) zeroes the backend accumulator, so toggling never yields a stray jump.
-                    boolean wantLock = focused && !paused[0];
+            CallTarget cpu = lowerSdf();
+            float[] cam = {0.0f, 1.2f, -3.0f};
+            float[] look = {0.0f, 0.0f};                    // yaw, pitch (radians)
+            boolean[] paused = {false};                     // Escape pauses look until the window is refocused
+            boolean[] locked = {false};                     // tracks the RAW pointer-lock state we own
+            final float lookSens = 0.0025f;                 // radians per pixel of mouse motion
+            System.out.println("Click the window, then look with the mouse and move with WASD (Escape pauses "
+                    + "look). Walk into the sphere — you cannot enter it.");
+            final int frameCap = maxFrames;
+            engine.run(renderPipeline, frame -> {
+                if (frame.frameIndex() == 0) {
                     try {
-                        if (wantLock && !locked[0]) {
-                            input.lockPointer(PointerLockMode.RAW);
-                            locked[0] = true;
-                        } else if (!wantLock && locked[0]) {
-                            input.unlockPointer();
-                            locked[0] = false;
-                        }
-                        inputBridge.pump();                     // snapshot -> publish edges + PointerMoved (fills lookDelta)
+                        input.attach(sibarum.tactroller.api.NativeWindow.ofHwnd(engine.windowHandle()));
                     } catch (BackendException ex) {
-                        throw new RuntimeException("input failed", ex);
+                        throw new RuntimeException("could not attach input to the engine's window", ex);
                     }
+                }
+                double dt = frame.deltaSeconds();
+                // Input flows Tactroller -> tactroller-atchung bridge -> Atchung!, consumed here. Mouselook uses
+                // a RAW pointer lock: RawInput device deltas, so motion never clamps at the screen edge and the
+                // camera keeps every degree of freedom. We hold the lock only while actively looking and release
+                // it when paused/unfocused so the OS cursor reappears for interacting with the window.
+                //
+                // pump() is the SOLE drain of Tactroller's motion accumulator: it publishes this frame's delta as
+                // an InputEvent.PointerMoved, which our subscriber sums into lookDelta. We must not also call
+                // pollPointerDelta() — a second drain would race pump() for the same accumulator and win/lose at
+                // random, freezing the camera. So: reset the accumulator, set the lock mode, then pump.
+                lookDelta[0] = 0;
+                lookDelta[1] = 0;
+                boolean focused = input.isFocused();
 
-                    if (wantLock) {
-                        look[0] += lookDelta[0] * lookSens;     // yaw
-                        look[1] = Math.max(-1.5f, Math.min(1.5f, look[1] + lookDelta[1] * lookSens)); // pitch (clamped)
-                        float step = 2.5f * (float) dt;
-                        float fx = (float) Math.sin(look[0]);   // forward = yaw direction (horizontal)
-                        float fz = (float) Math.cos(look[0]);
-                        float rrx = (float) Math.cos(look[0]);  // right = forward rotated -90°
-                        float rrz = (float) -Math.sin(look[0]);
-                        if (held.contains(Key.W)) { cam[0] += fx * step; cam[2] += fz * step; }
-                        if (held.contains(Key.S)) { cam[0] -= fx * step; cam[2] -= fz * step; }
-                        if (held.contains(Key.D)) { cam[0] += rrx * step; cam[2] += rrz * step; }
-                        if (held.contains(Key.A)) { cam[0] -= rrx * step; cam[2] -= rrz * step; }
+                if (held.contains(Key.ESCAPE)) {
+                    paused[0] = true;
+                }
+                if (!focused) {
+                    paused[0] = false;                      // regaining focus resumes look
+                }
+
+                // Reconcile the lock BEFORE pumping so this frame's snapshot drains in the right mode.
+                // lockPointer(RAW) zeroes the backend accumulator, so toggling never yields a stray jump.
+                boolean wantLock = focused && !paused[0];
+                try {
+                    if (wantLock && !locked[0]) {
+                        input.lockPointer(PointerLockMode.RAW);
+                        locked[0] = true;
+                    } else if (!wantLock && locked[0]) {
+                        input.unlockPointer();
+                        locked[0] = false;
                     }
+                    inputBridge.pump();                     // snapshot -> publish edges + PointerMoved (fills lookDelta)
+                } catch (BackendException ex) {
+                    throw new RuntimeException("input failed", ex);
+                }
 
-                    resolveCollision(cpu, cam, 0.35f);          // stopped/slid by the field it's looking at
-                    pc.set(JAVA_FLOAT, 0, cam[0]);
-                    pc.set(JAVA_FLOAT, 4, cam[1]);
-                    pc.set(JAVA_FLOAT, 8, cam[2]);
-                    pc.set(JAVA_FLOAT, 12, look[0]);            // yaw
-                    pc.set(JAVA_FLOAT, 16, look[1]);            // pitch
-                });
-            }
-            instance.destroySurface(surface);
+                if (wantLock) {
+                    look[0] += lookDelta[0] * lookSens;     // yaw
+                    look[1] = Math.max(-1.5f, Math.min(1.5f, look[1] + lookDelta[1] * lookSens)); // pitch (clamped)
+                    float step = 2.5f * (float) dt;
+                    float fx = (float) Math.sin(look[0]);   // forward = yaw direction (horizontal)
+                    float fz = (float) Math.cos(look[0]);
+                    float rrx = (float) Math.cos(look[0]);  // right = forward rotated -90°
+                    float rrz = (float) -Math.sin(look[0]);
+                    if (held.contains(Key.W)) { cam[0] += fx * step; cam[2] += fz * step; }
+                    if (held.contains(Key.S)) { cam[0] -= fx * step; cam[2] -= fz * step; }
+                    if (held.contains(Key.D)) { cam[0] += rrx * step; cam[2] += rrz * step; }
+                    if (held.contains(Key.A)) { cam[0] -= rrx * step; cam[2] -= rrz * step; }
+                }
+
+                resolveCollision(cpu, cam, 0.35f);          // stopped/slid by the field it's looking at
+
+                // The camera reaches the shader through the technique's own API rather than as bytes written
+                // into somebody else's push-constant segment. Fathom still decides the layout — it authored
+                // the fragment that reads it — but nothing between here and the draw needs to know it.
+                world.camera(cam[0], cam[1], cam[2], look[0], look[1]);
+                return frameCap <= 0 || frame.frameIndex() < frameCap;
+            });
         }
         System.out.println("clean shutdown");
     }

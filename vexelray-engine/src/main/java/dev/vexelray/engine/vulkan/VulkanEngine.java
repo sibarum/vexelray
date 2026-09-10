@@ -60,6 +60,12 @@ public final class VulkanEngine implements VexelEngine {
     private final EngineConfig config;
     private final NativePlatform platform;
 
+    /**
+     * The running window's OS handle, or 0. Volatile because a platform-pulled frame (a Win32 modal resize) can
+     * reach the application callback from the OS's own loop, and the handle must be visible there too.
+     */
+    private volatile long windowHandle;
+
     private boolean closed;
 
     public VulkanEngine(EngineConfig config) {
@@ -87,6 +93,14 @@ public final class VulkanEngine implements VexelEngine {
     }
 
     private void runWindowed(RenderPipeline pipeline, Target target, FrameCallback onFrame) {
+        try {
+            presentWindowed(pipeline, target, onFrame);
+        } finally {
+            windowHandle = 0;
+        }
+    }
+
+    private void presentWindowed(RenderPipeline pipeline, Target target, FrameCallback onFrame) {
         List<RenderTechnique> techniques = pipeline.techniques();
         int depthFormat = target.hasDepth() ? DepthAttachment.FORMAT : VulkanRenderPass.NO_DEPTH;
 
@@ -94,6 +108,11 @@ public final class VulkanEngine implements VexelEngine {
                 new WindowConfig(target.title(), target.width(), target.height(), true));
              VulkanInstance instance = new VulkanInstance(config.applicationName(),
                      platform.requiredVulkanInstanceExtensions())) {
+
+            // Published before any technique is realised and any frame runs, so an application can attach input
+            // to it on frame zero; cleared in the finally below, because a handle that outlives its window is
+            // one an application will eventually pass to something.
+            this.windowHandle = window.osHandle();
 
             long surface = window.createVulkanSurface(instance.handleAddress(),
                     VkLoader.getInstanceProcAddrPointer());
@@ -236,6 +255,11 @@ public final class VulkanEngine implements VexelEngine {
     /** The depth format a target's declaration resolves to, for anything that needs to report it. */
     public static Optional<AttachmentFormat> depthFormatOf(Target target) {
         return target.depthFormat();
+    }
+
+    @Override
+    public long windowHandle() {
+        return windowHandle;
     }
 
     @Override
