@@ -115,30 +115,38 @@ file is about the engine and its API. Decisions are logged in
       extension-less (headless) instance fail in the constructor, naming a surface function to a caller that
       had never mentioned surfaces
 
+### The march writes depth, and per-pixel interleaving is measured (D24)
+
+- [x] **`Builtin.FRAG_DEPTH` in SupirVast** — the enum entry, the `BuiltIn` decoration, and the
+      `DepthReplacing` execution mode, declared only when a module actually writes the built-in.
+      `FragDepthShaderTest` checks both directions with `spirv-val`
+- [x] **`ClipDepth`** in `vexelray-shader` — near, far, and the one mapping from a camera-space distance to
+      a `[0,1]` clip depth. The projection convention as a *value*, because a shared depth attachment does
+      not make two techniques agree about depth, it only makes them write to the same place. Its central
+      warning is that a march's `t` is **radial** and a depth buffer holds the **planar** distance, so
+      `ofRadial` takes the cosine as an argument a caller must supply rather than a step they can forget
+- [x] **`SdfScene.clipDepth()`** — derived, not stored, so its far plane cannot drift from the march's
+      `farPlane`; the scene gains only `nearPlane`, the one number of the convention it chooses
+- [x] **The march writes it.** `SdfComposer` computes the ray's cosine to the forward axis once per pixel
+      (before the rotation, since a rigid rotation does not change that angle), and both branches write
+      depth — the hit from its own `t`, the miss from the far plane, because a branch that writes none leaves
+      the pixel's depth undefined. `SdfRaymarchTechnique` now declares `TEST_AND_WRITE` wherever the shared
+      target has depth
+- [x] **`DepthInterleaveTest`** — a flat depth and a ramp, with the ramp drawn *second* and losing half the
+      frame anyway. Ordering cannot produce that picture, which is what makes it evidence. Two controls: no
+      depth attachment (the last technique wins everything), and the list reversed (identical bytes)
+- [x] **`MarchDepthTest`** — two marched spheres at disjoint depth ranges, occluding at the geometry. The
+      near sphere keeps all 1696 of its pixels; the far one keeps 396 of 1058, and both silhouettes match
+      their predicted areas to within 1%
+- [x] **`MarchProjectionTest`** — the radial-vs-planar check, and the only one that catches a dropped cosine:
+      two marched surfaces are scaled by the same factor at the same pixel, so they cannot detect it. A
+      marched wall against a planar reference wall behind it. Verified by deliberately breaking the cosine,
+      which drops the marched wall from 16384 pixels to 4208 — a bowl, exactly as predicted — while
+      `MarchDepthTest` goes on passing
+
 ---
 
 ## P1 — Real gaps, stable price
-
-- [ ] **`gl_FragDepth` from the march.** The depth plumbing is exercised end to end and nothing writes
-      meaningful depth, so per-pixel interleaving — the entire argument for N techniques in one pass over
-      rendering to textures and compositing — is **still unproven**. Both current techniques declare
-      `Depth.NONE` and say why.
-
-      **This needs a SupirVast change first.** `core`'s `Builtin` has `POSITION` and `VERTEX_INDEX` and no
-      `FRAG_DEPTH`; adding it is the enum entry (type `float`, output), the `BuiltIn` decoration in
-      `CoreToSpirv`, and the `DepthReplacing` execution mode on the fragment entry point. Writing the march in
-      hand-authored GLSL to sidestep that is not available — the render path is `core` IR by rule, because the
-      CPU lowers the identical function.
-
-      Then, in VexelRay: the march already has the hit distance `t`, and turning it into a clip depth needs a
-      **projection convention shared with whatever it is occluding against**. There is none today — the march
-      is a camera plus a focal length, with no near/far. That convention is the real design work; the shader
-      change is small once it exists.
-
-      Costs early-z for that pipeline. Needs a check where a marched surface and a second technique occlude
-      each other — and **that check can now be written**: `OffscreenEngineTest` runs a pipeline headlessly and
-      asserts exact pixels, so occlusion is a count rather than a screenshot somebody looks at. The
-      measurement half is no longer the blocker; the projection convention is.
 
 - [ ] **Frames in flight > 1.** `EngineConfig.framesInFlight` accepts 1–3 and the runtime honours exactly 1;
       `EngineConfigTest` pins the default to what the presenter actually does rather than to what the config

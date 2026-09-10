@@ -615,6 +615,76 @@ reversed, which measures rather than assumes that order is the composition.
   is enabled, and a headless instance does not enable it, so eager resolution made *every* extension-less
   instance die in the constructor naming a surface function to a caller that had not mentioned surfaces.
 
+## 20. The march writes its own depth, and the convention is a value (D24)
+
+**DECISION (D24, DONE).** A ray-marched fragment writes `gl_FragDepth` from the distance it actually hit,
+through a projection convention that is a shared object rather than a number in a shader. Per-pixel
+interleaving — the entire argument for compositing N techniques into one render pass instead of into N
+textures — is now measured rather than asserted.
+
+**The SupirVast half.** `core`'s `Builtin` gained `FRAG_DEPTH`: the enum entry, the `BuiltIn` decoration, and
+the `DepthReplacing` execution mode, which is required rather than advisory — a `FragDepth` store without it
+is invalid SPIR-V. The mode is declared only when a module actually writes the built-in, because it is also
+the whole cost of the feature: it tells the implementation the depth test cannot be settled before the
+fragment shader runs, so that pipeline loses early-z, and no shader should pay for a feature it does not use.
+Deliberately *not* in `core`: the clip-depth convention itself. Modelling near, far and the curve there would
+mean `core` acquiring a notion of camera, and two stages disagreeing about that convention is not something a
+type in an enum could catch.
+
+**`ClipDepth`, and why it is a type.** A shared depth attachment does not make two techniques agree about
+depth; it only makes them write to the same place. Agreement is a *convention* — same near, same far, same
+curve, and the same answer to whether "depth" means distance to the eye or to the image plane. Two techniques
+that each picked their own would produce a frame where one consistently wins, and it would read as a bug in
+whichever one lost rather than as the disagreement it is. So the convention is a value in
+`vexelray-shader`, handed to whatever needs it, with the reasoning written down in one place.
+
+**The part that is the actual design work: planar, not radial.** A sphere-tracer's `t` is the distance along
+a *unit* ray. A depth buffer holds the view-space z — the distance to the plane through the camera's forward
+axis. They agree only at the exact centre of the screen and diverge by `1/cos`, which at the corner of a wide
+frame is a factor of about 1.4. Writing `t` into a depth buffer a rasteriser also writes does not merely add
+error; it adds error *shaped like a lens*, so a flat marched wall bulges toward the camera at the edges and
+pokes through geometry genuinely in front of it. The failure looks like bad modelling or a near-plane
+problem, and is neither. `ClipDepth.ofRadial` therefore takes the cosine as an argument a caller must supply
+rather than a step they can forget, and `SdfComposer` computes it once per pixel from `(sx, sy, focal)` —
+before the rotation, since a rigid rotation does not change the angle to the forward axis.
+
+**Where the numbers live.** `SdfScene` gained `nearPlane` and derives `clipDepth()` rather than storing it,
+so the far plane cannot drift from `MarchSettings.farPlane`: they are the same plane seen from two sides — a
+ray that gave up is exactly a ray that reached the far plane. Two fields could disagree; one field and a
+derivation cannot. The near plane is on the scene rather than in `MarchSettings` because it guards nothing
+about marching — no ray is clipped against it and no step consults it.
+
+**Both branches write.** A fragment shader that writes `gl_FragDepth` on one path leaves it undefined on
+every path that did not, and the symptom is geometry occluding intermittently rather than anything a
+validator reports. The hit writes its `t`; the miss writes the far plane, which is also the honest value —
+a ray that reached `farPlane` without hitting anything has established that nothing is in front of it.
+
+**What it costs, and what is unchanged.** Early-z, for the marched pipeline: every marched pixel now runs
+whether or not something nearer will cover it, which for a fullscreen march is close to the whole frame. A
+target with no depth attachment still gets `Depth.NONE` and the *same* shader — the write goes nowhere —
+which keeps one compiled shader per scene rather than one per scene per kind of target. `HybridFrameSmoke` is
+unchanged in output: the canvas keeps `Depth.NONE` because chrome should not be occluded by the scene it
+annotates, so now exactly one of the two techniques opts out, and for a reason rather than for want of a
+mechanism.
+
+### The three checks, and why it takes three
+
+- **`DepthInterleaveTest`** — the plumbing. A flat depth at 0.5 and a ramp from 0 to 1, with the ramp drawn
+  *second* and losing half the frame anyway. Ordering can produce "one technique wins everywhere"; it cannot
+  produce "one technique wins half the frame", which is what makes this evidence rather than illustration.
+  Two controls: with no depth attachment the last technique wins everything, and reversing the list changes
+  nothing.
+- **`MarchDepthTest`** — that the march's number means something. Two marched spheres at *disjoint* view-depth
+  ranges (3–3.75 and 4–4.8), so there is no tie for a rounding error to decide. The near sphere keeps all
+  1696 of its pixels; the far one keeps 396 of 1058. Both silhouettes match their predicted areas to within
+  1%, which is what says the geometry — not just the depth test — is right.
+- **`MarchProjectionTest`** — the cosine, and it exists because *no comparison between two marched surfaces
+  can catch a missing one*: the error is the same factor at the same pixel for both, so `MarchDepthTest`
+  passes with the cosine deleted. Catching it needs something planar by construction, which is what
+  `ConstantDepthTechnique` stands in for until a rasterising technique exists. Verified by deliberately
+  breaking the cosine: the marched wall drops from 16384 pixels to 4208 — a bowl, exactly as predicted —
+  while `MarchDepthTest` goes on passing.
+
 ## Open questions (to revisit as phases land)
 
 - **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need
@@ -623,11 +693,13 @@ reversed, which measures rather than assumes that order is the composition.
   swapchain image. `EngineConfig.framesInFlight` accepts 1–3 and the runtime honours exactly 1, with
   `EngineConfigTest` pinning the default to what the presenter actually does rather than to what the config
   claims. Still open, and it now depends on D20's threading contract being the thing that does *not* change.
-- **Writing `gl_FragDepth` needs `core` to be able to say it.** `Builtin` has `POSITION` and `VERTEX_INDEX`;
-  there is no `FRAG_DEPTH`, and adding one means a SupirVast change (the enum, its type and direction, the
-  `BuiltIn` decoration in `CoreToSpirv`, and the `DepthReplacing` execution mode). Authoring the march as
-  hand-written GLSL to avoid that is not available — the render path is `core` IR by rule, because the CPU
-  lowers the identical function.
+- ~~**Writing `gl_FragDepth` needs `core` to be able to say it.** `Builtin` has `POSITION` and
+  `VERTEX_INDEX`; there is no `FRAG_DEPTH`, and adding one means a SupirVast change (the enum, its type and
+  direction, the `BuiltIn` decoration in `CoreToSpirv`, and the `DepthReplacing` execution mode). Authoring
+  the march as hand-written GLSL to avoid that is not available — the render path is `core` IR by rule,
+  because the CPU lowers the identical function.~~
+  **Closed by D24** — `Builtin.FRAG_DEPTH` landed in SupirVast, exactly as scoped above and with no GLSL
+  escape hatch, and the march writes its own hit distance through the `ClipDepth` convention.
 - ~~**Depth buffer creation.** `GraphicsPipeline`/`OffscreenRenderer` are colour-only today; the shared depth
   attachment (§4 "depth is always present") is new work in Phase 1/2.~~
   **Closed by D19** — `DepthAttachment` (D32_SFLOAT), a second attachment slot in `VulkanRenderPass`, and

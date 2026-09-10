@@ -155,9 +155,10 @@ pump during a modal move or resize, so a technique must not block in `record`.
 **Current vs target.** The topology above has arrived. `vexelray-engine` owns instance, device, surface,
 swapchain, render pass, depth and the frame loop, and drives an ordered list it knows only as
 `RenderTechnique`; a marched SDF scene and a 2D canvas share one render pass and one command buffer
-(`HybridFrameTest`); Fathom composes a pipeline instead of building a runtime. What is still open is listed in
-[`TODO.md`](../TODO.md) — chiefly `gl_FragDepth` from the march (so composition can interleave per pixel rather
-than only order), frames-in-flight > 1, and `Target.Kind.OFFSCREEN`. §6 has the current state.
+(`HybridFrameTest`); Fathom composes a pipeline instead of building a runtime. Composition interleaves per
+pixel and not merely in order — the march writes `gl_FragDepth` from its own hit distance (D24) — and
+`Target.Kind.OFFSCREEN` runs, so that claim is measured headlessly rather than looked at (D23). What is still
+open is listed in [`TODO.md`](../TODO.md) — chiefly frames-in-flight > 1. §6 has the current state.
 
 ---
 
@@ -203,9 +204,9 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 | Capability | Today | Target |
 |---|---|---|
 | Runtime ownership | `VexelEngine` facade behind a `ServiceLoader` provider; owns window/instance/device/surface/swapchain/render pass/depth and the frame loop; 1 frame in flight; resize rebuilds the swapchain without re-realising a technique | frames-in-flight > 1 (per-frame command buffers, sync and depth image) |
-| Present targets | windowed swapchain. `Target.Kind.OFFSCREEN` is authorable and throws; headless readback exists only as the single-pipeline `OffscreenRenderer`/`OffscreenDraw` | both behind one `Target`, so engine-level tests run and count pixels without a window; screenshot/record built in |
+| Present targets | windowed swapchain and `Target.Kind.OFFSCREEN`, behind one `Target` and one frame loop; `VexelEngine.lastFrameRgba()` hands back the frame a headless run finished on. The single-pipeline `OffscreenRenderer`/`OffscreenDraw` stay for "render one thing to a texture" | recording a sequence rather than a last frame |
 | Render techniques | SDF raymarch and 2D canvas as modules; `FathomTechnique` and `HelloTechnique` authored *outside* the engine's modules | polygon raster, Gaussian splats — same SPI, no core change |
-| Composition / hybrid | N techniques sharing one colour+depth target, one render pass, one command buffer, in declared order (`HybridFrameTest`). **Ordering only** — both current techniques declare `Depth.NONE` and say why | per-pixel interleaving: the march writes `gl_FragDepth` from its hit distance, so a marched surface and a mesh cross-occlude |
+| Composition / hybrid | N techniques sharing one colour+depth target, one render pass, one command buffer, in declared order (`HybridFrameTest`) **and interleaving per pixel where depth decides** — the march writes `gl_FragDepth` from its hit distance through the shared `ClipDepth` convention, measured by `DepthInterleaveTest` / `MarchDepthTest` / `MarchProjectionTest` | a rasterising technique with real geometry, cross-occluding the march using the same `ClipDepth` |
 | Technique authoring | `DrawCommands` for the Panama boilerplate; the runtime sets viewport and scissor before recording; `HelloTechnique` is the worked example in main source | a pooled allocator on `TechniqueContext` when one exists |
 | Shaders | runtime SDF composed as `core` IR → SPIR-V, type-checked by `CoreCheck` before the driver sees it | `CoreCheck` covering `MathCall`; the operand-type check pushed upstream into SupirVast |
 | Render == sim | SDF evaluated CPU + GPU from one IR; sphere-trace collision | physics/queries against the render field; GPU/CPU placement |
@@ -250,12 +251,10 @@ all along. The engine publishes `EngineEvents` onto the same Atchung! bus input 
 
 **What is genuinely not done**, in leverage order, is in [`TODO.md`](../TODO.md):
 
-- **`gl_FragDepth` from the march.** Depth is plumbed end to end and nothing writes a meaningful value, so
-  per-pixel interleaving — the entire argument for N techniques in one pass over rendering to textures and
-  compositing — is still unproven. It needs `Builtin.FRAG_DEPTH` in SupirVast `core` (only `POSITION` and
-  `VERTEX_INDEX` exist), because the march is authored as IR and must stay that way.
 - **Frames in flight > 1.** `EngineConfig` accepts 1–3 and the runtime honours exactly 1. Needs per-frame
   command buffers, sync and a depth image per frame; `DepthAttachment` is one image shared by every swapchain
   image, which is safe only at one frame in flight.
-- **`Target.Kind.OFFSCREEN`.** Until it exists every engine-level test needs a window, so in a headless
-  environment they can only skip rather than run — and none of them can count pixels.
+- **A technique with real geometry.** Everything that occludes today is a fullscreen march, so the
+  `ClipDepth` convention has one author and one consumer. It is written down as a shared value precisely so
+  the second one — a rasteriser building its projection matrix from the same near and far — is a change to
+  that technique rather than to this argument.

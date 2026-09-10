@@ -31,10 +31,15 @@ import dev.vexelray.technique.sdf.SdfScene;
  * <h2>What the composition is</h2>
  *
  * <p>Order, declared. The march runs first and covers every pixel (it writes sky where it misses); the canvas
- * runs second and alpha-blends chrome over it. Neither uses depth — the march cannot write a meaningful depth
- * from a fullscreen triangle, and chrome should not be occluded by the scene it annotates — so this frame is
- * ordered compositing, which is exactly the case {@code RenderPipeline}'s ordered list is for. Depth is
- * declared on the target anyway, so the two-attachment pass and its framebuffers are exercised.
+ * runs second and alpha-blends chrome over it. So this frame is ordered compositing, which is exactly the
+ * case {@code RenderPipeline}'s ordered list is for.
+ *
+ * <p><b>And the two techniques take opposite sides of the depth question, both deliberately.</b> The march
+ * tests and writes depth — it can, now that its fragment writes {@code gl_FragDepth} from its own hit
+ * distance — so a third technique with real geometry would interleave with the scene per pixel. The canvas
+ * declares {@code Depth.NONE}, so chrome is not occluded by the scene it annotates, which is what chrome is
+ * for. The picture is unchanged from when neither participated; what changed is that only one of them is
+ * opting out, and it is opting out for a reason rather than for want of a mechanism.
  *
  * <p>Run with {@code --enable-native-access=ALL-UNNAMED}; an optional first argument sets the frame count.
  */

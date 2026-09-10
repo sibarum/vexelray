@@ -70,7 +70,7 @@ class ParamCompositionTest {
     void focalLengthNoLongerCompiles() {
         SdfScene wide = scene(1);
         SdfScene longLens = new SdfScene(wide.surface(), wide.shading(), wide.march(),
-                wide.albedo(), wide.sky(), 3.0);
+                wide.albedo(), wide.sky(), 3.0, wide.nearPlane());
 
         assertArrayEquals(SdfComposer.fragmentSpirv(wide), SdfComposer.fragmentSpirv(longLens));
     }

@@ -34,18 +34,29 @@ import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
  * {@code SdfComposer} declared. That is why the presenter could stop taking a {@code pushConstantBytes} count:
  * the layout belongs to the technique that authored it, and no two techniques need to agree on one.
  *
- * <h2>Depth: declared honestly as absent</h2>
+ * <h2>Depth: the march's own hit distance</h2>
  *
- * <p>This technique uses {@link GraphicsPipeline.Config.Depth#NONE} even when the shared target has depth, and
- * that is not an oversight. The march runs over a fullscreen triangle whose vertices carry one fixed z, so the
- * only depth it could write is that constant — which is not the distance to the surface it actually hit, and
- * would occlude a mesh at a plane rather than at the geometry. Writing a plausible wrong number is worse than
- * writing none: a cross-occlusion bug that looks like a modelling mistake.
+ * <p>This technique tests and writes depth whenever the shared target has it, and the depth it writes is the
+ * distance to the surface the ray actually hit — {@code gl_FragDepth} from the march's {@code t}, through the
+ * scene's {@link dev.vexelray.shader.ClipDepth} convention. That is what lets a marched surface and a
+ * rasterised one interleave per pixel rather than merely paint in order, which is the entire argument for
+ * compositing N techniques into one render pass instead of into N textures.
  *
- * <p>Making this participate in depth means the fragment writing {@code gl_FragDepth} from the march's own hit
- * distance, which is a real feature with a real cost (it defeats early-z for this pipeline) and belongs in its
- * own change. Until then a marched scene composites by order, and this note is what stops the absence from
- * looking like a decision nobody made.
+ * <p>It was not always so, and the reason is worth keeping. The march runs over a fullscreen triangle whose
+ * vertices carry one fixed z, so without writing depth the only value it could contribute is that constant —
+ * not the distance to anything, and it would occlude a mesh at a flat plane. Writing a plausible wrong number
+ * is worse than writing none, so until {@code core} could say {@code FRAG_DEPTH} this declared
+ * {@link GraphicsPipeline.Config.Depth#NONE} and said why.
+ *
+ * <p>What it costs: <b>early-z, for this pipeline</b>. A shader that replaces its own depth cannot have the
+ * depth test settled before it runs, so every marched pixel executes whether or not something nearer will
+ * cover it. For a fullscreen march that is close to the whole frame's work, and it is the price of being
+ * occludable at all.
+ *
+ * <p>A target with no depth attachment still gets {@code Depth.NONE} and the same shader. The fragment writes
+ * {@code gl_FragDepth} either way — the value simply goes nowhere — which keeps one compiled shader per scene
+ * rather than one per scene per kind of target, and costs a few instructions in the case where nothing reads
+ * them.
  */
 public final class SdfRaymarchTechnique implements RenderTechnique {
 
@@ -115,7 +126,13 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         this.pushBytes = SdfComposer.pushBytes(scene);
 
         GraphicsPipeline.Config config = new GraphicsPipeline.Config(
-                0, List.of(), new long[0], false, Vk.SHADER_STAGE_FRAGMENT_BIT, pushBytes, true);
+                0, List.of(), new long[0], false, Vk.SHADER_STAGE_FRAGMENT_BIT, pushBytes, true)
+                // Depth state exactly when the shared pass has depth. The fragment writes gl_FragDepth
+                // regardless — see the class note — so this is the only thing that decides whether the march
+                // participates in occlusion or paints over whatever came before it.
+                .withDepth(ctx.hasDepth()
+                        ? GraphicsPipeline.Config.Depth.TEST_AND_WRITE
+                        : GraphicsPipeline.Config.Depth.NONE);
 
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 composed.get(0).spirv(), "main", composed.get(1).spirv(), "main", config);
