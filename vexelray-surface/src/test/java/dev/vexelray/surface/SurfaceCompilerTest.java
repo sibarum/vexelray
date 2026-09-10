@@ -72,17 +72,17 @@ class SurfaceCompilerTest {
     void translateMovesTheSurface() {
         Field moved = SurfaceCompiler.compile(
                 new Surface.Translate(1, 0, 0, new Surface.Sphere(0, 0, 0, 1)));
-        assertEquals(0.0, Eval.at(moved.distance(), 2, 0, 0), 1e-12);     // on the surface
-        assertEquals(1.0, Eval.at(moved.distance(), 3, 0, 0), 1e-12);     // one unit outside
-        assertEquals(-1.0, Eval.at(moved.distance(), 1, 0, 0), 1e-12);    // at the centre
+        assertEquals(0.0, Eval.at(moved, 2, 0, 0), 1e-12);     // on the surface
+        assertEquals(1.0, Eval.at(moved, 3, 0, 0), 1e-12);     // one unit outside
+        assertEquals(-1.0, Eval.at(moved, 1, 0, 0), 1e-12);    // at the centre
     }
 
     @Test
     @DisplayName("scale scales the distance along with the shape")
     void scaleScalesDistances() {
         Field scaled = SurfaceCompiler.compile(new Surface.Scale(2, new Surface.Sphere(0, 0, 0, 1)));
-        assertEquals(0.0, Eval.at(scaled.distance(), 2, 0, 0), 1e-12);
-        assertEquals(1.0, Eval.at(scaled.distance(), 3, 0, 0), 1e-12);
+        assertEquals(0.0, Eval.at(scaled, 2, 0, 0), 1e-12);
+        assertEquals(1.0, Eval.at(scaled, 3, 0, 0), 1e-12);
     }
 
     @Test
@@ -91,8 +91,8 @@ class SurfaceCompilerTest {
         // The implicit is authored about the origin; translating it must move where its zero set lies.
         Surface unitSphereAsImplicit = new Surface.Implicit(Ir.sub(Ir.dot(POINT, POINT), Ir.f(1.0)));
         Field moved = SurfaceCompiler.compile(new Surface.Translate(5, 0, 0, unitSphereAsImplicit));
-        assertEquals(0.0, Eval.at(moved.distance(), 6, 0, 0), 1e-9);
-        assertTrue(Eval.at(moved.distance(), 5, 0, 0) < 0, "the centre should be inside");
+        assertEquals(0.0, Eval.at(moved, 6, 0, 0), 1e-9);
+        assertTrue(Eval.at(moved, 5, 0, 0) < 0, "the centre should be inside");
     }
 
     @Test
@@ -101,8 +101,8 @@ class SurfaceCompilerTest {
         Field field = SurfaceCompiler.compile(new Surface.Difference(
                 new Surface.Sphere(0, 0, 0, 1),
                 new Surface.Sphere(1, 0, 0, 0.5)));
-        assertTrue(Eval.at(field.distance(), -0.5, 0, 0) < 0, "far side stays solid");
-        assertTrue(Eval.at(field.distance(), 0.8, 0, 0) > 0, "the bite is empty");
+        assertTrue(Eval.at(field, -0.5, 0, 0) < 0, "far side stays solid");
+        assertTrue(Eval.at(field, 0.8, 0, 0) > 0, "the bite is empty");
     }
 
     @Test
@@ -197,19 +197,19 @@ class SurfaceCompilerTest {
         Surface a = new Surface.Sphere(-0.3, 0.1, 0, 1);
         Surface b = new Surface.Box(0.3, 0, 0.1, 0.8, 0.9, 0.7);
         Surface c = new Surface.Capsule(-1, -0.5, 0, 1, 0.6, 0.4, 0.35);
-        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.union(a, b, c)).distance(), "union");
-        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.intersection(a, b)).distance(),
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.union(a, b, c)).at(dev.vexelray.ir.Ir.POINT), "union");
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.intersection(a, b)).at(dev.vexelray.ir.Ir.POINT),
                 "intersection");
-        assertGradientNeverExceedsOne(SurfaceCompiler.compile(new Surface.Difference(a, b)).distance(),
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(new Surface.Difference(a, b)).at(dev.vexelray.ir.Ir.POINT),
                 "difference");
-        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.smoothUnion(4.0, a, b, c)).distance(),
+        assertGradientNeverExceedsOne(SurfaceCompiler.compile(Surface.smoothUnion(4.0, a, b, c)).at(dev.vexelray.ir.Ir.POINT),
                 "smooth union");
         assertGradientNeverExceedsOne(
-                SurfaceCompiler.compile(Surface.smoothIntersection(4.0, a, b)).distance(), "smooth intersection");
+                SurfaceCompiler.compile(Surface.smoothIntersection(4.0, a, b)).at(dev.vexelray.ir.Ir.POINT), "smooth intersection");
         assertGradientNeverExceedsOne(
-                SurfaceCompiler.compile(new Surface.SmoothDifference(4.0, a, b)).distance(), "smooth difference");
+                SurfaceCompiler.compile(new Surface.SmoothDifference(4.0, a, b)).at(dev.vexelray.ir.Ir.POINT), "smooth difference");
         assertGradientNeverExceedsOne(SurfaceCompiler.compile(
-                new Surface.Scale(1.7, new Surface.Shell(0.05, new Surface.Round(0.1, b)))).distance(),
+                new Surface.Scale(1.7, new Surface.Shell(0.05, new Surface.Round(0.1, b)))).at(dev.vexelray.ir.Ir.POINT),
                 "scale/shell/round");
     }
 

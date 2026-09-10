@@ -61,7 +61,7 @@ class StrokeTest {
             Field field = SurfaceCompiler.compile(stroke);
 
             for (Surface.Stroke.Vertex v : stroke.through()) {
-                double d = Eval.at(field.distance(), v.x(), v.y(), v.z());
+                double d = Eval.at(field, v.x(), v.y(), v.z());
                 assertTrue(d <= -v.radius() + 1e-9,
                         "curvature " + c + ": vertex (" + v.x() + ", " + v.y() + ") reads " + d
                                 + ", shallower than its own radius " + v.radius());
@@ -78,13 +78,13 @@ class StrokeTest {
         Field roundField = SurfaceCompiler.compile(round);
 
         // Both hold the corner vertex...
-        assertTrue(Eval.at(sharpField.distance(), 0, 0, 0) <= -0.2 + 1e-9);
-        assertTrue(Eval.at(roundField.distance(), 0, 0, 0) <= -0.2 + 1e-9);
+        assertTrue(Eval.at(sharpField, 0, 0, 0) <= -0.2 + 1e-9);
+        assertTrue(Eval.at(roundField, 0, 0, 0) <= -0.2 + 1e-9);
 
         // ...and they are genuinely different shapes: the crease fills the inside of the right angle, the arc
         // bulges past it. Sampled on the bisector, a little outside the corner.
-        double outside = Eval.at(roundField.distance(), 0.6, 0.6, 0)
-                - Eval.at(sharpField.distance(), 0.6, 0.6, 0);
+        double outside = Eval.at(roundField, 0.6, 0.6, 0)
+                - Eval.at(sharpField, 0.6, 0.6, 0);
         assertTrue(outside < -1e-3, "a full arc should put material outside the crease, saw " + outside);
     }
 
@@ -97,11 +97,11 @@ class StrokeTest {
                 new Surface.Stroke.Vertex(0, 0, 0, 1.0, 0),
                 new Surface.Stroke.Vertex(4, 0, 0, 0.2, 0))));
 
-        assertEquals(-1.0, Eval.at(field.distance(), 0, 0, 0), 1e-9);
-        assertEquals(-0.2, Eval.at(field.distance(), 4, 0, 0), 1e-9);
+        assertEquals(-1.0, Eval.at(field, 0, 0, 0), 1e-9);
+        assertEquals(-0.2, Eval.at(field, 4, 0, 0), 1e-9);
         // Half way along, the tube is half way between the two radii — measured across the axis, where the
         // taper's slope does not enter.
-        assertEquals(-0.6, Eval.at(field.distance(), 2, 0, 0), 0.02);
+        assertEquals(-0.6, Eval.at(field, 2, 0, 0), 0.02);
     }
 
     @Test
@@ -113,8 +113,8 @@ class StrokeTest {
         Field capsule = SurfaceCompiler.compile(new Surface.Capsule(-1, 0.5, 0, 2, 0.5, 0, 0.35));
 
         for (double[] p : samples()) {
-            assertEquals(Eval.at(capsule.distance(), p[0], p[1], p[2]),
-                    Eval.at(stroke.distance(), p[0], p[1], p[2]), 1e-9);
+            assertEquals(Eval.at(capsule, p[0], p[1], p[2]),
+                    Eval.at(stroke, p[0], p[1], p[2]), 1e-9);
         }
     }
 
@@ -126,8 +126,8 @@ class StrokeTest {
         Field sphere = SurfaceCompiler.compile(new Surface.Sphere(0.5, -1, 2, 0.75));
 
         for (double[] p : samples()) {
-            assertEquals(Eval.at(sphere.distance(), p[0], p[1], p[2]),
-                    Eval.at(stroke.distance(), p[0], p[1], p[2]), 1e-9);
+            assertEquals(Eval.at(sphere, p[0], p[1], p[2]),
+                    Eval.at(stroke, p[0], p[1], p[2]), 1e-9);
         }
     }
 
@@ -142,9 +142,9 @@ class StrokeTest {
         Field sphere = SurfaceCompiler.compile(new Surface.Sphere(0, 0, 0, 1.0));
 
         for (double[] p : samples()) {
-            double d = Eval.at(stroke.distance(), p[0], p[1], p[2]);
+            double d = Eval.at(stroke, p[0], p[1], p[2]);
             assertTrue(Double.isFinite(d), "degenerate taper produced " + d);
-            assertEquals(Eval.at(sphere.distance(), p[0], p[1], p[2]), d, 1e-9);
+            assertEquals(Eval.at(sphere, p[0], p[1], p[2]), d, 1e-9);
         }
     }
 
@@ -168,7 +168,7 @@ class StrokeTest {
         for (double x = -3; x <= 3.5; x += 0.37) {
             for (double y = -2; y <= 3; y += 0.41) {
                 for (double z = -2; z <= 2; z += 0.43) {
-                    double[] g = Eval.numericGradient(field.distance(), x, y, z, 1e-5);
+                    double[] g = Eval.numericGradient(field.at(dev.vexelray.ir.Ir.POINT), x, y, z, 1e-5);
                     double len = Math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
                     assertTrue(len <= 1.0 + 1e-3,
                             "gradient of length " + len + " at (" + x + ", " + y + ", " + z + ")");
@@ -246,7 +246,7 @@ class StrokeTest {
                 new Surface.Translate(0, 5, 0, Surface.Rotate.aboutY(Math.PI / 2, painted)));
 
         // The stroke ran along +X; a quarter turn about +Y puts it on -Z, then it moves up by five.
-        assertTrue(Eval.at(field.distance(), 0, 5, -1) <= -0.3 + 1e-9);
+        assertTrue(Eval.at(field, 0, 5, -1) <= -0.3 + 1e-9);
         assertArrayEquals(new double[]{1, 0, 0}, albedoAt(field, 0, 5, -1), 1e-9);
     }
 
@@ -318,7 +318,8 @@ class StrokeTest {
      */
     private static double[] albedoAt(Field field, double x, double y, double z) {
         Expr fallback = Ir.v3(0.25, 0.5, 0.75);
-        java.util.List<dev.supirvast.vastir.core.Statement> lets = new java.util.ArrayList<>();
+        // The transformed points the colour program reads too: a distance bound into it may name one (P1).
+        java.util.List<dev.supirvast.vastir.core.Statement> lets = new java.util.ArrayList<>(field.lets());
         for (dev.supirvast.vastir.core.Statement s : field.albedoLets()) {
             lets.add(Substitute.sceneAlbedo(s, fallback));
         }

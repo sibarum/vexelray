@@ -1,9 +1,20 @@
 package dev.vexelray.surface;
 
 import dev.supirvast.vastir.core.Expr;
+import dev.supirvast.vastir.core.Function;
+import dev.supirvast.vastir.core.LocalVar;
+import dev.supirvast.vastir.core.Region;
+import dev.supirvast.vastir.core.Statement;
+import dev.supirvast.vastir.type.Type;
 import dev.vexelray.ir.Ir;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Lowers a {@link Surface} to {@code core} IR, tracking as it goes whether the result can actually be marched.
@@ -37,8 +48,51 @@ public final class SurfaceCompiler {
      */
     private final ParamStore params;
 
-    private SurfaceCompiler(ParamStore params) {
+    /**
+     * The declarations of the program being emitted, innermost last.
+     *
+     * <p>A stack rather than a list because a shared subtree becomes a function with a body of its own, and a
+     * point bound while lowering that subtree belongs to <em>its</em> body — a local declared in one function
+     * and read in another is not a program. The bottom of the stack is the {@code sdf} function itself.
+     */
+    private final Deque<Scope> scopes = new ArrayDeque<>();
+
+    /** Functions the emitted program calls, callees before callers — see {@link #helperFor}. */
+    private final List<Function> helpers = new ArrayList<>();
+
+    /** Subtrees already emitted as functions, so the second site calls the first site's function. */
+    private final Map<Surface, Helper> memo = new HashMap<>();
+
+    /** Subtrees the lowering would otherwise write out more than once — {@link Shared#of}. */
+    private final Set<Surface> shared;
+
+    /** Names every local in this compile, so two functions cannot declare the same one. */
+    private int nextLocal;
+
+    private SurfaceCompiler(ParamStore params, Set<Surface> shared) {
         this.params = params;
+        this.shared = shared;
+        this.scopes.push(new Scope());
+    }
+
+    /** A shared subtree's function, and the bound its body carries. */
+    private record Helper(Function function, double lipschitz) {
+    }
+
+    /** The declarations of one function's body, in the order they must be emitted. */
+    private final class Scope {
+
+        private final List<Statement> statements = new ArrayList<>();
+
+        Expr bind(String name, Expr value) {
+            LocalVar variable = new LocalVar(name + "_" + nextLocal++, value.type());
+            statements.add(new Statement.DeclareVar(variable, value));
+            return new Expr.Read(variable);
+        }
+
+        List<Statement> statements() {
+            return List.copyOf(statements);
+        }
     }
 
     /**
@@ -75,12 +129,13 @@ public final class SurfaceCompiler {
      */
     public static Field compile(Surface surface, SurfaceLimits limits, ParamStore params) {
         limits.check(surface);
-        SurfaceCompiler compiler = new SurfaceCompiler(params);
-        Field lowered = compiler.lower(surface, Ir.POINT);
+        SurfaceCompiler compiler = new SurfaceCompiler(params, Shared.of(surface));
+        Field lowered = compiler.lower(surface, Ir.POINT)
+                .withProgram(compiler.scopes.peek().statements(), compiler.helpers);
         Field field = lowered.hasAlbedo() ? lowered.withAlbedoLets(compiler.lets.statements()) : lowered;
         // Checked again on the way out, not only on the way in: normalisation expands an implicit by a factor
         // that compounds with nesting, so passing the input limits says nothing about the output size.
-        limits.checkCompiled(field.distance());
+        limits.checkCompiled(field);
         if (!field.isMarchable()) {
             throw new IllegalStateException(
                     "lowered surface is not marchable (lipschitz " + field.lipschitz() + "); this is a compiler "
@@ -89,7 +144,90 @@ public final class SurfaceCompiler {
         return field;
     }
 
+    /**
+     * Lower {@code surface} at {@code p} — as a call, if this subtree is written more than once.
+     *
+     * <p>This is P1's whole shape. {@link Shared#of} decided, before any lowering, which subtrees the walk
+     * would otherwise emit repeatedly: the child of a {@code Repeat} (2ⁿ cells), the child of a
+     * {@code PolarRepeat} (two sectors), and anything the author used twice. Each of those is emitted once as
+     * {@code float f(vec3)} and called from every site, so a module grows with the operators in a design
+     * rather than with the product of their multiplicities.
+     *
+     * <p>The point is the call's argument, which is also what binds it: an argument is evaluated once however
+     * many times the body reads it.
+     */
     private Field lower(Surface surface, Expr p) {
+        if (shared.contains(surface)) {
+            Helper helper = helperFor(surface);
+            return new Field(new Expr.Call(helper.function(), List.of(p)), helper.lipschitz());
+        }
+        return lowerHere(surface, p);
+    }
+
+    /**
+     * This subtree as a function, lowered once against {@link Ir#POINT} and remembered.
+     *
+     * <p>Lowered against the sample point rather than against the caller's, which is what makes one body serve
+     * every site: {@code Ir.POINT} is {@code Expr.Param(0)}, and a function's first parameter is the same
+     * expression, so the body a subtree produces at the origin of its own frame <em>is</em> the function body,
+     * with nothing to substitute.
+     */
+    private Helper helperFor(Surface surface) {
+        Helper existing = memo.get(surface);
+        if (existing != null) {
+            return existing;
+        }
+        Scope scope = new Scope();
+        scopes.push(scope);
+        Field body;
+        try {
+            // lowerHere, not lower: this is the site that emits it, and going through lower would ask for a
+            // function to emit the function.
+            body = lowerHere(surface, Ir.POINT);
+        } finally {
+            scopes.pop();
+        }
+        List<Statement> statements = new ArrayList<>(scope.statements());
+        statements.add(new Statement.Return(body.distance()));
+        Function function = new Function("f" + helpers.size(),
+                new Type.FunctionType(Ir.F32, List.of(Ir.V3)), new Region(statements));
+        // Added after its own body was lowered, so a helper that calls another is emitted after the one it
+        // calls — the order a module wants.
+        helpers.add(function);
+        Helper helper = new Helper(function, body.lipschitz());
+        memo.put(surface, helper);
+        return helper;
+    }
+
+    /**
+     * The transformed point, named.
+     *
+     * <p>P1 step 1, and the cheap half of the stage — cheap to write, and worth more than it looks. A domain
+     * operator lowers its child against a <em>point expression</em>, and a primitive reads its point several
+     * times: a box reads it four times, so a rotation under a box is written four times, and a twist over a
+     * repeat over a smooth union multiplies through every one of those. Naming the point costs one
+     * declaration and turns each of those copies into a read. The measured difference on the ladder's sixth
+     * rung is four megabytes against a few kilobytes.
+     *
+     * <p>A point that is already a name — the sample point itself, or a local bound by the operator above —
+     * is returned unchanged, so an identity transform still emits nothing.
+     */
+    private Expr bindPoint(Expr q) {
+        if (q instanceof Expr.Param || q instanceof Expr.Read) {
+            return q;
+        }
+        return scopes.peek().bind("p", q);
+    }
+
+    /** A scalar used more than once by the operator computing it — a cell index, a folded angle. */
+    private Expr bindScalar(String name, Expr value) {
+        if (value instanceof Expr.Param || value instanceof Expr.Read || value instanceof Expr.ConstFloat) {
+            return value;
+        }
+        return scopes.peek().bind(name, value);
+    }
+
+    private Field lowerHere(Surface surface, Expr p) {
         return switch (surface) {
             case Surface.Sphere s -> Field.exact(sphere(p, s));
 
@@ -106,26 +244,27 @@ public final class SurfaceCompiler {
 
             // Moving the domain moves the surface; distances are unaffected.
             case Surface.Translate t ->
-                    lower(t.of(), Fold.sub(p, Ir.v3(expr(t.dx()), expr(t.dy()), expr(t.dz()))));
+                    lower(t.of(), bindPoint(Fold.sub(p, Ir.v3(expr(t.dx()), expr(t.dy()), expr(t.dz())))));
 
             // Uniform scale: evaluate in the shrunken frame, then scale the distance back out. Both the field and
             // its gradient scale together, so the bound survives.
             case Surface.Scale s -> {
                 Expr factor = expr(s.factor());
-                Field inner = lower(s.of(), Fold.div(p, Ir.broadcast(factor, Ir.V3)));
+                Field inner = lower(s.of(), bindPoint(Fold.div(p, Ir.broadcast(factor, Ir.V3))));
                 yield new Field(Fold.mul(inner.distance(), factor), inner.lipschitz(), inner.albedo());
             }
 
             // Rotating the object rotates the domain the other way, so the child is lowered at R^T p. For a
             // literal angle the matrix is nine compile-time constants and Fold drops whichever of them are
             // exactly zero, so an axis-aligned turn costs little more than a swizzle.
-            case Surface.Rotate r -> lower(r.of(), rotate(p, rodrigues(r.ax(), r.ay(), r.az(), r.angle())));
+            case Surface.Rotate r ->
+                    lower(r.of(), bindPoint(rotate(p, rodrigues(r.ax(), r.ay(), r.az(), r.angle()))));
 
             // Folding with abs is 1-Lipschitz, so a mirror is as free as a translate.
-            case Surface.Mirror m -> lower(m.of(), Ir.v3(
+            case Surface.Mirror m -> lower(m.of(), bindPoint(Ir.v3(
                     m.x() ? Ir.abs(Fold.component(p, 0)) : Fold.component(p, 0),
                     m.y() ? Ir.abs(Fold.component(p, 1)) : Fold.component(p, 1),
-                    m.z() ? Ir.abs(Fold.component(p, 2)) : Fold.component(p, 2)));
+                    m.z() ? Ir.abs(Fold.component(p, 2)) : Fold.component(p, 2))));
 
             case Surface.Repeat r -> repeat(r, p);
 
@@ -141,10 +280,10 @@ public final class SurfaceCompiler {
                 Expr angle = Fold.mul(expr(t.rate()), py);
                 Expr c = Expr.MathCall.cos(angle);
                 Expr s = Expr.MathCall.sin(angle);
-                Expr q = Ir.v3(
+                Expr q = bindPoint(Ir.v3(
                         Ir.sub(Ir.mul(c, px), Ir.mul(s, pz)),
                         py,
-                        Ir.add(Ir.mul(s, px), Ir.mul(c, pz)));
+                        Ir.add(Ir.mul(s, px), Ir.mul(c, pz))));
                 yield deform(t.of(), q, twistStretch(t.rate(), t.radius()));
             }
 
@@ -156,10 +295,10 @@ public final class SurfaceCompiler {
                 Expr angle = Fold.mul(expr(b.rate()), px);
                 Expr c = Expr.MathCall.cos(angle);
                 Expr s = Expr.MathCall.sin(angle);
-                Expr q = Ir.v3(
+                Expr q = bindPoint(Ir.v3(
                         Ir.sub(Ir.mul(c, px), Ir.mul(s, py)),
                         Ir.add(Ir.mul(s, px), Ir.mul(c, py)),
-                        pz);
+                        pz));
                 yield deform(b.of(), q, bendStretch(b.rate(), b.extent()));
             }
 
@@ -351,15 +490,17 @@ public final class SurfaceCompiler {
             return lower(r.of(), p);
         }
 
-        // Two candidate cell indices per repeated axis: the one this point falls in, and the one it leans toward.
+        // Two candidate cell indices per repeated axis: the one this point falls in, and the one it leans
+        // toward. Both are read by half the cells below, so both are named — 2^n copies of a round and a sign
+        // is the same duplication one level down from the one bindPoint removes.
         Expr[][] cells = new Expr[active.size()][2];
         for (int a = 0; a < active.size(); a++) {
             Surface.Repeat.Axis axis = axes[active.get(a)];
-            Expr t = Ir.div(Fold.component(p, active.get(a)), expr(axis.period()));
-            Expr nearest = Expr.MathCall.round(t);
+            Expr t = bindScalar("t", Ir.div(Fold.component(p, active.get(a)), expr(axis.period())));
+            Expr nearest = bindScalar("cell", Expr.MathCall.round(t));
             Expr neighbour = Ir.add(nearest, Expr.MathCall.sign(Ir.sub(t, nearest)));
-            cells[a][0] = clampCell(nearest, axis);
-            cells[a][1] = clampCell(neighbour, axis);
+            cells[a][0] = bindScalar("cell", clampCell(nearest, axis));
+            cells[a][1] = bindScalar("cell", clampCell(neighbour, axis));
         }
 
         Coloured folded = null;
@@ -369,7 +510,7 @@ public final class SurfaceCompiler {
                 int i = active.get(a);
                 q[i] = Ir.sub(q[i], Ir.mul(expr(axes[i].period()), cells[a][(mask >> a) & 1]));
             }
-            Coloured cell = Coloured.of(lower(r.of(), Ir.v3(q[0], q[1], q[2])));
+            Coloured cell = Coloured.of(lower(r.of(), bindPoint(Ir.v3(q[0], q[1], q[2]))));
             folded = folded == null ? cell : pick(folded, cell, true);
         }
         return folded.field();
@@ -398,19 +539,19 @@ public final class SurfaceCompiler {
         Expr pz = Fold.component(p, 2);
 
         // Measured from +Z so that sector 0 straddles it, which is where a single authored instance wants to sit.
-        Expr t = Ir.div(Expr.MathCall.atan2(px, pz), Ir.f(sector));
-        Expr nearest = Expr.MathCall.round(t);
+        Expr t = bindScalar("t", Ir.div(Expr.MathCall.atan2(px, pz), Ir.f(sector)));
+        Expr nearest = bindScalar("sector", Expr.MathCall.round(t));
         Expr[] sectors = {nearest, Ir.add(nearest, Expr.MathCall.sign(Ir.sub(t, nearest)))};
 
         Coloured folded = null;
         for (Expr index : sectors) {
-            Expr theta = Ir.mul(index, Ir.f(sector));
-            Expr c = Expr.MathCall.cos(theta);
-            Expr s = Expr.MathCall.sin(theta);
-            Coloured one = Coloured.of(lower(r.of(), Ir.v3(
+            Expr theta = bindScalar("theta", Ir.mul(index, Ir.f(sector)));
+            Expr c = bindScalar("c", Expr.MathCall.cos(theta));
+            Expr s = bindScalar("s", Expr.MathCall.sin(theta));
+            Coloured one = Coloured.of(lower(r.of(), bindPoint(Ir.v3(
                     Ir.sub(Ir.mul(c, px), Ir.mul(s, pz)),
                     py,
-                    Ir.add(Ir.mul(s, px), Ir.mul(c, pz)))));
+                    Ir.add(Ir.mul(s, px), Ir.mul(c, pz))))));
             folded = folded == null ? one : pick(folded, one, true);
         }
         return folded.field();
@@ -438,9 +579,12 @@ public final class SurfaceCompiler {
         // A driven angle: the same formula, with the two trigonometric calls in the shader and the axis still
         // nine constants. Fold keeps the axis-aligned cases cheap here too — about +Y, six of the nine products
         // involve a zero component and disappear, leaving the swizzle and two multiplies per axis.
-        Expr c = Expr.MathCall.cos(expr(angle));
-        Expr s = Expr.MathCall.sin(expr(angle));
-        Expr t = Ir.sub(Ir.f(1.0), c);
+        //
+        // Named, because the nine entries read them: unnamed, a turn about +Y emitted four cosines and two
+        // sines for what is one of each. Same reasoning as bindPoint, one level down.
+        Expr c = bindScalar("cos", Expr.MathCall.cos(expr(angle)));
+        Expr s = bindScalar("sin", Expr.MathCall.sin(expr(angle)));
+        Expr t = bindScalar("versin", Ir.sub(Ir.f(1.0), c));
         return new Expr[]{
                 axisTerm(kx * kx, t, c), skew(kx * ky, t, -kz, s), skew(kx * kz, t, ky, s),
                 skew(kx * ky, t, kz, s), axisTerm(ky * ky, t, c), skew(ky * kz, t, -kx, s),

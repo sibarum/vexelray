@@ -51,6 +51,28 @@ public record SurfaceLimits(int maxNodes, int maxDepth, int maxCompiledNodes) {
         countCompiled(compiled, counter);
     }
 
+    /**
+     * The same budget, applied to the whole emitted program rather than to one expression.
+     *
+     * <p>Since P1 a field <em>is</em> a program: declarations the distance reads, and functions it calls.
+     * Checking the distance expression alone would count a call as a single node and miss the function it
+     * calls — which is the bulk of a shared subtree, and exactly what a size budget exists to bound. Each
+     * function counts once, because that is how many times it is emitted. What the program costs to
+     * <b>run</b> is {@link Field#evaluations()}, and nothing here is budgeted on that: a repeat is meant to
+     * be cheap to emit and expensive to evaluate, and refusing it for the second would refuse the operator.
+     *
+     * @throws SurfaceTooLargeException if the lowered field exceeds {@link #maxCompiledNodes}
+     */
+    public void checkCompiled(Field compiled) {
+        int nodes = compiled.nodes();
+        if (nodes > maxCompiledNodes) {
+            throw new SurfaceTooLargeException(
+                    "lowered surface is " + nodes + " nodes, over the " + maxCompiledNodes + " allowed; "
+                            + "gradient normalisation compounds through nesting, so a small implicit can "
+                            + "expand past this");
+        }
+    }
+
     private void countCompiled(Expr e, Counter counter) {
         if (++counter.nodes > maxCompiledNodes) {
             throw new SurfaceTooLargeException(

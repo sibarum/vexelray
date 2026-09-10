@@ -41,8 +41,8 @@ class UnionOfStrokesTest {
 
         for (double x = -4; x <= 5; x += 0.25) {
             for (double y = -1; y <= 2; y += 0.5) {
-                double expected = Math.min(Eval.at(fa.distance(), x, y, 0), Eval.at(fb.distance(), x, y, 0));
-                assertEquals(expected, Eval.at(union.distance(), x, y, 0), 1e-12,
+                double expected = Math.min(Eval.at(fa, x, y, 0), Eval.at(fb, x, y, 0));
+                assertEquals(expected, Eval.at(union, x, y, 0), 1e-12,
                         "at (" + x + ", " + y + ")");
             }
         }

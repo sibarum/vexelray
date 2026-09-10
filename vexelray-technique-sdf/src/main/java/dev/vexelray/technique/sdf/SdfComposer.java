@@ -300,7 +300,20 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         // colour read at the hit point.
         Field field = lower(scene).field();
         return fragmentSpirv(scene, field.asFunction(SDF_FUNCTION),
-                field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null);
+                field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null,
+                field.helpers());
+    }
+
+    /**
+     * The functions {@link #sdfFunction} calls — a repeated child, or any subtree the design used twice,
+     * emitted once (P1).
+     *
+     * <p>Published because a host that assembles its own module needs them: a call to a function the module
+     * does not define is the one way this split can fail, and it fails at pipeline creation rather than here.
+     * Empty for a surface with nothing shared in it, which is every surface that lowered before P1 existed.
+     */
+    public static List<Function> helperFunctions(SdfScene scene) {
+        return lower(scene).field().helpers();
     }
 
     /**
@@ -323,6 +336,18 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * @param albedoFn {@code vec3 albedo(vec3 p)}, or null when the scene's own albedo is the whole story
      */
     public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn) {
+        return fragmentSpirv(scene, sdf, albedoFn, List.of());
+    }
+
+    /**
+     * The same, for a field that calls functions of its own.
+     *
+     * <p>{@code helpers} are added to the module ahead of {@code sdf}, callees first, which is the order
+     * {@link Field#helpers()} hands them over in. A caller supplying its own {@code sdf} — a buffer-driven
+     * field, say — has none and passes an empty list.
+     */
+    public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
+                                       List<Function> helpers) {
         MarchSettings march = scene.march();
 
         InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
@@ -373,8 +398,11 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
-        CoreModule module = new CoreModule()
-                .addFunction(sdf);                      // emitted once; called nine times per pixel
+        CoreModule module = new CoreModule();
+        for (Function helper : helpers) {
+            module = module.addFunction(helper);        // a shared subtree: emitted once, called from each site
+        }
+        module = module.addFunction(sdf);               // emitted once; called nine times per pixel
         if (albedoFn != null) {
             module = module.addFunction(albedoFn);      // emitted once; called once, at the hit point
         }

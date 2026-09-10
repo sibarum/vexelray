@@ -120,11 +120,39 @@ class SdfComposerTest {
         // normal came along with it each time — the reason Shading.shade is handed a Bindings.
         NativeTools tools = new NativeTools();
         Assumptions.assumeTrue(tools.isAvailable(), "spirv-tools not bundled for this platform");
-        String disassembly = tools.disassemble(SdfComposer.fragmentSpirv(scene()));
-        assertEquals(1, countOccurrences(disassembly, "= OpFunction %float "),
-                "expected exactly one float-returning function: the field");
-        assertEquals(8, countOccurrences(disassembly, "OpFunctionCall"),
+        SdfScene scene = scene();
+        String disassembly = tools.disassemble(SdfComposer.fragmentSpirv(scene));
+
+        // Since P1 the field is not the only float-returning function in the module: a subtree the lowering
+        // would otherwise write out several times is emitted once and called instead. Those are the
+        // composer's own published list, so the module is checked against the API rather than against a
+        // number that would need adjusting whenever sharing improves.
+        assertEquals(1 + SdfComposer.helperFunctions(scene).size(),
+                countOccurrences(disassembly, "= OpFunction %float "),
+                "expected the field, plus one function per shared subtree, and nothing else");
+
+        // The count that has always mattered is the field's own. Calls made from inside the field are a
+        // different question and belong to the assertion above, so this counts only the ones main makes.
+        List<String> fromMain = callsFromTheEntryPoint(disassembly);
+        assertEquals(8, fromMain.size(),
                 "expected 8 field samples per pixel (1 march + 1 hit + 6 normal taps)");
+        assertEquals(1, java.util.Set.copyOf(fromMain).size(),
+                "every sample should call one function: the field, emitted once (D12)");
+    }
+
+    /** The callee of each {@code OpFunctionCall} inside the entry point, which is emitted last. */
+    private static List<String> callsFromTheEntryPoint(String disassembly) {
+        List<String> callees = new java.util.ArrayList<>();
+        boolean inEntryPoint = false;
+        for (String line : disassembly.split("\n")) {
+            if (line.contains("OpFunction %void")) {
+                inEntryPoint = true;
+            } else if (inEntryPoint && line.contains("OpFunctionCall")) {
+                String[] words = line.trim().split("\\s+");
+                callees.add(words[words.length - 2]);   // %result = OpFunctionCall %float %callee %argument
+            }
+        }
+        return callees;
     }
 
     /** A scene whose geometry carries colour: a stroke running red to blue, over the plain ground plane. */
@@ -226,9 +254,17 @@ class SdfComposerTest {
         // typed in at runtime is collidable without a second implementation of it existing anywhere.
         SdfScene scene = scene();
         assertEquals(SdfComposer.SDF_FUNCTION, SdfComposer.sdfFunction(scene).name());
-        assertEquals(SdfComposer.field(scene).asFunction(SdfComposer.SDF_FUNCTION),
-                SdfComposer.sdfFunction(scene));
         assertTrue(SdfComposer.field(scene).isMarchable());
+
+        // Compared as programs rather than as records, because since P1 a field declares locals and a
+        // LocalVar is an identity — a variable is a place, not a value, so two compiles of one surface name
+        // two different places and the records differ while the programs do not. What has to hold is that
+        // both describe the same field, and that an equal surface still composes to the same bytes, which is
+        // what the shader cache keys on: it keys on the Surface, which is a record all the way down.
+        assertEquals(SdfComposer.field(scene).at(POINT), SdfComposer.field(scene()).at(POINT),
+                "two compiles of an equal scene must describe the same field");
+        assertArrayEquals(SdfComposer.fragmentSpirv(scene), SdfComposer.fragmentSpirv(scene()),
+                "an equal scene must compose to equal bytes, or the shader cache misses on itself");
     }
 
     @Test

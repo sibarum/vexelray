@@ -31,6 +31,22 @@ final class Eval {
         return v[0];
     }
 
+    /**
+     * Evaluate a whole compiled field — <b>the program, not the expression</b>.
+     *
+     * <p>Since P1 a field declares the transformed points its distance reads and calls functions for the
+     * subtrees it shares, so running the distance expression alone would meet a read of a local with nothing
+     * to read it from. This runs the declarations first, in order, exactly as the shader does — which is also
+     * what makes it a real check of the emitted program rather than of a reconstruction of it.
+     */
+    static double at(Field field, double x, double y, double z) {
+        double[] v = withLets(field.distance(), field.lets(), x, y, z);
+        if (v.length != 1) {
+            throw new IllegalArgumentException("expected a scalar, got " + v.length + " components");
+        }
+        return v[0];
+    }
+
     /** Evaluate a vector expression at a point. */
     static double[] vecAt(Expr e, double x, double y, double z) {
         return eval(e, Env.at(x, y, z));
@@ -73,7 +89,25 @@ final class Eval {
         return switch (e) {
             case Expr.ConstFloat c -> new double[]{c.value()};
             case Expr.ConstInt c -> new double[]{c.value()};
-            case Expr.Read r -> p.locals().get(r.variable()).clone();
+            case Expr.Read r -> {
+                double[] value = p.locals().get(r.variable());
+                if (value == null) {
+                    throw new IllegalStateException("no declaration for " + r.variable().name()
+                            + "; evaluate the field's program (Eval.at(field, …)) rather than its expression");
+                }
+                yield value.clone();
+            }
+            // A shared subtree. Its body is a program of its own with its own locals, and its parameter is
+            // the point it was called at — so it runs in a fresh environment rather than the caller's, which
+            // is exactly the scoping the shader has.
+            case Expr.Call c -> {
+                double[] argument = eval(c.arguments().get(0), p);
+                java.util.List<dev.supirvast.vastir.core.Statement> body = c.callee().body().statements();
+                yield withLets(
+                        ((dev.supirvast.vastir.core.Statement.Return) body.get(body.size() - 1)).value(),
+                        body.subList(0, body.size() - 1),
+                        argument[0], argument[1], argument[2]);
+            }
             case Expr.Param param -> param.index() == 0 ? p.point().clone() : unsupported(e);
             case Expr.Unary u -> map(eval(u.operand(), p), v -> switch (u.op()) {
                 case NEGATE -> -v;

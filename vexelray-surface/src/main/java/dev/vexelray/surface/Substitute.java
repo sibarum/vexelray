@@ -60,6 +60,44 @@ final class Substitute {
         throw new IllegalStateException("unexpected statement in a colour program: " + s);
     }
 
+    /**
+     * {@code e} with every read of {@code variable} replaced by {@code value} — a declaration inlined back
+     * into its uses.
+     *
+     * <p>The inverse of what {@link Lets} and P1's point bindings do, and it exists for the one caller that
+     * needs an expression rather than a program ({@link Field#at}). Undoing a binding restores the duplication
+     * it removed, which is why nothing on the shader path calls it.
+     */
+    static Expr local(Expr e, dev.supirvast.vastir.core.LocalVar variable, Expr value) {
+        return switch (e) {
+            case Expr.Read r when r.variable().equals(variable) -> value;
+            case Expr.Binary b -> new Expr.Binary(b.op(), local(b.lhs(), variable, value),
+                    local(b.rhs(), variable, value));
+            case Expr.Unary u -> new Expr.Unary(u.op(), local(u.operand(), variable, value));
+            case Expr.MathCall m -> new Expr.MathCall(m.fn(), m.type(), locals(m.args(), variable, value));
+            case Expr.VectorConstruct v ->
+                    new Expr.VectorConstruct(v.type(), locals(v.components(), variable, value));
+            case Expr.VectorExtract v -> new Expr.VectorExtract(local(v.vector(), variable, value), v.index());
+            case Expr.Convert c -> new Expr.Convert(local(c.operand(), variable, value), c.type());
+            case Expr.Bitcast b -> new Expr.Bitcast(local(b.operand(), variable, value), b.type());
+            case Expr.MatrixTimesVector m ->
+                    new Expr.MatrixTimesVector(m.matrix(), local(m.vector(), variable, value));
+            // A call's arguments are in this scope; its body is not, and has declarations of its own.
+            case Expr.Call c -> new Expr.Call(c.callee(), locals(c.arguments(), variable, value));
+            case Expr.BufferLoad b -> new Expr.BufferLoad(b.buffer(), local(b.index(), variable, value));
+            case Expr.SampleTexture s -> new Expr.SampleTexture(s.texture(), local(s.uv(), variable, value));
+            default -> e;
+        };
+    }
+
+    private static List<Expr> locals(List<Expr> exprs, dev.supirvast.vastir.core.LocalVar variable, Expr value) {
+        List<Expr> out = new ArrayList<>(exprs.size());
+        for (Expr e : exprs) {
+            out.add(local(e, variable, value));
+        }
+        return out;
+    }
+
     private static Expr rewrite(Expr e, Expr point, int index) {
         return switch (e) {
             case Expr.Param p when p.index() == index && Ir.V3.equals(p.type()) -> point;

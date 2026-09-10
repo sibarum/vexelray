@@ -87,11 +87,11 @@ class DoublingBackStrokeTest {
     void fieldIsSaneAroundTheDegenerateCorner() {
         Field wide = SurfaceCompiler.compile(coil(25, 60));
         // Far outside the coil the distance must be large and positive; the failure made it read as inside.
-        double eye = Eval.at(wide.distance(), 2.2, 2.9, 2.0);
+        double eye = Eval.at(wide, 2.2, 2.9, 2.0);
         assertTrue(eye > 1.0, "outside the coil the field reads " + eye + ", which is not outside");
         // And at the doubled-back corner itself, a full radius of material -- on the coil that has one.
         Field six = SurfaceCompiler.compile(coil(6, 60));
-        double atCorner = Eval.at(six.distance(), -0.4, 0.4330127018922194, -0.75);
+        double atCorner = Eval.at(six, -0.4, 0.4330127018922194, -0.75);
         assertTrue(atCorner <= -0.022 + 1e-6,
                 "the corner reads " + atCorner + ", shallower than the radius that should be there");
     }

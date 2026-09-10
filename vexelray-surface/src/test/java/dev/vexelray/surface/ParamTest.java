@@ -181,30 +181,28 @@ class ParamTest {
     }
 
     /**
-     * A literal angle costs the shader nothing; a driven one costs trigonometry — and costs it once per copy
-     * of the transformed point, which is more copies than anyone would write by hand.
+     * A literal angle costs the shader nothing; a driven one costs one {@code sin} and one {@code cos}.
      *
-     * <p>The second number is the interesting one, and it is P1's to fix rather than this stage's. Nothing
-     * downstream eliminates common subexpressions (see {@code Fold}), and a domain transform lowers its child
-     * against the transformed point <em>expression</em> — so a box, which reads its point four times over,
-     * duplicates the whole rotation four times with it. A literal rotation duplicates nine constants, which is
-     * why nobody noticed; a driven one duplicates a {@code sin} and a {@code cos}. Let-binding the transformed
-     * point (P1 step 1) collapses it back to one.
+     * <p>Written at P0a asserting only that the count was a multiple of six, because it was <b>24</b>: nothing
+     * downstream eliminates common subexpressions, a domain transform lowered its child against the
+     * transformed point <em>expression</em>, and a box reads its point four times — so the whole rotation was
+     * written four times, six trigonometric reads apiece. The note then said P1 step 1 would collapse it, and
+     * this is that assertion, tightened to the number it predicted.
+     *
+     * <p>Counted over the program rather than over the distance expression, because that is where the
+     * trigonometry now lives: once, in the declaration of the point.
      */
     @Test
-    @DisplayName("a literal angle folds to constants; a driven one pays trigonometry, once per point copy")
+    @DisplayName("a literal angle folds to constants; a driven one pays exactly one sin and one cos")
     void aLiteralAngleStillFoldsToConstants() {
         Surface baked = Surface.Rotate.aboutY(0.7, new Surface.Box(0, 0, 0, 1, 1, 1));
-        assertEquals(0, trigCalls(SurfaceCompiler.compile(baked).distance()),
+        assertEquals(0, trigCalls(SurfaceCompiler.compile(baked)),
                 "a literal rotation put trigonometry in the shader");
 
         Surface driven = Surface.Rotate.aboutY(Scalar.Param.over(0, Math.PI),
                 new Surface.Box(0, 0, 0, 1, 1, 1));
-        int trig = trigCalls(SurfaceCompiler.compile(driven, store(ParamBlock.of(driven))).distance());
-        assertTrue(trig > 0, "a driven rotation should be shader-side trigonometry");
-        assertEquals(0, trig % 6,
-                "a turn about +Y is six trigonometric reads per copy of the point; " + trig + " is not a "
-                        + "multiple of six, so the lowering changed shape");
+        assertEquals(2, trigCalls(SurfaceCompiler.compile(driven, store(ParamBlock.of(driven)))),
+                "a turn about +Y is one sin and one cos, and P1 is what makes it one of each");
     }
 
     @Test
@@ -270,6 +268,15 @@ class ParamTest {
         double reach = Math.sqrt(3 * 3 + 1 + 1);      // the far corner of the child's box
         assertEquals(reach, bounds.maxX(), 1e-9);
         assertEquals(-reach, bounds.minX(), 1e-9);
+    }
+
+    /** Trigonometric calls anywhere in a field's program — its declarations as well as its distance. */
+    private static int trigCalls(Field field) {
+        int total = trigCalls(field.distance());
+        for (var let : field.lets()) {
+            total += trigCalls(((dev.supirvast.vastir.core.Statement.DeclareVar) let).initializer());
+        }
+        return total;
     }
 
     private static int trigCalls(Expr e) {

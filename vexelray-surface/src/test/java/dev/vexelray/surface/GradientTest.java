@@ -34,13 +34,13 @@ class GradientTest {
     static Stream<Object[]> fields() {
         return Stream.of(
                 new Object[]{"sphere sdf", SurfaceCompiler.compile(
-                        new Surface.Sphere(1, 2, 3, 0.5)).distance()},
+                        new Surface.Sphere(1, 2, 3, 0.5)).at(POINT)},
                 new Object[]{"plane sdf", SurfaceCompiler.compile(
-                        new Surface.Plane(1, 2, 3, -0.25)).distance()},
+                        new Surface.Plane(1, 2, 3, -0.25)).at(POINT)},
                 new Object[]{"capsule sdf", SurfaceCompiler.compile(
-                        new Surface.Capsule(-1, 0, 0, 1, 0.5, 0.25, 0.3)).distance()},
+                        new Surface.Capsule(-1, 0, 0, 1, 0.5, 0.25, 0.3)).at(POINT)},
                 new Object[]{"torus sdf", SurfaceCompiler.compile(
-                        new Surface.Torus(0.1, -0.2, 0.3, 1.5, 0.4)).distance()},
+                        new Surface.Torus(0.1, -0.2, 0.3, 1.5, 0.4)).at(POINT)},
                 new Object[]{"quadratic implicit", quadric()},
                 new Object[]{"trig sum", Ir.add(Ir.add(sin(Ir.x(POINT)), sin(Ir.y(POINT))), sin(Ir.z(POINT)))},
                 new Object[]{"exp/log mix", Ir.add(
@@ -52,10 +52,10 @@ class GradientTest {
                 new Object[]{"smooth union of spheres", SurfaceCompiler.compile(
                         Surface.smoothUnion(4.0,
                                 new Surface.Sphere(-0.6, 0, 0, 0.8),
-                                new Surface.Sphere(0.6, 0, 0, 0.8))).distance()},
+                                new Surface.Sphere(0.6, 0, 0, 0.8))).at(POINT)},
                 new Object[]{"scaled, translated box", SurfaceCompiler.compile(
                         new Surface.Translate(0.2, 0.3, 0.4,
-                                new Surface.Scale(1.7, new Surface.Box(0, 0, 0, 0.5, 0.9, 0.3)))).distance()});
+                                new Surface.Scale(1.7, new Surface.Box(0, 0, 0, 0.5, 0.9, 0.3)))).at(POINT)});
     }
 
     @ParameterizedTest(name = "{0}")

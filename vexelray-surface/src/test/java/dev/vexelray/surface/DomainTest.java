@@ -34,9 +34,9 @@ class DomainTest {
                 Surface.Rotate.aboutY(Math.PI / 2, new Surface.Sphere(1, 0, 0, 0.5)));
 
         assertEquals(Field.EXACT, field.lipschitz(), "a rotation is an isometry and must stay exact");
-        assertEquals(-0.5, Eval.at(field.distance(), 0, 0, -1), 1e-9);
-        assertEquals(0.5, Eval.at(field.distance(), 0, 0, -2), 1e-9);
-        assertEquals(0.0, Eval.at(field.distance(), 0, 0, -1.5), 1e-9);
+        assertEquals(-0.5, Eval.at(field, 0, 0, -1), 1e-9);
+        assertEquals(0.5, Eval.at(field, 0, 0, -2), 1e-9);
+        assertEquals(0.0, Eval.at(field, 0, 0, -1.5), 1e-9);
     }
 
     @Test
@@ -46,8 +46,8 @@ class DomainTest {
         Field turned = SurfaceCompiler.compile(new Surface.Rotate(1, 2, -3, 2 * Math.PI, sphere));
         Field plain = SurfaceCompiler.compile(sphere);
         for (double[] p : samples()) {
-            assertEquals(Eval.at(plain.distance(), p[0], p[1], p[2]),
-                    Eval.at(turned.distance(), p[0], p[1], p[2]), 1e-9);
+            assertEquals(Eval.at(plain, p[0], p[1], p[2]),
+                    Eval.at(turned, p[0], p[1], p[2]), 1e-9);
         }
     }
 
@@ -65,9 +65,9 @@ class DomainTest {
                 new Surface.Mirror(true, false, false, new Surface.Sphere(2, 0, 0, 0.5)));
 
         assertEquals(Field.EXACT, field.lipschitz());
-        assertEquals(-0.5, Eval.at(field.distance(), 2, 0, 0), 1e-9);
-        assertEquals(-0.5, Eval.at(field.distance(), -2, 0, 0), 1e-9);
-        assertEquals(1.5, Eval.at(field.distance(), 0, 0, 0), 1e-9);
+        assertEquals(-0.5, Eval.at(field, 2, 0, 0), 1e-9);
+        assertEquals(-0.5, Eval.at(field, -2, 0, 0), 1e-9);
+        assertEquals(1.5, Eval.at(field, 0, 0, 0), 1e-9);
     }
 
     // --- repetition: the neighbour is the test ---
@@ -79,11 +79,11 @@ class DomainTest {
                 Surface.Repeat.Axis.every(3.0), new Surface.Sphere(0, 0, 0, 0.5)));
 
         assertEquals(Field.EXACT, field.lipschitz());
-        assertEquals(-0.5, Eval.at(field.distance(), 0, 0, 0), 1e-9);
-        assertEquals(-0.5, Eval.at(field.distance(), 6, 0, 0), 1e-9);
-        assertEquals(-0.5, Eval.at(field.distance(), -30, 0, 0), 1e-9);
+        assertEquals(-0.5, Eval.at(field, 0, 0, 0), 1e-9);
+        assertEquals(-0.5, Eval.at(field, 6, 0, 0), 1e-9);
+        assertEquals(-0.5, Eval.at(field, -30, 0, 0), 1e-9);
         // Midway between the copy at 3 and the one at 6: 1.5 to either centre, less the radius.
-        assertEquals(1.0, Eval.at(field.distance(), 4.5, 0, 0), 1e-9);
+        assertEquals(1.0, Eval.at(field, 4.5, 0, 0), 1e-9);
     }
 
     @Test
@@ -93,10 +93,10 @@ class DomainTest {
         Field field = SurfaceCompiler.compile(Surface.Repeat.alongX(
                 Surface.Repeat.Axis.count(3.0, 2), new Surface.Sphere(0, 0, 0, 0.5)));
 
-        assertEquals(-0.5, Eval.at(field.distance(), 0, 0, 0), 1e-9);
-        assertEquals(-0.5, Eval.at(field.distance(), 3, 0, 0), 1e-9);
-        assertEquals(2.5, Eval.at(field.distance(), 6, 0, 0), 1e-9, "there is no third copy");
-        assertEquals(2.5, Eval.at(field.distance(), -3, 0, 0), 1e-9, "and none in the other direction");
+        assertEquals(-0.5, Eval.at(field, 0, 0, 0), 1e-9);
+        assertEquals(-0.5, Eval.at(field, 3, 0, 0), 1e-9);
+        assertEquals(2.5, Eval.at(field, 6, 0, 0), 1e-9, "there is no third copy");
+        assertEquals(2.5, Eval.at(field, -3, 0, 0), 1e-9, "and none in the other direction");
     }
 
     @Test
@@ -112,10 +112,10 @@ class DomainTest {
         Field one = SurfaceCompiler.compile(child);
 
         for (double x = -5; x <= 5; x += 0.037) {
-            double got = Eval.at(field.distance(), x, 0.21, -0.13);
+            double got = Eval.at(field, x, 0.21, -0.13);
             double best = Double.POSITIVE_INFINITY;
             for (int k = -6; k <= 6; k++) {
-                best = Math.min(best, Eval.at(one.distance(), x - k * period, 0.21, -0.13));
+                best = Math.min(best, Eval.at(one, x - k * period, 0.21, -0.13));
             }
             assertTrue(got <= best + EPS,
                     "overestimated at x=" + x + ": " + got + " > " + best);
@@ -131,10 +131,10 @@ class DomainTest {
                 new Surface.PolarRepeat(4, new Surface.Sphere(0, 0, 2, 0.5)));
 
         assertEquals(Field.EXACT, field.lipschitz());
-        assertEquals(-0.5, Eval.at(field.distance(), 0, 0, 2), 1e-6);
-        assertEquals(-0.5, Eval.at(field.distance(), 2, 0, 0), 1e-6);
-        assertEquals(-0.5, Eval.at(field.distance(), 0, 0, -2), 1e-6);
-        assertEquals(-0.5, Eval.at(field.distance(), -2, 0, 0), 1e-6);
+        assertEquals(-0.5, Eval.at(field, 0, 0, 2), 1e-6);
+        assertEquals(-0.5, Eval.at(field, 2, 0, 0), 1e-6);
+        assertEquals(-0.5, Eval.at(field, 0, 0, -2), 1e-6);
+        assertEquals(-0.5, Eval.at(field, -2, 0, 0), 1e-6);
     }
 
     @Test
@@ -150,11 +150,11 @@ class DomainTest {
             double r = 2.0;
             double x = r * Math.sin(angle);
             double z = r * Math.cos(angle);
-            double got = Eval.at(field.distance(), x, 0.3, z);
+            double got = Eval.at(field, x, 0.3, z);
             double best = Double.POSITIVE_INFINITY;
             for (int k = -count; k <= count; k++) {
                 double t = k * sector;
-                best = Math.min(best, Eval.at(one.distance(),
+                best = Math.min(best, Eval.at(one,
                         Math.cos(t) * x - Math.sin(t) * z, 0.3, Math.sin(t) * x + Math.cos(t) * z));
             }
             assertTrue(got <= best + 1e-6, "overestimated at angle=" + angle + ": " + got + " > " + best);
@@ -206,8 +206,8 @@ class DomainTest {
         Field twisted = SurfaceCompiler.compile(new Surface.Twist(0, 5, box));
         Field plain = SurfaceCompiler.compile(box);
         for (double[] p : samples()) {
-            assertEquals(Eval.at(plain.distance(), p[0], p[1], p[2]),
-                    Eval.at(twisted.distance(), p[0], p[1], p[2]), 1e-9);
+            assertEquals(Eval.at(plain, p[0], p[1], p[2]),
+                    Eval.at(twisted, p[0], p[1], p[2]), 1e-9);
         }
     }
 
@@ -247,7 +247,7 @@ class DomainTest {
                     if (Math.hypot(x, radiusInXZ ? z : y) > extent) {
                         continue;
                     }
-                    double[] g = Eval.numericGradient(field.distance(), x, y, z, h);
+                    double[] g = Eval.numericGradient(field.at(dev.vexelray.ir.Ir.POINT), x, y, z, h);
                     double len = Math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
                     assertTrue(len <= 1.0 + 1e-3,
                             "gradient of length " + len + " at (" + x + ", " + y + ", " + z + ")");

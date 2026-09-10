@@ -66,7 +66,7 @@ class BoundsTest {
                     continue;
                 }
                 outside++;
-                double d = Eval.at(field.distance(), p[0], p[1], p[2]);
+                double d = Eval.at(field, p[0], p[1], p[2]);
                 assertTrue(d > 0,
                         surface.getClass().getSimpleName() + ": (" + p[0] + ", " + p[1] + ", " + p[2]
                                 + ") is outside the box but reads " + d + " — the box is too small, which is"
@@ -103,7 +103,7 @@ class BoundsTest {
         for (double t = 0; t < 0.6; t += 0.05) {
             double x = 0;
             double y = 1.0 + t;
-            if (Eval.at(field.distance(), x, y, 0) <= 0) {
+            if (Eval.at(field, x, y, 0) <= 0) {
                 assertTrue(b.contains(x, y, 0), "material at (0, " + y + ") is outside the box");
             }
         }
