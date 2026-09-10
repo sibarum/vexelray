@@ -26,13 +26,15 @@ vexelray                 parent (pom)
 ├─ vexelray-ir           terse vocabulary for authoring core IR by hand — depends on vastir alone
 │    dev.vexelray.ir        Ir: constants, vectors, arithmetic, core's type discipline (broadcast, typed zero)
 ├─ vexelray-core         binding-agnostic engine vocabulary — no SupirVast, no Vulkan
-│    dev.vexelray.runtime   VexelEngine + RuntimeManager (owns instance/device/swapchain, frame loop)
-│    dev.vexelray.pipeline  build-your-own-pipeline API: Attachment, Pass (Raster/Raymarch/Compute/Post),
-│                           RenderPipeline + builder, FrameGraph (dependency ordering)
-│    dev.vexelray.resource  flexible buffer management: ResourceManager, GpuBuffer, BufferUsage, MemoryDomain
+│    dev.vexelray.runtime   EngineConfig: what is knowable before a device exists
+│    dev.vexelray.target    Target + AttachmentFormat + ImageHandle — what is rendered into, named without
+│                           naming Vulkan
 │    dev.vexelray.lighting  pluggable lighting models that participate in shader composition
-├─ vexelray-engine-api   THE public API: the pipeline-building DSL (Target + RenderPipeline) and the
-│    dev.vexelray.engine    RenderTechnique SPI + TechniqueContext/FrameContext. Core + JDK only.
+├─ vexelray-engine-api   THE public API: the pipeline-building DSL (Target + RenderPipeline), the
+│    dev.vexelray.engine    RenderTechnique SPI + TechniqueContext/FrameContext, and EngineEvents (the topics
+│                           the engine publishes on an Atchung! bus). Core + the bus + JDK.
+├─ vexelray-engine-vulkan-api  the Vulkan half of the SPI, so a technique compiles against a contract and not
+│    dev.vexelray.engine.vulkan  against a runtime: VulkanTechniqueContext (D18)
 ├─ vexelray-shader       runtime shader generation (the SupirVast seam) — depends on vexelray-core + SupirVast
 │    dev.vexelray.shader    ShaderComposer (engine concept -> core IR), ComposedShader (lowers via
 │                           CoreToSpirv to a SPIR-V byte[]), ShaderKey + ShaderCache, Shading/ShadingPoint
@@ -59,11 +61,15 @@ vexelray                 parent (pom)
 ├─ vexelray-vulkan       the Panama Vulkan runtime + resource implementation; hosts the OS-activated
 │                        selection profiles that pick the platform module
 │    dev.vexelray.vulkan.vk        VkLoader, VulkanInstance, VulkanDevice, Vk/Ffm binding helpers
-│    dev.vexelray.vulkan.present   VulkanSwapchain, SwapchainFramebuffers, VulkanRenderPass, GraphicsPipeline,
-│                           VertexBuffer, AtlasTexture, SampledImage, SampledColorTarget, OffscreenDraw,
-│                           WindowedPresenter
+│    dev.vexelray.vulkan.present   VulkanSwapchain, SwapchainFramebuffers, VulkanRenderPass, DepthAttachment,
+│                           GraphicsPipeline, DrawCommands, VertexBuffer, AtlasTexture, SampledImage,
+│                           SampledColorTarget, OffscreenDraw, WindowedPresenter
 │    dev.vexelray.vulkan.offscreen OffscreenRenderer + OffscreenReadback (headless render-to-image)
-├─ vexelray-demo         Fathom — the reference demo app (first-person SDF dungeon), -Pnative single binary
+├─ vexelray-engine       the Vulkan runtime behind VexelEngine: window, device, swapchain, shared render pass,
+│    dev.vexelray.engine.vulkan.runtime  depth, the frame loop, and the ordered list of RenderTechniques
+├─ vexelray-technique-canvas  the canvas technique: a Canvas batch recorded into a frame the runtime began
+├─ vexelray-demo         Fathom — the reference demo app (first-person SDF dungeon), -Pnative single binary;
+│                        HelloTechnique is the worked example a third party copies
 └─ vexelray-experimental research harness: build/run/compare shape-definition + rendering techniques
      dev.vexelray.experimental  ComparisonHarness, Raymarcher, Metrics, SurfaceGallery, noise/blended fields
 ```

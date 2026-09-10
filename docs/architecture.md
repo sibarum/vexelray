@@ -54,11 +54,12 @@ itself hurts (see principles).
 vexelray-ir            Terse vocabulary for authoring core IR by hand: constants, vectors, arithmetic, and
                        core's type discipline (broadcast, typed zero). Depends on vastir alone.
       ▲
-vexelray-core          Value vocabulary: Attachment, AttachmentFormat, Target, EngineConfig, Frame,
-                       ResourceManager (iface), GpuBuffer, LightingModel. No SupirVast, no Vulkan, no technique.
+vexelray-core          Value vocabulary: AttachmentFormat, Target, ImageHandle, EngineConfig, LightingModel.
+                       No SupirVast, no Vulkan, no technique.
       ▲
 vexelray-engine-api    THE public API: the pipeline-building DSL (RenderPipeline + builder), the
-                       RenderTechnique SPI, Technique/FrameContext, RuntimeManager/VexelEngine ifaces, FrameGraph.
+                       RenderTechnique SPI, Technique/FrameContext, the VexelEngine facade + EngineProvider
+                       service, and EngineEvents (the topics the engine publishes onto an Atchung! bus).
       ▲                         ▲
 vexelray-shader        vexelray-vulkan        Composition seam (SupirVast) · Vulkan+Panama substrate
   + Shading/ShaderCache          ▲              (bindings, instance/device/swapchain, buffers, pipeline wrappers)
@@ -72,12 +73,26 @@ vexelray-text          MSDF atlas model, glyph layout, the MSDF shader as core I
 vexelray-canvas        2D immediate-mode API: one fat-vertex batch for shapes, text and sampled images, and
       ▲                its uber-shader as core IR.  (on -text, so on -shader)
       └────────┬────────────────┘
-vexelray-engine        Runtime impl: implements RuntimeManager/VexelEngine, realises a pipeline, owns the frame
-                       loop + present targets (windowed swapchain / offscreen), drives techniques.
-      ▲
-vexelray-technique-sdf   First technique: SdfScene + SdfComposer today, RenderTechnique once the runtime lands.
-      ▲                                                              (later: -raster, -splat, …)
-vexelray-demo (Fathom)   Reference client app. Ships the -Pnative single-binary profile.
+vexelray-engine-vulkan-api   The Vulkan half of the SPI: VulkanTechniqueContext, the subtype a technique casts
+      ▲                      to when it must create GPU objects. Its own module so a technique compiles against
+      │                      a contract, never against the runtime below it (D18).
+      ├───────────────────────────────┐
+vexelray-engine        Runtime impl:  │  vexelray-technique-sdf    SdfScene + SdfComposer + SdfRaymarchTechnique
+                       implements     │  vexelray-technique-canvas CanvasTechnique
+                       VexelEngine,   │                            (later: -raster, -splat, …)
+                       realises a     │
+                       pipeline, owns │  A technique depends on -engine-api and -engine-vulkan-api. It does NOT
+                       window/device/ │  depend on -engine: the runtime depends on the contract, not the
+                       swapchain/pass/│  reverse, so a second Vulkan runtime serves the same techniques.
+                       depth + the    │
+                       frame loop,    │
+                       drives         │
+                       techniques,    │
+                       publishes      │
+                       EngineEvents.  │
+      ▲                               ▲
+vexelray-demo (Fathom)   Reference client app: Fathom, HelloTechnique (the worked example), HybridFrameSmoke.
+                         Ships the -Pnative single-binary profile.
 
 vexelray-os  (+ os-windows / os-linux / os-macos)   Direct-OS Panama layer: window + Vulkan surface.
 Tactroller (external, sibling repo)                 Input devices (pointer/keyboard). Same Panama +
@@ -118,16 +133,31 @@ bus, never to Tactroller.
 This does not breach "own the runtime; no third-party natives": Tactroller and Atchung *are* our runtime, factored
 into their own repos — not upstreams like LWJGL/GLFW. (Atchung is pure Java: no native code, no reflection.)
 
-**Substrate vs runtime.** `vexelray-vulkan` holds Vulkan *object wrappers* (device, swapchain, pipeline,
-buffers). `vexelray-engine` holds *orchestration* (frame loop, present targets, technique driving). Techniques
-target the Vulkan runtime directly — a backend abstraction is deferred (YAGNI until a second backend exists).
+**Substrate vs runtime.** `vexelray-vulkan` holds Vulkan *object wrappers* (device, swapchain, render pass,
+depth, pipeline, buffers, and `DrawCommands` — the resolved command handles anything recording into somebody
+else's command buffer needs). `vexelray-engine` holds *orchestration* (frame loop, present target, technique
+driving, event publication). Techniques target Vulkan directly — a backend abstraction is deferred (YAGNI until
+a second backend exists) — but they target the Vulkan *contract*, not this runtime.
 
-**Current vs target.** The topology above is the target the refactor moves toward, and it is half arrived.
-`vexelray-engine-api` exists and carries the SPI plus the pipeline DSL; `vexelray-technique-sdf` exists as a
-module; `-text` and `-canvas` landed beside `-surface`. What is *not* there is `vexelray-engine` — there is no
-runtime behind the front door — so today the runtime is still low-level and `Fathom` hand-wires it, as do the
-demos under `vexelray-vulkan`. Read the front door as designed and validated rather than as load-bearing until
-that module exists. §6 has the current state.
+**The engine is a publisher.** Given an `Atchung` bus, `VexelEngine.run(pipeline, bus, onFrame)` publishes
+`RUN_STARTED`, `FRAME_STARTED`, `RESIZED`, `TECHNIQUE_REALIZED`, `TECHNIQUE_CLOSED`, `DEVICE_LOST` and
+`RUN_ENDED` — onto the same bus Tactroller's input already reaches, so input and rendering meet in one place
+with one delivery model and one thing to bridge across a process boundary. `FrameCallback` remains for the
+application's own tick; it is one callback with one caller and was never the shape a script could attach to.
+Everything is published from the render thread, so an inline subscriber's cost is frame time (D17).
+
+**Threading.** `VexelEngine.run` defines the render thread: it creates the window on the caller's thread, pumps
+that window's events there, and calls every technique's `realize`/`record`/`close` — and the frame callback —
+from it. Nothing in the engine starts a thread. `RenderTechnique`'s javadoc states the contract in full; the
+one rule that is not simply "single-threaded" is that a frame can arrive from *inside* the platform's event
+pump during a modal move or resize, so a technique must not block in `record`.
+
+**Current vs target.** The topology above has arrived. `vexelray-engine` owns instance, device, surface,
+swapchain, render pass, depth and the frame loop, and drives an ordered list it knows only as
+`RenderTechnique`; a marched SDF scene and a 2D canvas share one render pass and one command buffer
+(`HybridFrameTest`); Fathom composes a pipeline instead of building a runtime. What is still open is listed in
+[`TODO.md`](../TODO.md) — chiefly `gl_FragDepth` from the march (so composition can interleave per pixel rather
+than only order), frames-in-flight > 1, and `Target.Kind.OFFSCREEN`. §6 has the current state.
 
 ---
 
@@ -139,18 +169,22 @@ A client writes two things: **how techniques compose** (the pipeline) and **what
 ```java
 // Compose the pipeline — the public authoring API.
 RenderPipeline pipeline = RenderPipeline.builder()
-    .target(Target.windowed()
+    .target(Target.windowed("Fathom", 800, 600)
         .color(AttachmentFormat.SWAPCHAIN)
         .depth(AttachmentFormat.DEPTH32F))     // depth is always present, so composition is never a retrofit
     .technique(new SdfRaymarchTechnique(scene))
-    // .technique(new SpriteTechnique(...))     // add techniques to composite a hybrid, sharing that depth
+    // .technique(new CanvasTechnique(...))     // add techniques to composite a hybrid, sharing that depth
     .build();
 
-// Run it.
-try (VexelEngine engine = VexelEngine.create(EngineConfig.windowed("Fathom", 800, 600))) {
-    engine.run(pipeline, frame -> { /* input + CPU sim -> per-frame data (camera, time) */ });
+// Run it. EngineConfig is pre-device knowledge only; the target arrives with the pipeline.
+try (VexelEngine engine = VexelEngine.create(EngineConfig.of("Fathom"))) {
+    engine.run(pipeline, bus, frame -> { /* input + CPU sim -> per-frame data (camera, time) */ });
 }
 ```
+
+`VexelEngine.create` resolves an `EngineProvider` through `ServiceLoader`, so nothing in the public API names
+the Vulkan runtime — not even to construct it. The `bus` argument is optional (there is a two-argument
+overload); with one, the engine publishes `EngineEvents`.
 
 Two public layers, cleanly separated:
 
@@ -168,15 +202,16 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 
 | Capability | Today | Target |
 |---|---|---|
-| Runtime ownership | instance/device/swapchain/present, frame loop (1 frame in flight) | RuntimeManager/VexelEngine facade; frames-in-flight; resize-robust |
-| Present targets | windowed swapchain + headless offscreen→PNG | both behind one `Target`; screenshot/record built in |
-| Render techniques | SDF raymarch (path, not yet modular) | SDF, polygon raster, Gaussian splats — as modules, composable |
-| Composition / hybrid | single technique per pass; a pass's output **sampled into another** — `SampledColorTarget` → `Canvas.image` (a marched region inside a 2D frame) | N techniques sharing one colour+**depth** target (cross-occlusion) |
-| Shaders | runtime SDF composed as `core` IR → SPIR-V | full technique-authored shaders; a reusable SDF-scene layer |
+| Runtime ownership | `VexelEngine` facade behind a `ServiceLoader` provider; owns window/instance/device/surface/swapchain/render pass/depth and the frame loop; 1 frame in flight; resize rebuilds the swapchain without re-realising a technique | frames-in-flight > 1 (per-frame command buffers, sync and depth image) |
+| Present targets | windowed swapchain. `Target.Kind.OFFSCREEN` is authorable and throws; headless readback exists only as the single-pipeline `OffscreenRenderer`/`OffscreenDraw` | both behind one `Target`, so engine-level tests run and count pixels without a window; screenshot/record built in |
+| Render techniques | SDF raymarch and 2D canvas as modules; `FathomTechnique` and `HelloTechnique` authored *outside* the engine's modules | polygon raster, Gaussian splats — same SPI, no core change |
+| Composition / hybrid | N techniques sharing one colour+depth target, one render pass, one command buffer, in declared order (`HybridFrameTest`). **Ordering only** — both current techniques declare `Depth.NONE` and say why | per-pixel interleaving: the march writes `gl_FragDepth` from its hit distance, so a marched surface and a mesh cross-occlude |
+| Technique authoring | `DrawCommands` for the Panama boilerplate; the runtime sets viewport and scissor before recording; `HelloTechnique` is the worked example in main source | a pooled allocator on `TechniqueContext` when one exists |
+| Shaders | runtime SDF composed as `core` IR → SPIR-V, type-checked by `CoreCheck` before the driver sees it | `CoreCheck` covering `MathCall`; the operand-type check pushed upstream into SupirVast |
 | Render == sim | SDF evaluated CPU + GPU from one IR; sphere-trace collision | physics/queries against the render field; GPU/CPU placement |
-| Resources | ad hoc per class | `ResourceManager` impl; pooled/suballocated memory |
+| Resources | each class owns its own allocation; `TechniqueContext` deliberately hands out no allocator, and the unimplemented `ResourceManager` interface has been deleted rather than left as a guess | a pooled/suballocated allocator, added to the context on the day there is one to return |
 | Lighting | inline in the SDF shader | pluggable `LightingModel`s folded into composition |
-| Input / events | Tactroller snapshot → `tactroller-atchung` bridge → Atchung bus; Fathom subscribes (edges as `Topic<InputEvent>`, pointer as `State<PointerState>`) | same fabric; add GUI/recorder/network consumers with no core change |
+| Input / events | Tactroller snapshot → `tactroller-atchung` bridge → Atchung bus; **and the engine publishes onto the same bus** (`EngineEvents`: run, frame, resize, technique lifecycle, device lost) | GUI/recorder/network consumers with no core change; selected topics bridged over `atchung-elektroq` |
 | Platform | Windows (Panama); Linux/macOS skeletons | all three; per-OS reachability metadata |
 | Packaging | JVM run + `-Pnative` profile wired | verified single native binary, driver-only |
 
@@ -200,9 +235,27 @@ measured at five seconds of pipeline build on the frame loop — `ConeField`, th
 from a storage buffer, so one pipeline serves every scene. All of it is
 [`docs/surface-compiler.md`](surface-compiler.md) §3.1–§3.4.
 
-The **next architectural move** is still the technique refactor in §3–4, now half-landed.
-`vexelray-engine-api` is stood up (the SPI plus the pipeline DSL) and the SDF path is wrapped as
-`vexelray-technique-sdf`. What remains is the part that changes how anything *runs*: a real runtime in
-`vexelray-engine`, which does not exist as a module yet, and moving `Fathom` onto the front-door API. Until
-then the working demos drive `vexelray-vulkan` directly — the front door is expressible and validated
-(`HybridPipelineTest`) rather than load-bearing, and it is worth being plain about which of those it is.
+**The technique refactor of §3–4 has landed.** `vexelray-engine` is a real runtime behind the front door: it
+owns the window, instance, device, surface, swapchain, shared render pass, depth attachment and frame loop, and
+drives an ordered list whose members it knows only as `RenderTechnique`. `HybridFrameTest` puts a marched SDF
+scene and a canvas batch in one render pass and one command buffer — two independently-authored pipelines with
+different vertex inputs, different descriptor set layouts and different push-constant layouts, compositing in
+declared order. `Fathom` no longer builds a runtime; it composes a pipeline and writes a technique, and
+`HelloTechnique` is the smallest complete one, in main source, for a third party to copy.
+
+`vexelray-engine-vulkan-api` was split out so a technique compiles against `VulkanTechniqueContext` rather than
+against the engine that supplies it; `DrawCommands` retired the forty lines of Panama boilerplate each of the
+four techniques had reinvented, along with the four private copies of a downcall helper that had been public
+all along. The engine publishes `EngineEvents` onto the same Atchung! bus input already reaches.
+
+**What is genuinely not done**, in leverage order, is in [`TODO.md`](../TODO.md):
+
+- **`gl_FragDepth` from the march.** Depth is plumbed end to end and nothing writes a meaningful value, so
+  per-pixel interleaving — the entire argument for N techniques in one pass over rendering to textures and
+  compositing — is still unproven. It needs `Builtin.FRAG_DEPTH` in SupirVast `core` (only `POSITION` and
+  `VERTEX_INDEX` exist), because the march is authored as IR and must stay that way.
+- **Frames in flight > 1.** `EngineConfig` accepts 1–3 and the runtime honours exactly 1. Needs per-frame
+  command buffers, sync and a depth image per frame; `DepthAttachment` is one image shared by every swapchain
+  image, which is safe only at one frame in flight.
+- **`Target.Kind.OFFSCREEN`.** Until it exists every engine-level test needs a window, so in a headless
+  environment they can only skip rather than run — and none of them can count pixels.

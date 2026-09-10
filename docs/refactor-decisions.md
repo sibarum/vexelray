@@ -368,11 +368,205 @@ moves when a second consumer appears, not before.
 Those are local to substantial classes and folding them in is a separate sweep; `vexelray-canvas` and
 `vexelray-text` would each gain a dependency for a handful of call sites.
 
+## 13. The engine is a publisher, and Atchung! is the bus (D17)
+
+**DECISION (D17, DONE).** `VexelEngine.run(pipeline, bus, onFrame)` publishes `EngineEvents` — `RUN_STARTED`,
+`FRAME_STARTED`, `RESIZED`, `TECHNIQUE_REALIZED`, `TECHNIQUE_CLOSED`, `DEVICE_LOST`, `RUN_ENDED` — onto an
+`Atchung` bus. `vexelray-engine-api` gains a dependency on `atchung-core`. The two-argument overload publishes
+nothing and is unchanged for every existing caller.
+
+**Why the engine publishes at all.** Atchung was Fathom's input plumbing and nothing else. The engine published
+no frame, resize, device-lost or technique-lifecycle event, so **event-based scripting had no surface to attach
+to**: a script attaches to a *running* engine it did not construct, and `FrameCallback` is one callback held by
+whoever called `run`. Chaining a second interested party onto it means the code that owns the callback has to
+know that party exists, and ordering between them is whatever the chaining code happened to do. It had exactly
+one user, which is the cheapest moment to change the shape of a front door.
+
+**Why the bus rather than an `EngineListener` in `engine-api`.** A listener interface would have kept
+`engine-api` dependency-free, and that was the alternative considered. It loses on the thing that matters: the
+input fabric is *already* an Atchung bus on the other side of the same application, so a listener would be a
+second observer mechanism to learn, a second delivery model to reason about, and a second thing to bridge when
+a replay or a remote viewer wants both halves of a run. One bus means one `Backpressure` policy, one set of
+delivery modes (inline / async / pumped), and `atchung-elektroq` carrying selected topics over the wire with no
+change here. Fathom now passes the same bus its input already reaches.
+
+**The cost, stated.** `vexelray-engine-api` — the module whose whole claim is that it names no runtime — now
+names a bus. That is a real coupling, chosen deliberately: a bus is not a backend, Atchung is pure Java with no
+natives and no reflection, and it is first-party. The bus is optional at the call site.
+
+**Delivery is the render thread.** Every event is published from it, so an inline subscriber's cost is frame
+time; anything doing real work subscribes async or pumped. Events are published even with nothing subscribed —
+a publish to an empty topic is a map lookup, and the bus counts it, which is the diagnostic for "the event
+never arrived". Gating on `subscriberCount` would save one small record per frame and delete that signal. A run
+with no bus builds no event objects at all.
+
+**Topic names are a wire format** the moment an `ElektroBridge` carries one, so they are spelled out as
+constants rather than derived from class names, and a test asserts they are distinct and namespaced.
+
+**Device loss became a type to make one of these events truthful.** `Ffm.check` now raises
+`DeviceLostException` (a `NativeException` subclass — that class stopped being `final` for this) for
+`VK_ERROR_DEVICE_LOST`, rather than one more failed call with a number in its message. An event that could only
+be raised by string-matching an exception message is an event nobody could trust.
+
+## 14. A technique compiles against a contract, not against a runtime (D18)
+
+**DECISION (D18, DONE).** `VulkanTechniqueContext` is an **interface** in its own module,
+`vexelray-engine-vulkan-api`. The engine's implementation is a record, `SharedTargetContext`, in
+`dev.vexelray.engine.vulkan.runtime` alongside `VulkanEngine` and `VulkanEngineProvider`.
+
+It had been a record in `vexelray-engine`, so `vexelray-technique-sdf` and `vexelray-technique-canvas` both
+compile-depended on the concrete runtime — its window, its swapchain, its frame loop — to reach one accessor.
+That pointed the dependency arrow the wrong way: a runtime should depend on what techniques are written
+against, not the reverse. It also meant a second Vulkan runtime — an offscreen one for tests, or one embedding
+into somebody else's swapchain — could not serve the techniques that already exist.
+
+An interface rather than a record for the same reason: what a technique needs is the device, not one runtime's
+particular way of carrying it alongside four other fields.
+
+**The runtime moved packages rather than the contract taking a new name.** `dev.vexelray.engine.vulkan` now
+belongs solely to the API module, so no technique's import changed and there is no split package across two
+jars — which works on the classpath today and would block JPMS or `jlink` later. The implementation is the
+thing that should be hidden, so the implementation is the thing that moved. Techniques keep `vexelray-engine`
+only in **test** scope, where a `ServiceLoader` lookup needs a runtime present.
+
+## 15. Generation one deleted, and a runtime built where it stood (D19)
+
+**DECISION (D19, DONE).** The inert public layer §0 describes is gone and `vexelray-engine` stands in its
+place. Six decisions arrived together, and they only make sense together.
+
+**Deleted, not migrated.** The sealed `Pass` enumeration (the closed set of render modes architecture.md §2
+names as a smell), `FrameGraph`, `RuntimeManager` (written against LWJGL) and `SurfaceTarget` (GLFW) — 16
+files, unreferenced outside `vexelray-core`. Migrating a design nothing had ever implemented would have carried
+its assumptions into the thing that replaced it.
+
+**`EngineConfig` split at the device boundary.** The config carries only what is knowable *before a device
+exists*; the surface, extent and title belong to `Target`, which arrives with a pipeline at `run`. The engine
+therefore survives to run a second pipeline, which is precisely why the surface could not stay on the config.
+
+**`VexelEngine.create` resolves an `EngineProvider` through `ServiceLoader`.** Nothing in the public API names
+the Vulkan runtime — not even to construct it. The alternative, a static factory in `engine-api` constructing a
+class from the module above it, is either a compile-time cycle or a string handed to reflection, and reflection
+is what a native-image build cannot see through. A service is declared in `module-info` (or
+`META-INF/services`), which the native-image agent reads. Same convention `vexelray-os` and Tactroller use.
+
+**Depth in the substrate, not bolted on.** `DepthAttachment` (D32_SFLOAT), a second attachment slot in
+`VulkanRenderPass` that lowers to the byte-identical colour-only pass when `NO_DEPTH` is passed, and
+`GraphicsPipeline.Config.Depth` as three named states, presenter-owned and rebuilt on resize. "Depth is always
+present, so composition is never a retrofit" is only true if the substrate can express it.
+
+**The `Recorder` seam.** The eight commands between `vkCmdBeginRenderPass` and `vkCmdEndRenderPass` moved out
+of `WindowedPresenter`; fence, acquire, semaphores, submit, present and rebuild stayed. That line is not
+tidiness — it is exactly the boundary between what every renderer needs identically and what each needs
+differently, and until it existed a frame could hold exactly one pipeline, so no two features in this
+repository could appear in the same window.
+
+**Techniques as modules,** `vexelray-technique-sdf` and `vexelray-technique-canvas`, with `vexelray-vulkan`'s
+test scope down to `vexelray-shader` — so the substrate knows about no feature at all. And **`CoreCheck` before
+the driver sees the SPIR-V**, after `Ir.mul(vec2, float)` composed fine, lowered fine, and then faulted inside
+`nvgpucomp64.dll` and took the JVM with it. A type check at VexelRay's lowering seam is the last place that
+failure is a Java exception rather than a process death.
+
+## 16. `RenderTechnique` has a threading contract (D20)
+
+**DECISION (D20, DONE).** Render thread only, and the render thread is the thread that called
+`VexelEngine.run`. `realize`, `record`, `close` and the frame callback all run there, never concurrently and
+never nested. Fields on a technique are plain — no `volatile`, no lock, no atomic. A technique may publish a
+thread-safe content API of its own but must say so; unless it does, every method on it is render-thread-only.
+`close` never races a frame in flight: the runtime waits for the device to go idle first.
+
+There had been **nothing** — not a note, not an annotation, not a sentence. The failure mode of that is not
+"someone gets it wrong"; it is that every technique written from here assumes something slightly different, the
+assumptions disagree silently, and the first symptom is a corrupted push constant on somebody else's machine.
+Writing the answer down was cheap, and gets monotonically more expensive with every technique that ships —
+which is what put it in P0 rather than in polish.
+
+The one rule that is not simply "single-threaded": **a frame can arrive from inside the platform's event
+pump.** During a Win32 modal move or resize the host's loop is suspended inside the OS's own and the platform
+pulls frames instead. Same thread, but the application is otherwise not making progress — so a technique must
+not block in `record` waiting on work the host loop would have driven.
+
+**What would change it, and what would not.** Frames-in-flight > 1 does not: it duplicates per-frame GPU
+resources, not threads. Recording techniques in parallel into secondary command buffers would — and that is a
+different interface, opted into, rather than this one quietly acquiring a second caller.
+
+## 17. `DrawCommands`, the runtime's viewport, and a worked example (D21)
+
+**DECISION (D21, DONE).** The forty lines of Panama boilerplate every technique needs — five to seven
+`device.command(...)` lookups with their `FunctionDescriptor`s, a shared `Arena`, a `VkViewport` and a
+`VkRect2D` — are one class, `dev.vexelray.vulkan.present.DrawCommands`. Dynamic viewport and scissor are set by
+the runtime before the recorder runs, so no technique sets them at all.
+
+It had been written independently **four** times: `SdfRaymarchTechnique`, `CanvasTechnique`, `FathomTechnique`
+and the engine's own test technique. Each of the four also carried a private copy of
+`invoke(MethodHandle, Object...)` while `Ffm.invoke`/`Ffm.invokeVoid` had been public in `vexelray-vulkan.vk`
+the whole time. Four independent reinventions of an existing public helper is not four mistakes; it is one
+missing class, and one missing worked example.
+
+**Named `DrawCommands`, not `TechniqueCommands`, and it lives in `vexelray-vulkan`.** It names no technique and
+no feature, so the substrate keeps the property D19 gave it: a caller that is not a technique — an offscreen
+draw, a tool — uses it identically, and `vexelray-vulkan` stays testable without the engine's vocabulary.
+
+**Viewport and scissor are the runtime's job** because they are the one piece of state every recorder needs
+identically and derives from a number only the runtime knows before anyone draws. Forgetting them draws
+nothing; reading a stale extent draws the previous size. A recorder wanting a sub-rectangle still overrides
+them and puts them back.
+
+**A worked example in main source: `HelloTechnique`.** The only implementation of `RenderTechnique` outside a
+real feature lived in the engine's *test* scope, so a third party writing technique number one had nothing to
+read. It is deliberately the smallest thing that exercises every part of the contract, its javadoc is the
+tutorial, and `HelloTechniqueTest` runs it — a reference implementation nothing runs is documentation that rots
+silently, and the first person to follow it is the one who finds out.
+
+*Also fixed here:* `SdfRaymarchTechnique.record` no longer calls `SdfComposer.pushConstantBytes`, which rebuilt
+the scene's `ParamBlock` — a walk of the surface tree — and allocated a `float[]` and a `byte[]` every frame, a
+few lines from a comment about how carefully the arena is reused. `SdfComposer.writePushConstants` and
+`ParamBlock.writeFloats` write into caller-owned storage. And `FrameContext.deltaSeconds` now carries the
+frame's actual delta; it had been hard-coded to zero since the context was introduced.
+
+## 18. One colour type per side of the compositing/shading line (D22)
+
+**DECISION (D22, DONE).** Two colour types, and the boundary is now stated in both javadocs.
+`dev.vexelray.canvas.Color` is `float` RGBA — a *compositing* colour: `float` because it is one of eight
+numbers in a vertex the GPU reads as `float`, with alpha because coverage is the whole business of a 2D batch.
+`Surface.Rgb` is `double` RGB — a *shading* colour: `double` because it is an operand in a compiler that
+carries every other number as `double` and rounds once at lowering, with no alpha because a signed-distance
+surface either is or is not at a point, and there is no expression in the field for half of one. Both are
+linear, so the difference is never colour space.
+
+`SdfScene.Rgb`, a third and byte-identical copy of `Surface.Rgb` in a module that already depended on
+`vexelray-surface`, is deleted; `SdfScene` uses `Surface.Rgb`.
+
+*Also in the same sweep:*
+
+- `Canvas.Run.image` and `Canvas.image(...)` take `dev.vexelray.target.ImageHandle` rather than `Object`. The
+  layering intent was always right — a canvas must not know what a texture is — but `Object` spends type safety
+  to say so and accepts a `String` just as happily as an image. The marker lives in `vexelray-core` so
+  `vexelray-canvas` and `vexelray-vulkan` can share it without either naming the other; `SampledImage` extends
+  it.
+- `GraphicsPipeline.VertexAttribute.floats(...)` replaced the `components -> VK_FORMAT_*` switch that had been
+  written four times, once in `CanvasTechnique` and once in each of three canvas demos.
+- `ResourceManager`, `GpuBuffer`, `BufferUsage` and `MemoryDomain` are deleted. Nothing implemented them, which
+  is why `TechniqueContext.resources()` had to be removed in D19 — the accessor could not have been honoured by
+  any runtime. An interface with no implementor is a guess; the day there is a pooled allocator, adding it back
+  is a one-line change to `TechniqueContext`.
+
 ## Open questions (to revisit as phases land)
 
-- **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers may need
-  per-frame-slot copies. Deferred until Phase 2 makes frames-in-flight real (today: 1 in flight).
-- **Depth buffer creation.** `GraphicsPipeline`/`OffscreenRenderer` are colour-only today; the shared depth
-  attachment (§4 "depth is always present") is new work in Phase 1/2.
+- **Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need
+  per-frame-slot copies — a technique's arena is one block written each frame, which is safe only because the
+  previous frame has been waited on. So does the depth image: `DepthAttachment` is one image shared by every
+  swapchain image. `EngineConfig.framesInFlight` accepts 1–3 and the runtime honours exactly 1, with
+  `EngineConfigTest` pinning the default to what the presenter actually does rather than to what the config
+  claims. Still open, and it now depends on D20's threading contract being the thing that does *not* change.
+- **Writing `gl_FragDepth` needs `core` to be able to say it.** `Builtin` has `POSITION` and `VERTEX_INDEX`;
+  there is no `FRAG_DEPTH`, and adding one means a SupirVast change (the enum, its type and direction, the
+  `BuiltIn` decoration in `CoreToSpirv`, and the `DepthReplacing` execution mode). Authoring the march as
+  hand-written GLSL to avoid that is not available — the render path is `core` IR by rule, because the CPU
+  lowers the identical function.
+- ~~**Depth buffer creation.** `GraphicsPipeline`/`OffscreenRenderer` are colour-only today; the shared depth
+  attachment (§4 "depth is always present") is new work in Phase 1/2.~~
+  **Closed by D19** — `DepthAttachment` (D32_SFLOAT), a second attachment slot in `VulkanRenderPass`, and
+  `GraphicsPipeline.Config.Depth` as three named states. The *plumbing* is done end to end; what nothing does
+  yet is write a meaningful depth value, which is the question above.
 - ~~**Shader cache.** `ShaderComposer.keyFor` exists but is unused; wiring the cache is Phase 3 polish.~~
   **Closed by D15** — `ShaderCache` in `vexelray-shader`, keyed on `ShaderKey`, in use by the SDF composer.
