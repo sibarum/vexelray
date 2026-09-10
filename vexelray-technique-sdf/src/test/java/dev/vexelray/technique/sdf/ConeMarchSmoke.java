@@ -57,9 +57,26 @@ public final class ConeMarchSmoke {
     private static final double PITCH = Math.toRadians(26);
 
     public static void main(String[] args) throws IOException {
+        if (!measure(args.length > 0 ? args[0] : "cone-march.png").verdict()) {
+            System.exit(1);
+        }
+    }
+
+    /**
+     * The measurement itself, separated from {@code main} so {@link ConeMarchTest} runs exactly this and not a
+     * second copy of it.
+     *
+     * <p>Worth stating why that separation matters here specifically. This smoke reported NOTHING DRAWN for two
+     * commits about a field that was fine, and it went unseen because a {@code main} is not run by surefire. A
+     * test that re-implemented the measurement would have re-implemented that blind spot; a test that calls this
+     * shares its fate, which is the point.
+     *
+     * @param out where to write the subject's render, for a human to look at afterwards
+     * @return the smoke, unjudged — the caller decides what a failed verdict means
+     */
+    static Smoke measure(String out) throws IOException {
         int width = 512;
         int height = 512;
-        String out = args.length > 0 ? args[0] : "cone-march.png";
 
         // Authored where the fixed camera already looks, deliberately: a buffer-driven field is not framed on
         // the way in — it sits wherever its own coordinates put it, which is the whole point of the lane and
@@ -113,9 +130,7 @@ public final class ConeMarchSmoke {
                         countNonSky(march(device, buffer, width, height, vertex, fragment, sky,
                                 camera(scene, YAW, YAW + Math.PI, aspect)), sky));
 
-                if (!smoke.verdict()) {
-                    System.exit(1);
-                }
+                return smoke;
             }
         }
     }

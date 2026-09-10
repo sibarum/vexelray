@@ -43,7 +43,20 @@ public final class HybridFrameSmoke {
     private static final int DEFAULT_FRAMES = 300;
 
     public static void main(String[] args) {
-        int frames = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_FRAMES;
+        long presented = measure(args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_FRAMES);
+
+        System.out.println("frames         " + presented);
+        System.out.println();
+        System.out.println(presented > 0
+                ? "PASS -- an SDF march and a canvas batch composited in one render pass, one command buffer"
+                : "FAIL -- no frame was presented");
+        if (presented == 0) {
+            System.exit(1);
+        }
+    }
+
+    /** Frames presented, separated from {@code main} so HybridFrameTest drives exactly this. */
+    public static long measure(int frames) {
 
         SdfRaymarchTechnique march = new SdfRaymarchTechnique(
                 SdfScene.of(Surface.union(
@@ -87,15 +100,7 @@ public final class HybridFrameSmoke {
             });
         }
 
-        System.out.println("frames         " + presented[0]);
-        boolean ok = presented[0] > 0;
-        System.out.println();
-        System.out.println(ok
-                ? "PASS -- an SDF march and a canvas batch composited in one render pass, one command buffer"
-                : "FAIL -- no frame was presented");
-        if (!ok) {
-            System.exit(1);
-        }
+        return presented[0];
     }
 
     private HybridFrameSmoke() {

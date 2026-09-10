@@ -44,9 +44,15 @@ public final class StrokeMarchSmoke {
     private static final double BOX_HALF_HEIGHT = 1.25;
 
     public static void main(String[] args) throws IOException {
+        if (!measure(args.length > 0 ? args[0] : "stroke-march.png").verdict()) {
+            System.exit(1);
+        }
+    }
+
+    /** The measurement, separated from {@code main} so {@link StrokeMarchTest} runs exactly this one. */
+    static Smoke measure(String out) throws IOException {
         int width = 512;
         int height = 512;
-        String out = args.length > 0 ? args[0] : "stroke-march.png";
 
         // Deliberately hostile placement: sixty units from the origin and a twentieth of a unit across. Marched
         // as authored this is a perfect picture of empty space — which is exactly what a host saw, and exactly
@@ -100,9 +106,7 @@ public final class StrokeMarchSmoke {
                 System.out.println();
                 System.out.println("if a host shows nothing and this passed, the difference is the host's"
                         + " camera, its mount state, or where the surface sits");
-                if (!smoke.verdict()) {
-                    System.exit(1);
-                }
+                return smoke;
             }
         }
     }

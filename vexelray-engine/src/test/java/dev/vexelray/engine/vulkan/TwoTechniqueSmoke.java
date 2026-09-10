@@ -43,8 +43,39 @@ final class TwoTechniqueSmoke {
     private static final int DEFAULT_FRAMES = 120;
 
     public static void main(String[] args) {
-        int frames = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_FRAMES;
+        Result result = measure(args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_FRAMES);
 
+        System.out.println("frames         " + result.presented());
+        report("background", result.background(), result.presented());
+        report("foreground", result.foreground(), result.presented());
+
+        boolean ok = result.passed();
+        System.out.println();
+        System.out.println(ok
+                ? "PASS -- two techniques realised once, recorded every frame, and released"
+                : "FAIL -- the lifecycle above is not what RenderTechnique promises");
+        if (!ok) {
+            System.exit(1);
+        }
+    }
+
+    /**
+     * What one run establishes: how many frames reached the screen, and what the SPI did to each technique.
+     *
+     * <p>Returned rather than judged inside {@code measure} so {@link TwoTechniqueTest} asserts on the numbers
+     * individually — a single boolean tells you something failed and not which promise was broken, and
+     * "realised twice" and "never recorded" are different bugs in different places.
+     */
+    record Result(long presented, TintTechnique background, TintTechnique foreground) {
+        boolean passed() {
+            // Qualified, because inside the record the bare name resolves to this method rather than the
+            // two-argument one outside it.
+            return TwoTechniqueSmoke.passed(background, presented)
+                    && TwoTechniqueSmoke.passed(foreground, presented);
+        }
+    }
+
+    static Result measure(int frames) {
         TintTechnique background = new TintTechnique(new float[]{0.10f, 0.12f, 0.16f}, 0.05f);
         TintTechnique foreground = new TintTechnique(new float[]{0.30f, 0.72f, 0.98f}, 0.55f);
 
@@ -69,18 +100,7 @@ final class TwoTechniqueSmoke {
             });
         }
 
-        System.out.println("frames         " + presented[0]);
-        report("background", background, presented[0]);
-        report("foreground", foreground, presented[0]);
-
-        boolean ok = passed(background, presented[0]) && passed(foreground, presented[0]);
-        System.out.println();
-        System.out.println(ok
-                ? "PASS -- two techniques realised once, recorded every frame, and released"
-                : "FAIL -- the lifecycle above is not what RenderTechnique promises");
-        if (!ok) {
-            System.exit(1);
-        }
+        return new Result(presented[0], background, foreground);
     }
 
     /**

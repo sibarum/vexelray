@@ -36,8 +36,20 @@ final class SdfEngineSmoke {
     private static final int DEFAULT_FRAMES = 240;
 
     public static void main(String[] args) {
-        int frames = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_FRAMES;
+        long presented = measure(args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_FRAMES);
 
+        System.out.println("frames         " + presented);
+        System.out.println();
+        System.out.println(presented > 0
+                ? "PASS -- an SDF scene marched through the engine, camera driven by the technique's own API"
+                : "FAIL -- no frame was presented");
+        if (presented == 0) {
+            System.exit(1);
+        }
+    }
+
+    /** Frames presented, separated from {@code main} so {@link SdfEngineTest} drives exactly this. */
+    static long measure(int frames) {
         // Curved, mostly-convex, no long flat parallels — the grain architecture.md §2 asks content to be cut
         // with, so the march is not being measured at its worst case while the runtime is what is under test.
         Surface scene = Surface.union(
@@ -70,17 +82,8 @@ final class SdfEngineSmoke {
             });
         }
 
-        System.out.println("frames         " + presented[0]);
         System.out.println("scene          " + SurfaceSize.describe(scene));
-
-        boolean ok = presented[0] > 0;
-        System.out.println();
-        System.out.println(ok
-                ? "PASS -- an SDF scene marched through the engine, camera driven by the technique's own API"
-                : "FAIL -- no frame was presented");
-        if (!ok) {
-            System.exit(1);
-        }
+        return presented[0];
     }
 
     /** How big the compiled shader is, reported because it is the number that decides pipeline build time. */
