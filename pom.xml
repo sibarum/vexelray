@@ -70,7 +70,7 @@
 
         <!-- SupirVast: shader IR, SPIR-V lowering, pipeline specs, Fullscreen primitive, model loaders.
              Installed to the local .m2 by `mvn install` in the sibling supirvast repo. -->
-        <supirvast.version>0.1.0-SNAPSHOT</supirvast.version>
+        <supirvast.version>0.2.0-SNAPSHOT</supirvast.version>
         <!-- Pure-Java vector/matrix math for camera/MVP transforms (no natives). -->
         <joml.version>1.10.7</joml.version>
         <junit.version>5.11.4</junit.version>

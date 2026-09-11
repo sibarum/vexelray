@@ -14,10 +14,13 @@ contract, the event surface, the authoring path — and so has every gap that wa
 however long it waited: headless rendering with pixel capture (D23), `gl_FragDepth` from the march so
 composition interleaves per pixel rather than only in order (D24), and frames in flight (D25).
 
-What is left below is consistency, polish and documentation. None of it changes what the engine can do; the
-one entry worth reading as more than tidying is the storage-buffer validation error in P2, which is a
-correctness bug that has been there all along and only became visible when something finally pointed the
-validation layer at a whole test run.
+What is left below is consistency, polish and documentation. None of it changes what the engine can do.
+
+**A full `mvn test` is clean under the Vulkan validation layer** — the only message it produces is the one
+`DebugMessengerTest` submits deliberately to prove the messenger works. That is a recent property and worth
+keeping: pointing the layer at a whole run for the first time found a leaked surface, a pipeline built
+without depth-stencil state, and a storage buffer the fragment stage was allowed to write. Run one with
+`VK_LAYER_PATH` pointed at an SDK's `Bin` and `-Dvexelray.vulkan.validation`.
 
 Longer-range capability research lives in [`docs/architecture.md`](docs/architecture.md),
 [`docs/vexel-world.md`](docs/vexel-world.md) and [`docs/surface-compiler.md`](docs/surface-compiler.md); this
@@ -179,20 +182,6 @@ file is about the engine and its API. Decisions are logged in
 ---
 
 ## P2 — Consistency and polish
-
-- [ ] **A fragment shader writes to a storage buffer it only reads.**
-      `VUID-RuntimeSpirv-NonWritable-06340`: the buffer-driven field's fragment stage declares its
-      `STORAGE_BUFFER` without `NonWritable`, so the driver must assume it may be written, which needs the
-      `fragmentStoresAndAtomics` device feature that nothing enables. Every driver here creates the pipeline
-      anyway, which is why it has never been noticed.
-
-      The right fix is the decoration, not the feature: the field genuinely only reads. That means a
-      read-only flag on SupirVast's `Buffer` lowering to `NonWritable`, which is a small upstream change and
-      the honest one — enabling `fragmentStoresAndAtomics` would buy the same silence by promising the
-      driver something the shader does not need.
-
-      It is the last validation error a full `mvn test` reports with the layer on. Run one with
-      `VK_LAYER_PATH` pointed at an SDK's `Bin` and `-Dvexelray.vulkan.validation`.
 
 - [ ] **The pipeline-state struct layouts are still declared twice.** `VkStructs` (D23) absorbed the layouts
       the four presenter/readback classes shared, but `OffscreenRenderer` still carries its own

@@ -251,9 +251,6 @@ all along. The engine publishes `EngineEvents` onto the same Atchung! bus input 
 
 **What is genuinely not done**, in leverage order, is in [`TODO.md`](../TODO.md):
 
-- **A fragment shader declares a storage buffer it only reads without `NonWritable`**, which is the last
-  validation error a full test run reports. It wants the decoration upstream in SupirVast rather than the
-  `fragmentStoresAndAtomics` device feature.
 - **A technique with real geometry.** Everything that occludes today is a fullscreen march, so the
   `ClipDepth` convention has one author and one consumer. It is written down as a shared value precisely so
   the second one — a rasteriser building its projection matrix from the same near and far — is a change to

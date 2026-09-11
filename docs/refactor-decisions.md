@@ -747,14 +747,51 @@ Pointed at a full run, the layer immediately found two pre-existing bugs, both i
   describes as supported. It is now always supplied, switched off for `NONE`; a pass without depth ignores
   it.
 
-One validation error remains in a full run, recorded in `TODO.md` P2: a fragment shader declares a storage
-buffer without `NonWritable`. It wants a decoration upstream in SupirVast rather than the
-`fragmentStoresAndAtomics` device feature, because the field genuinely only reads.
+One validation error remained in a full run after this — a fragment shader declaring a storage buffer
+without `NonWritable` — and **D26 closed it**, so a full `mvn test` under the layer now reports nothing
+except the message `DebugMessengerTest` submits on purpose.
 
 `FramesInFlightTest` covers one and three frames in flight through the engine; `PresenterResizeTest` covers
 the rebuild, where the per-image arrays change length and every semaphore in one of them is a new object.
 Both were verified by breaking the code they cover — the resize test produces five distinct VUID violations
 when the rebuild is removed.
+
+## 22. A read-only storage buffer says so, and SupirVast goes to 0.2.0 (D26)
+
+**DECISION (D26, DONE).** The last validation error a full run reported is gone, and the fix is upstream:
+SupirVast decorates a storage buffer `NonWritable` when the module contains no store to it. VexelRay's
+production code did not change at all — `ConeField` still declares `new Buffer("cones", BINDING, Ir.F32)` —
+which is the point.
+
+**What the error was.** Without the `fragmentStoresAndAtomics` device feature, every storage buffer a
+*fragment* stage declares must carry `NonWritable`, and a marched fragment reading its geometry out of a
+buffer is exactly that shape. Every driver here builds the pipeline anyway, so it had been wrong since the
+buffer-driven field landed and was reported by nothing until the layer was pointed at a whole run (D25).
+
+**Not the device feature.** Enabling `fragmentStoresAndAtomics` would buy the same silence by promising the
+implementation a write that never comes; on tiled hardware that promise costs real optimisation. The field
+genuinely only reads, so the honest fix is to say so.
+
+**Derived, not declared — and that is the decision.** A `readOnly` flag on SupirVast's `Buffer` was the
+obvious shape and is what this repository's own TODO asked for. It is worse, because the direction it gets
+wrong is the dangerous one: a buffer marked read-only and then written is a promise to the driver that
+**nothing in either toolchain catches**. `spirv-val` does not object, the kernel computes the right answer,
+and the fault waits for an implementation that acts on what it was told. `CoreToSpirv` now collects the
+bindings some `Statement.BufferStore` targets and decorates every other buffer, so the decoration and the
+code are the same fact and cannot disagree. The scan is exact rather than conservative — `BufferStore` names
+its `Buffer` by value, so there is no aliasing, and a store is always a statement, so it walks regions
+without descending into operands.
+
+**On the variable, not the block member**, which is worth recording because the obvious choice is the other
+one: glslang decorates the member for `readonly buffer`. In this lowering the block type is *shared by every
+buffer of a given element type*, so a member decoration could not differ between two of them and the type
+cache would have had to be keyed on read-onlyness. Variables are per buffer already. That was verified
+against the validation layer rather than reasoned about — the marched pipeline's error clears with the
+variable-level decoration and no cache change.
+
+**SupirVast 0.1.0-SNAPSHOT → 0.2.0-SNAPSHOT.** No source-level API moved, but every module that lowers a
+buffer-reading fragment now emits different SPIR-V, and a consumer should be able to tell which side of that
+it is on.
 
 ## Open questions (to revisit as phases land)
 
