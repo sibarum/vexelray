@@ -35,6 +35,10 @@ public final class VulkanInstance implements AutoCloseable {
     private static final int VK_MAX_PHYSICAL_DEVICE_NAME_SIZE = 256;
     private static final int VK_MAX_EXTENSION_NAME_SIZE = 256;
     private static final int VK_MAX_DESCRIPTION_SIZE = 256;
+    private static final int VK_UUID_SIZE = 16;
+
+    /** What every Vulkan device guarantees for {@code maxPushConstantsSize}; nothing may report less. */
+    public static final int MIN_MAX_PUSH_CONSTANTS_SIZE = 128;
 
     /**
      * The layer that turns a GPU-side lifetime mistake into a line on stderr. Off by default — it costs real
@@ -76,7 +80,17 @@ public final class VulkanInstance implements AutoCloseable {
             ADDRESS.withName("ppEnabledExtensionNames")
     ).withName("VkInstanceCreateInfo");
 
-    /** Leading fields of VkPhysicalDeviceProperties, padded past the full struct so Vulkan never writes OOB. */
+    /**
+     * Leading fields of VkPhysicalDeviceProperties, padded past the full struct so Vulkan never writes OOB.
+     *
+     * <p>Declared as far as {@code limits.maxPushConstantsSize} rather than stopping at the name, because
+     * that one number decides which road a scene's parameters take. Everything between is <b>named rather
+     * than skipped</b>, so the offset is derived by the layout instead of counted by hand: a miscount here
+     * does not crash, it reads a neighbouring field, and a neighbouring field is a plausible-looking number.
+     *
+     * <p>The four bytes of padding before the limits are not decoration. {@code VkPhysicalDeviceLimits}
+     * contains {@code VkDeviceSize} members, so it is eight-aligned, and the UUID leaves the cursor at 292.
+     */
     private static final GroupLayout PHYSICAL_DEVICE_PROPERTIES = MemoryLayout.structLayout(
             JAVA_INT.withName("apiVersion"),
             JAVA_INT.withName("driverVersion"),
@@ -84,7 +98,20 @@ public final class VulkanInstance implements AutoCloseable {
             JAVA_INT.withName("deviceID"),
             JAVA_INT.withName("deviceType"),
             MemoryLayout.sequenceLayout(VK_MAX_PHYSICAL_DEVICE_NAME_SIZE, JAVA_BYTE).withName("deviceName"),
-            MemoryLayout.paddingLayout(1024 - 20 - VK_MAX_PHYSICAL_DEVICE_NAME_SIZE)
+            MemoryLayout.sequenceLayout(VK_UUID_SIZE, JAVA_BYTE).withName("pipelineCacheUUID"),
+            MemoryLayout.paddingLayout(4),
+            // VkPhysicalDeviceLimits, as far as the one field read here.
+            JAVA_INT.withName("maxImageDimension1D"),
+            JAVA_INT.withName("maxImageDimension2D"),
+            JAVA_INT.withName("maxImageDimension3D"),
+            JAVA_INT.withName("maxImageDimensionCube"),
+            JAVA_INT.withName("maxImageArrayLayers"),
+            JAVA_INT.withName("maxTexelBufferElements"),
+            JAVA_INT.withName("maxUniformBufferRange"),
+            JAVA_INT.withName("maxStorageBufferRange"),
+            JAVA_INT.withName("maxPushConstantsSize"),
+            MemoryLayout.paddingLayout(
+                    1024 - 20 - VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - VK_UUID_SIZE - 4 - 36)
     ).withName("VkPhysicalDeviceProperties");
 
     /** VkQueueFamilyProperties — 24 bytes; only queueFlags is read here. */
@@ -126,10 +153,23 @@ public final class VulkanInstance implements AutoCloseable {
     private static final VarHandle CI_ppEnabledLayerNames = Ffi.field(INSTANCE_CREATE_INFO, "ppEnabledLayerNames");
 
     private static final VarHandle PDP_deviceType = Ffi.field(PHYSICAL_DEVICE_PROPERTIES, "deviceType");
+    private static final VarHandle PDP_maxPushConstantsSize =
+            Ffi.field(PHYSICAL_DEVICE_PROPERTIES, "maxPushConstantsSize");
     private static final VarHandle QFP_queueFlags = Ffi.field(QUEUE_FAMILY_PROPERTIES, "queueFlags");
 
-    /** A chosen physical device plus a queue family that supports both graphics and presentation to a surface. */
-    public record DeviceSelection(MemorySegment physicalDevice, int queueFamilyIndex, String deviceName) {
+    /**
+     * A chosen physical device plus a queue family that supports both graphics and presentation to a surface.
+     *
+     * @param maxPushConstantBytes what this device reports for {@code maxPushConstantsSize}. Carried because
+     *                             one decision downstream turns on it — whether a scene's parameters ride
+     *                             push constants or a storage buffer — and because a host that can see it can
+     *                             report headroom instead of discovering the ceiling by hitting it. It is a
+     *                             fact about the machine: nothing that decides what a <em>design</em> may
+     *                             contain is allowed to read it, or a design would stop opening on a smaller
+     *                             device than it was drawn on
+     */
+    public record DeviceSelection(MemorySegment physicalDevice, int queueFamilyIndex, String deviceName,
+                                  int maxPushConstantBytes) {
     }
 
     private final MemorySegment handle;
@@ -381,7 +421,8 @@ public final class VulkanInstance implements AutoCloseable {
             if (family < 0) {
                 continue;
             }
-            DeviceSelection selection = new DeviceSelection(device, family, deviceName(device));
+            DeviceSelection selection = new DeviceSelection(device, family, deviceName(device),
+                    maxPushConstantBytes(device));
             if (deviceType(device) == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
                 return Optional.of(selection);
             }
@@ -403,7 +444,8 @@ public final class VulkanInstance implements AutoCloseable {
             if (family < 0) {
                 continue;
             }
-            DeviceSelection selection = new DeviceSelection(device, family, deviceName(device));
+            DeviceSelection selection = new DeviceSelection(device, family, deviceName(device),
+                    maxPushConstantBytes(device));
             if (deviceType(device) == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
                 return Optional.of(selection);
             }
@@ -498,6 +540,30 @@ public final class VulkanInstance implements AutoCloseable {
             MemorySegment props = temp.allocate(PHYSICAL_DEVICE_PROPERTIES);
             properties(device, props);
             return (int) PDP_deviceType.get(props);
+        }
+    }
+
+    /**
+     * What {@code device} reports for {@code maxPushConstantsSize}, in bytes.
+     *
+     * <p>Refuses to believe anything below the floor every Vulkan device guarantees. That check is not
+     * defensive about drivers — it is defensive about <em>this file</em>: the only plausible way to read a
+     * number under 128 here is that the struct offset is wrong and a neighbouring field is being read, and a
+     * wrong offset otherwise produces a number that looks fine and is not. Falling back to the floor is
+     * always safe, because every device has at least that much.
+     */
+    private int maxPushConstantBytes(MemorySegment device) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment props = temp.allocate(PHYSICAL_DEVICE_PROPERTIES);
+            properties(device, props);
+            int reported = (int) PDP_maxPushConstantsSize.get(props);
+            if (reported < MIN_MAX_PUSH_CONSTANTS_SIZE) {
+                System.err.println("[vexelray] maxPushConstantsSize read as " + reported + ", below the "
+                        + MIN_MAX_PUSH_CONSTANTS_SIZE + " every Vulkan device guarantees; using the floor. "
+                        + "Suspect this file's VkPhysicalDeviceProperties layout rather than the driver.");
+                return MIN_MAX_PUSH_CONSTANTS_SIZE;
+            }
+            return reported;
         }
     }
 

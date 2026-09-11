@@ -75,10 +75,40 @@ final class Eval {
      * colour means running its declarations first and then reading them by name — which is what a shader does
      * too. Without this the interpreter meets a {@code Read} of a local and has nothing to look it up in.
      */
-    record Env(double[] point, java.util.Map<dev.supirvast.vastir.core.LocalVar, double[]> locals) {
+    record Env(double[] point, java.util.Map<dev.supirvast.vastir.core.LocalVar, double[]> locals,
+               double[] pushConstants, double[] buffer) {
         static Env at(double x, double y, double z) {
-            return new Env(new double[]{x, y, z}, java.util.Map.of());
+            return new Env(new double[]{x, y, z}, java.util.Map.of(), NO_VALUES, NO_VALUES);
         }
+
+        Env(double[] point, java.util.Map<dev.supirvast.vastir.core.LocalVar, double[]> locals) {
+            this(point, locals, NO_VALUES, NO_VALUES);
+        }
+    }
+
+    /** What a field reads when nobody supplied values — reading one is the mistake, not the absence. */
+    private static final double[] NO_VALUES = new double[0];
+
+    /**
+     * Evaluate a parametric field on the CPU, given what the host would have put in each place.
+     *
+     * <p>The two roads P0b chose between: {@code pushConstants} is the block, in member order, so a parameter
+     * at slot <i>k</i> sits at {@code FIRST_PARAM_MEMBER + k}; {@code buffer} is the storage buffer, in slot
+     * order. A field lowered for one reads only that one, which is what makes comparing the two a real
+     * differential rather than two evaluations of the same expression.
+     */
+    static double at(Field field, double[] pushConstants, double[] buffer, double x, double y, double z) {
+        java.util.Map<dev.supirvast.vastir.core.LocalVar, double[]> locals = new java.util.LinkedHashMap<>();
+        Env env = new Env(new double[]{x, y, z}, locals, pushConstants, buffer);
+        for (dev.supirvast.vastir.core.Statement s : field.lets()) {
+            var d = (dev.supirvast.vastir.core.Statement.DeclareVar) s;
+            locals.put(d.variable(), eval(d.initializer(), env));
+        }
+        double[] v = eval(field.distance(), env);
+        if (v.length != 1) {
+            throw new IllegalArgumentException("expected a scalar, got " + v.length + " components");
+        }
+        return v[0];
     }
 
     /** Evaluate a colour: its declarations in order, then the expression that reads them. */
@@ -116,6 +146,11 @@ final class Eval {
                         body.subList(0, body.size() - 1),
                         argument[0], argument[1], argument[2]);
             }
+            // The two roads a driven value arrives by. Both are "the k-th float of something the host wrote",
+            // which is the whole reason one can be swapped for the other without the surface noticing.
+            case Expr.PushConstantRead read -> new double[]{value(p.pushConstants(), read.member(), "push")};
+            case Expr.BufferLoad load ->
+                    new double[]{value(p.buffer(), (int) eval(load.index(), p)[0], "buffer")};
             case Expr.Param param -> param.index() == 0 ? p.point().clone() : unsupported(e);
             case Expr.Unary u -> map(eval(u.operand(), p), v -> switch (u.op()) {
                 case NEGATE -> -v;
@@ -272,6 +307,14 @@ final class Eval {
             out[i] = op.applyAsDouble(at(a, i), at(b, i));
         }
         return out;
+    }
+
+    private static double value(double[] values, int index, String what) {
+        if (index < 0 || index >= values.length) {
+            throw new IllegalStateException("this field reads " + what + " slot " + index + ", and "
+                    + values.length + " values were supplied; evaluate it with Eval.at(field, push, buffer, …)");
+        }
+        return values[index];
     }
 
     private static double[] unsupported(Expr e) {

@@ -21,6 +21,7 @@ import dev.vexelray.shader.ShadingPoint;
 import dev.vexelray.surface.Field;
 import dev.vexelray.surface.NodeId;
 import dev.vexelray.surface.ParamBlock;
+import dev.vexelray.surface.ParamStore;
 import dev.vexelray.surface.PayloadTable;
 import dev.vexelray.surface.SurfaceLimits;
 import dev.vexelray.ir.Ir;
@@ -65,13 +66,18 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     public static final int FIRST_PARAM_MEMBER = 7;
 
     /**
-     * The most parameters that fit in push constants: {@code (128 - 28) / 4}.
+     * The most parameters that fit in push constants on the <em>smallest</em> Vulkan device: {@code (128-28)/4}.
      *
-     * <p>128 bytes is Vulkan's <em>guaranteed floor</em> for {@code maxPushConstantsSize}, not a measurement —
-     * nothing here queries the device, deliberately. A document must not be scaled on a per-device number: one
-     * authored where the driver reports 256 would fail to open where it reports 128, and it would fail at load
-     * time. So the floor is the cap, and a design that outgrows it moves to the parameter buffer (P0b) rather
-     * than to a bigger block.
+     * <p>What a host assumes before it has asked its own device, and never a ceiling on a design. P0a stopped
+     * here and threw; P0b gave the parameters a second road, so the number decides which road rather than
+     * whether the design exists — see {@link ParamBacking}, which is what to ask, with
+     * {@link ParamBacking#on} for a host that has read {@code maxPushConstantsSize} off the device it is
+     * actually running on. The machine this was written on reports 256 bytes, and so holds 57.
+     *
+     * <p>The distinction that matters: <b>query the device to choose the road, never to decide what a design
+     * may contain.</b> A design authored where the driver reports 256 opens where it reports 128, because
+     * there its values travel by buffer instead. Scale a document on a per-device number and it stops opening
+     * on a smaller machine, at load time, which is the worst place for it to happen.
      *
      * <p>It is spent faster than it reads: a sphere is four numbers and a translate is three, so a tree of
      * twenty primitives wants north of a hundred.
@@ -102,6 +108,35 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     private static final Type.Float F32 = Ir.F32;
 
+    /**
+     * Which road this composer's parameters take — a property of the machine, set once when the device is
+     * known, and never of the scene.
+     *
+     * <p>A field rather than an argument because it has to reach {@link #keyFor}: the backing changes the
+     * emitted SPIR-V, so two composers on two devices key differently, and one composer keys the same way all
+     * run long.
+     */
+    private final ParamBacking backing;
+
+    /** A composer that assumes Vulkan's guaranteed floor, for a host that has not asked its device. */
+    public SdfComposer() {
+        this(ParamBacking.DEFAULT);
+    }
+
+    /** A composer on a host that has asked — see {@link ParamBacking#on}. */
+    public SdfComposer(ParamBacking backing) {
+        if (backing == null) {
+            throw new IllegalArgumentException("a composer needs a parameter backing; ParamBacking.DEFAULT "
+                    + "is the one to use before a device has been asked");
+        }
+        this.backing = backing;
+    }
+
+    /** Which road this composer sends parameters down. */
+    public ParamBacking backing() {
+        return backing;
+    }
+
     @Override
     public List<ShaderStage> stages() {
         return List.of(ShaderStage.VERTEX, ShaderStage.FRAGMENT);
@@ -128,8 +163,13 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     @Override
     public ShaderKey keyFor(SdfScene scene) {
-        return ShaderKey.of(getClass(), new SdfScene(scene.surface().shaderKey(), scene.shading(),
-                scene.march(), scene.albedo(), scene.sky(), scene.focalLength(), scene.nearPlane()));
+        // The backing is in the key because it is in the SPIR-V: a PushConstantRead is not a BufferLoad, and
+        // a cache that ignored the difference would hand a pipeline built for one road a shader that takes
+        // the other. Not a slow picture — a wrong one, and only on the machines where the roads differ.
+        return ShaderKey.of(getClass(), List.of(
+                new SdfScene(scene.surface().shaderKey(), scene.shading(), scene.march(), scene.albedo(),
+                        scene.sky(), scene.focalLength(), scene.nearPlane()),
+                backing.roadFor(ParamBlock.of(scene.surface()).size())));
     }
 
     /**
@@ -146,7 +186,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         return List.of(
                 new ComposedShader(ShaderStage.VERTEX, Fullscreen.triangleVertexWithUvSpirv(),
                         Fullscreen.ENTRY_POINT),
-                new ComposedShader(ShaderStage.FRAGMENT, fragmentSpirv(scene), Fullscreen.ENTRY_POINT));
+                new ComposedShader(ShaderStage.FRAGMENT, fragmentSpirv(scene, backing), Fullscreen.ENTRY_POINT));
     }
 
     /**
@@ -157,31 +197,40 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * fresh block per call — values live in the object, so a caller that wanted to keep its values must keep the
      * object, and {@link ParamBlock#carryFrom} is how they cross a recompile.
      *
-     * @throws IllegalArgumentException by name if the scene has more parameters than push constants hold
+     * @throws IllegalArgumentException by name if the backing is forced to push constants and the scene has
+     *                                  more parameters than they hold
      */
     public static ParamBlock paramBlock(SdfScene scene) {
+        return paramBlock(scene, ParamBacking.DEFAULT);
+    }
+
+    /** The same, for a host that knows what its device reports. */
+    public static ParamBlock paramBlock(SdfScene scene, ParamBacking backing) {
         ParamBlock block = ParamBlock.of(scene.surface());
-        if (block.size() > MAX_PUSH_CONSTANT_PARAMS) {
+        if (backing.mode() == ParamBacking.Mode.PUSH_CONSTANTS
+                && block.size() > backing.pushConstantCapacity()) {
             throw new IllegalArgumentException(
                     "surface has " + block.size() + " parameters and push constants hold "
-                            + MAX_PUSH_CONSTANT_PARAMS + " (Vulkan's guaranteed 128 bytes, less "
-                            + (FIRST_PARAM_MEMBER * 4) + " for the camera and lens); this is the point at which "
-                            + "the block moves to a storage buffer — see P0b in the designer's implementation "
-                            + "plan");
+                            + backing.pushConstantCapacity() + " on this device ("
+                            + backing.maxPushConstantBytes() + " bytes, less " + (FIRST_PARAM_MEMBER * 4)
+                            + " for the camera and lens); the backing was forced to push constants, and "
+                            + "ParamBacking.AUTO would have taken the storage buffer instead");
         }
         return block;
     }
 
     /**
-     * The one push-constant block this composer emits: the camera, the lens, then the scene's parameters in
-     * slot order.
+     * The one push-constant block this composer emits: the camera, the lens, and — on the push road — the
+     * scene's parameters in slot order.
      *
-     * <p>One block, because SPIR-V permits one. The parameters share it with the camera rather than having a
-     * block of their own, which is what makes P0a reachable with no Vulkan work at all — the same
-     * {@code vkCmdPushConstants} the camera already used carries them.
+     * <p>One block, because SPIR-V permits one. On the push road the parameters share it with the camera
+     * rather than having a block of their own, which is what made P0a reachable with no Vulkan work at all:
+     * the same {@code vkCmdPushConstants} the camera already used carries them. On the buffer road the block
+     * is the camera and the lens alone, and the parameters are an array at descriptor set 0.
      */
-    private static PushConstants pushConstants(ParamBlock params) {
-        List<PushConstants.Member> members = new ArrayList<>(FIRST_PARAM_MEMBER + params.size());
+    private static PushConstants pushConstants(ParamBlock params, boolean usesBuffer) {
+        int parameters = usesBuffer ? 0 : params.size();
+        List<PushConstants.Member> members = new ArrayList<>(FIRST_PARAM_MEMBER + parameters);
         members.add(new PushConstants.Member("camX", F32));
         members.add(new PushConstants.Member("camY", F32));
         members.add(new PushConstants.Member("camZ", F32));
@@ -189,28 +238,48 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         members.add(new PushConstants.Member("pitch", F32));
         members.add(new PushConstants.Member("aspect", F32));
         members.add(new PushConstants.Member("focalLength", F32));
-        for (int i = 0; i < params.size(); i++) {
+        for (int i = 0; i < parameters; i++) {
             members.add(new PushConstants.Member("p" + i, F32));
         }
         return new PushConstants(members);
     }
 
     /**
-     * The scene lowered: its field, and the block its parameters were resolved against.
+     * The buffer a scene's parameters are read from when they take that road: {@code float} elements at
+     * descriptor set 0, binding 0, in slot order.
      *
-     * <p>Both halves come from one place because they have to agree — a {@code PushConstantRead} carries the
+     * <p>Published so a host can bind the right thing — and shaped by nothing about the scene but the fact
+     * that it is parameters, so two scenes with different geometry declare the identical buffer.
+     */
+    public static final dev.supirvast.vastir.core.Buffer PARAM_BUFFER =
+            new dev.supirvast.vastir.core.Buffer("params", 0, Ir.F32);
+
+    /**
+     * The scene lowered: its field, the block its camera reads, and whether its parameters took the buffer.
+     *
+     * <p>The halves come from one place because they have to agree — a {@code PushConstantRead} carries the
      * whole block by value, so a field compiled against a block built a second time is only equal to the
      * fragment's reads if both were built the same way. Deterministic slot order (see {@link ParamBlock}) is
      * what makes that true rather than lucky.
      */
-    private static Lowered lower(SdfScene scene) {
-        ParamBlock params = paramBlock(scene);
-        PushConstants block = pushConstants(params);
-        Field field = SurfaceCompiler.compile(scene.surface(), params.inPushConstants(block, FIRST_PARAM_MEMBER));
-        return new Lowered(field, params, block);
+    private static Lowered lower(SdfScene scene, ParamBacking backing) {
+        ParamBlock params = paramBlock(scene, backing);
+        boolean usesBuffer = backing.usesBuffer(params.size());
+        PushConstants block = pushConstants(params, usesBuffer);
+        // The block is handed to the buffer store as well, so that an Implicit reading the composer's own
+        // push constants is judged the same way on both roads. What a surface may express must not depend on
+        // which device it was opened on.
+        ParamStore store = usesBuffer
+                ? params.inBuffer(PARAM_BUFFER, 0, block)
+                : params.inPushConstants(block, FIRST_PARAM_MEMBER);
+        return new Lowered(SurfaceCompiler.compile(scene.surface(), store), params, block, usesBuffer);
     }
 
-    private record Lowered(Field field, ParamBlock params, PushConstants block) {
+    private static Lowered lower(SdfScene scene) {
+        return lower(scene, ParamBacking.DEFAULT);
+    }
+
+    private record Lowered(Field field, ParamBlock params, PushConstants block, boolean usesBuffer) {
     }
 
     /**
@@ -250,7 +319,16 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     /** How many bytes {@code scene}'s block occupies — camera, lens, and one float per parameter. */
     public static int pushBytes(SdfScene scene) {
-        return (FIRST_PARAM_MEMBER + paramBlock(scene).size()) * 4;
+        return pushBytes(scene, ParamBacking.DEFAULT);
+    }
+
+    /**
+     * The same, on the road this device takes: the camera and the lens alone once the parameters have moved
+     * to the buffer, which is the point of moving them.
+     */
+    public static int pushBytes(SdfScene scene, ParamBacking backing) {
+        ParamBlock params = paramBlock(scene, backing);
+        return (FIRST_PARAM_MEMBER + (backing.usesBuffer(params.size()) ? 0 : params.size())) * 4;
     }
 
     /**
@@ -267,15 +345,26 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     public static byte[] pushConstantBytes(SdfScene scene, double x, double y, double z,
                                            double yaw, double pitch, double aspect, ParamBlock values) {
-        ParamBlock expected = paramBlock(scene);
+        return pushConstantBytes(scene, x, y, z, yaw, pitch, aspect, values, ParamBacking.DEFAULT);
+    }
+
+    /**
+     * The same, on the road this device takes — the camera and the lens alone once the parameters have moved
+     * to {@link #PARAM_BUFFER}, which {@link #writeParams} fills.
+     */
+    public static byte[] pushConstantBytes(SdfScene scene, double x, double y, double z,
+                                           double yaw, double pitch, double aspect, ParamBlock values,
+                                           ParamBacking backing) {
+        ParamBlock expected = paramBlock(scene, backing);
         if (!expected.sameLayout(values)) {
             throw new IllegalArgumentException(
                     "these values were built for a different surface: the scene declares " + expected
                             + " and the block holds " + values + "; rebuild it with paramBlock(scene) and carry "
                             + "the old values across with ParamBlock.carryFrom");
         }
-        float[] floats = new float[FIRST_PARAM_MEMBER + values.size()];
-        writePushConstants(scene, x, y, z, yaw, pitch, aspect, values, floats);
+        float[] floats = new float[FIRST_PARAM_MEMBER
+                + (backing.usesBuffer(values.size()) ? 0 : values.size())];
+        writePushConstants(scene, x, y, z, yaw, pitch, aspect, values, floats, backing);
         ByteBuffer buffer = ByteBuffer.allocate(floats.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         for (float value : floats) {
             buffer.putFloat(value);
@@ -301,10 +390,24 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     public static void writePushConstants(SdfScene scene, double x, double y, double z, double yaw,
                                           double pitch, double aspect, ParamBlock values, float[] out) {
-        int count = FIRST_PARAM_MEMBER + values.size();
+        writePushConstants(scene, x, y, z, yaw, pitch, aspect, values, out, ParamBacking.DEFAULT);
+    }
+
+    /**
+     * The same, on the road this device takes.
+     *
+     * <p>On the buffer road the block is the camera and the lens, and the parameters are not in it — they are
+     * in the buffer, written by {@link #writeParams}. Writing them here as well would be harmless and wrong:
+     * harmless because the shader does not read those members, wrong because it says the block has them.
+     */
+    public static void writePushConstants(SdfScene scene, double x, double y, double z, double yaw,
+                                          double pitch, double aspect, ParamBlock values, float[] out,
+                                          ParamBacking backing) {
+        boolean usesBuffer = backing.usesBuffer(values.size());
+        int count = FIRST_PARAM_MEMBER + (usesBuffer ? 0 : values.size());
         if (out.length < count) {
             throw new IllegalArgumentException("this scene's block is " + count + " floats and the array holds "
-                    + out.length + "; size it with pushBytes(scene) / 4");
+                    + out.length + "; size it with pushBytes(scene, backing) / 4");
         }
         // Members 0..FIRST_PARAM_MEMBER-1, in the order the generated fragment declares them.
         out[0] = (float) x;
@@ -314,7 +417,26 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         out[4] = (float) pitch;
         out[5] = (float) aspect;
         out[6] = (float) scene.focalLength();
-        values.writeFloats(out, FIRST_PARAM_MEMBER);
+        if (!usesBuffer) {
+            values.writeFloats(out, FIRST_PARAM_MEMBER);
+        }
+    }
+
+    /**
+     * The parameter buffer's contents: the values in slot order, and nothing else.
+     *
+     * <p>The buffer road's other half. The camera and the lens stay in push constants — they change every
+     * frame and are six floats, which is what push constants are for — while the parameters, which may be
+     * thousands and change when a slider moves, live in {@link #PARAM_BUFFER} at descriptor set 0.
+     *
+     * @param out at least {@code values.size()} floats long; only that prefix is written
+     */
+    public static void writeParams(ParamBlock values, float[] out) {
+        if (out.length < values.size()) {
+            throw new IllegalArgumentException("this scene has " + values.size()
+                    + " parameters and the array holds " + out.length);
+        }
+        values.writeFloats(out, 0);
     }
 
     /**
@@ -334,12 +456,17 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     /** Compose and lower the ray-march fragment for {@code scene}. */
     public static byte[] fragmentSpirv(SdfScene scene) {
+        return fragmentSpirv(scene, ParamBacking.DEFAULT);
+    }
+
+    /** The same, on a host that knows which road its device wants the parameters to take. */
+    public static byte[] fragmentSpirv(SdfScene scene, ParamBacking backing) {
         // Compiled once and used twice: the field the march walks, and — only if a surface asked for it — the
         // colour read at the hit point.
-        Field field = lower(scene).field();
+        Field field = lower(scene, backing).field();
         return fragmentSpirv(scene, field.asFunction(SDF_FUNCTION),
                 field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null,
-                field.helpers());
+                field.helpers(), null, backing);
     }
 
     /**
@@ -356,7 +483,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * storing the number: a slot is an encoding and changes whenever the tree changes shape.
      */
     public static byte[] identityFragmentSpirv(SdfScene scene) {
-        Field field = loweredWithPayload(scene);
+        Field field = loweredWithPayload(scene, ParamBacking.DEFAULT);
         Function payloadFn = field.asPayloadFunction(PAYLOAD_FUNCTION);
         List<Function> helpers = new ArrayList<>(field.helpers());
         helpers.add(payloadFn);
@@ -377,11 +504,14 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
     }
 
     /** The scene's field with identity, lowered the second way. */
-    private static Field loweredWithPayload(SdfScene scene) {
-        ParamBlock params = paramBlock(scene);
-        PushConstants block = pushConstants(params);
-        return SurfaceCompiler.compileWithPayload(scene.surface(), SurfaceLimits.DEFAULT,
-                params.inPushConstants(block, FIRST_PARAM_MEMBER));
+    private static Field loweredWithPayload(SdfScene scene, ParamBacking backing) {
+        ParamBlock params = paramBlock(scene, backing);
+        boolean usesBuffer = backing.usesBuffer(params.size());
+        PushConstants block = pushConstants(params, usesBuffer);
+        ParamStore store = usesBuffer
+                ? params.inBuffer(PARAM_BUFFER, 0, block)
+                : params.inPushConstants(block, FIRST_PARAM_MEMBER);
+        return SurfaceCompiler.compileWithPayload(scene.surface(), SurfaceLimits.DEFAULT, store);
     }
 
     /**
@@ -442,7 +572,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
                                        List<Function> helpers) {
-        return fragmentSpirv(scene, sdf, albedoFn, helpers, null);
+        return fragmentSpirv(scene, sdf, albedoFn, helpers, null, ParamBacking.DEFAULT);
     }
 
     /**
@@ -459,6 +589,16 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
                                        List<Function> helpers, Function payloadFn) {
+        return fragmentSpirv(scene, sdf, albedoFn, helpers, payloadFn, ParamBacking.DEFAULT);
+    }
+
+    /**
+     * The same, told which road the parameters took — because the camera block this rebuilds has the
+     * parameters after it on one road and not on the other, and it has to be the block the field was
+     * compiled against.
+     */
+    public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
+                                       List<Function> helpers, Function payloadFn, ParamBacking backing) {
         MarchSettings march = scene.march();
 
         InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
@@ -467,7 +607,8 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         // PushConstantRead carries its block by value and slot order is deterministic, so the two agree by
         // construction. A caller supplying its own sdf gets the block its scene describes, which is what keeps
         // a buffer-driven field (see the note above) reading the same camera it always did.
-        PushConstants camera = pushConstants(paramBlock(scene));
+        ParamBlock cameraParams = paramBlock(scene, backing);
+        PushConstants camera = pushConstants(cameraParams, backing.usesBuffer(cameraParams.size()));
 
         Expr eye = Ir.v3(camera.read(0), camera.read(1), camera.read(2));
         PrimaryRay ray = primaryRay(vUv, camera.read(3), camera.read(4), camera.read(5), camera.read(6));

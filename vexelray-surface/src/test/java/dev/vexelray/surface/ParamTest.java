@@ -247,6 +247,45 @@ class ParamTest {
     }
 
     @Test
+    @DisplayName("both roads describe the same field: push constants and the buffer agree everywhere")
+    void theTwoRoadsAgree() {
+        // P0b's differential, and the only thing that makes swapping the backing trustworthy. Both lowerings
+        // come from one Surface, so this is cheap; they read the same values from different places, so
+        // agreement is a fact about the lowering rather than about the arithmetic.
+        Surface surface = new Surface.Twist(Scalar.Param.over(0, 0.6, 0.3), Scalar.of(3),
+                new Surface.Union(List.of(
+                        new Surface.Sphere(Scalar.of(0), new Scalar.Param(HEIGHT, 0, 3, 1.25), Scalar.of(0),
+                                new Scalar.Param(RADIUS, 0.1, 4, 0.9)),
+                        new Surface.Box(Scalar.of(2), Scalar.of(0), Scalar.of(0),
+                                Scalar.Param.over(0.2, 1, 0.4), Scalar.of(0.5), Scalar.of(0.5)))));
+
+        ParamBlock block = ParamBlock.of(surface);
+        int firstMember = 7;                        // where the composer puts them, after camera and lens
+
+        List<PushConstants.Member> members = new ArrayList<>();
+        for (int i = 0; i < firstMember + block.size(); i++) {
+            members.add(new PushConstants.Member("m" + i, Ir.F32));
+        }
+        PushConstants camera = new PushConstants(members);
+        dev.supirvast.vastir.core.Buffer buffer =
+                new dev.supirvast.vastir.core.Buffer("params", 0, Ir.F32);
+
+        Field viaPush = SurfaceCompiler.compile(surface, block.inPushConstants(camera, firstMember));
+        Field viaBuffer = SurfaceCompiler.compile(surface, block.inBuffer(buffer, 0, camera));
+
+        // The same values, put where each road looks for them.
+        double[] values = {0.35, 2.1, 0.75, 0.6};
+        double[] push = new double[firstMember + values.length];
+        System.arraycopy(values, 0, push, firstMember, values.length);
+
+        for (double[] p : new double[][]{{0, 0, 0}, {1.5, 0.5, -0.5}, {-2.2, 1.1, 0.3}, {3, -1, 2}}) {
+            assertEquals(Eval.at(viaPush, push, new double[0], p[0], p[1], p[2]),
+                    Eval.at(viaBuffer, new double[0], values, p[0], p[1], p[2]), 1e-9,
+                    () -> "the two roads disagree at " + List.of(p[0], p[1], p[2]));
+        }
+    }
+
+    @Test
     @DisplayName("bounds contain the geometry at every value the parameter can take")
     void boundsCoverTheWholeRange() {
         Surface driven = new Surface.Sphere(Scalar.of(0), Scalar.of(0), Scalar.of(0),

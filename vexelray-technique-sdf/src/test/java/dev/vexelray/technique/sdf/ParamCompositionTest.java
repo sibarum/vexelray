@@ -19,6 +19,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -110,21 +112,95 @@ class ParamCompositionTest {
                 () -> SdfComposer.pushConstantBytes(scene, 0, 0, 0, 0, 0, 1, other));
     }
 
-    @Test
-    @DisplayName("more parameters than push constants hold fails by name, pointing at the buffer")
-    void theCapIsNamedAndPointsAtP0b() {
-        List<Surface> spheres = new ArrayList<>();
-        for (int i = 0; i <= SdfComposer.MAX_PUSH_CONSTANT_PARAMS; i++) {
-            spheres.add(new Surface.Sphere(Scalar.of(i * 3), Scalar.of(0), Scalar.of(0),
+    /** A union of {@code n} spheres, each with a driven radius — one parameter apiece. */
+    private static SdfScene spheres(int n) {
+        List<Surface> of = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            of.add(new Surface.Sphere(Scalar.of(i * 3), Scalar.of(0), Scalar.of(0),
                     Scalar.Param.over(0.25, 2)));
         }
-        SdfScene tooMany = SdfScene.of(new Surface.Union(spheres));
+        return SdfScene.of(new Surface.Union(of));
+    }
+
+    @Test
+    @DisplayName("past what push constants hold, the parameters take the other road rather than failing")
+    void pastTheCapTheBufferTakesOver() {
+        // What P0a threw on. The design is unchanged and so is its API — the same slots, the same
+        // write(ParamId, double) — and only the transport differs, which is the whole of P0b.
+        int cap = ParamBacking.DEFAULT.pushConstantCapacity();
+        SdfScene fits = spheres(cap);
+        SdfScene doesNot = spheres(cap + 1);
+
+        assertFalse(ParamBacking.DEFAULT.usesBuffer(cap), "at the cap, push constants still hold it");
+        assertTrue(ParamBacking.DEFAULT.usesBuffer(cap + 1), "one past it, the buffer takes over");
+
+        assertEquals((SdfComposer.FIRST_PARAM_MEMBER + cap) * 4, SdfComposer.pushBytes(fits));
+        assertEquals(SdfComposer.FIRST_PARAM_MEMBER * 4, SdfComposer.pushBytes(doesNot),
+                "on the buffer road the block is the camera and the lens alone");
+
+        // And it composes, which is the sentence P0a could not say.
+        assertTrue(SdfComposer.fragmentSpirv(doesNot).length > 0);
+    }
+
+    @Test
+    @DisplayName("a design opens on a smaller device than it was drawn on — by the other road")
+    void aDesignOutlivesTheDeviceItWasDrawnOn() {
+        // The rule the whole backing exists to keep. Forty parameters fit in push constants where the driver
+        // reports 256 bytes and do not where it reports 128; the design is the same design on both, and the
+        // difference is which road the values travel.
+        SdfScene scene = spheres(40);
+        ParamBacking roomy = ParamBacking.on(256);
+        ParamBacking tight = ParamBacking.DEFAULT;
+
+        assertFalse(roomy.usesBuffer(40), "256 bytes holds forty parameters");
+        assertTrue(tight.usesBuffer(40), "128 bytes does not");
+
+        assertTrue(SdfComposer.fragmentSpirv(scene, roomy).length > 0);
+        assertTrue(SdfComposer.fragmentSpirv(scene, tight).length > 0);
+        assertFalse(java.util.Arrays.equals(SdfComposer.fragmentSpirv(scene, roomy),
+                        SdfComposer.fragmentSpirv(scene, tight)),
+                "two roads are two shaders, which is why the backing is in the cache key");
+    }
+
+    @Test
+    @DisplayName("forcing push constants past the cap fails by name, and names the way out")
+    void forcingThePushRoadFailsByName() {
+        SdfScene tooMany = spheres(ParamBacking.DEFAULT.pushConstantCapacity() + 1);
+        ParamBacking forced = ParamBacking.DEFAULT.alwaysPushConstants();
 
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> SdfComposer.fragmentSpirv(tooMany));
-        assertTrue(thrown.getMessage().contains("storage buffer"), thrown.getMessage());
-        assertTrue(thrown.getMessage().contains(String.valueOf(SdfComposer.MAX_PUSH_CONSTANT_PARAMS)),
+                () -> SdfComposer.fragmentSpirv(tooMany, forced));
+        assertTrue(thrown.getMessage().contains("ParamBacking.AUTO"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains(String.valueOf(forced.pushConstantCapacity())),
                 thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("the buffer road's SPIR-V passes spirv-val")
+    void theBufferRoadValidates() {
+        // The road P0a could not take at all, asked of Khronos's own validator: a storage buffer at
+        // descriptor set 0 read from inside the field, with the camera still in push constants beside it.
+        NativeTools tools = new NativeTools();
+        Assumptions.assumeTrue(tools.isAvailable(), "spirv-val not bundled for this platform");
+
+        SdfScene scene = spheres(60);
+        assertTrue(ParamBacking.DEFAULT.usesBuffer(60), "sixty parameters should be past the cap");
+        NativeTools.ValidationResult result = tools.validate(SdfComposer.fragmentSpirv(scene));
+        assertTrue(result.valid(), "the buffer-backed fragment was rejected:\n" + result.output());
+    }
+
+    @Test
+    @DisplayName("two devices that take the same road are one cache entry; two roads are two")
+    void theBackingIsInTheKey() {
+        SdfScene small = spheres(3);
+        assertEquals(new SdfComposer(ParamBacking.on(128)).keyFor(small),
+                new SdfComposer(ParamBacking.on(256)).keyFor(small),
+                "a three-parameter scene takes the push road on both, so it is one shader");
+
+        SdfScene large = spheres(40);
+        assertNotEquals(new SdfComposer(ParamBacking.on(128)).keyFor(large),
+                new SdfComposer(ParamBacking.on(256)).keyFor(large),
+                "forty parameters take different roads, and a cache that missed that would be wrong");
     }
 
     @Test

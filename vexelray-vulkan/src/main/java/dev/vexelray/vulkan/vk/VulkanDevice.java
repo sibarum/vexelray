@@ -87,6 +87,7 @@ public final class VulkanDevice implements AutoCloseable {
     private final MemorySegment physicalDevice;
     private final MemorySegment queue;
     private final int queueFamilyIndex;
+    private final int maxPushConstantBytes;
     private final MethodHandle vkGetDeviceProcAddr;
     private final MethodHandle vkGetPhysicalDeviceMemoryProperties;
     private final MethodHandle vkDeviceWaitIdle;
@@ -109,6 +110,7 @@ public final class VulkanDevice implements AutoCloseable {
     public VulkanDevice(MemorySegment instance, VulkanInstance.DeviceSelection selection, boolean swapchain) {
         this.physicalDevice = selection.physicalDevice();
         this.queueFamilyIndex = selection.queueFamilyIndex();
+        this.maxPushConstantBytes = selection.maxPushConstantBytes();
 
         MethodHandle vkCreateDevice = VkLoader.instanceCommand(instance, "vkCreateDevice",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS));
@@ -220,6 +222,18 @@ public final class VulkanDevice implements AutoCloseable {
 
     public int queueFamilyIndex() {
         return queueFamilyIndex;
+    }
+
+    /**
+     * What this device reports for {@code maxPushConstantsSize}, in bytes — at least 128 on anything Vulkan.
+     *
+     * <p>Here so that whoever composes a shader can take the cheaper road while it fits, and report headroom
+     * rather than discovering the ceiling by hitting it. <b>Nothing that decides what a design may contain
+     * may read it</b>: a design must open on a machine smaller than the one it was drawn on, and it does —
+     * the values simply travel by the other road there.
+     */
+    public int maxPushConstantBytes() {
+        return maxPushConstantBytes;
     }
 
     /** Block until the device has finished all submitted work. */

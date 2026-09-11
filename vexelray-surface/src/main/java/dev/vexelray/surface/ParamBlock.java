@@ -205,6 +205,37 @@ public final class ParamBlock {
      * <p>The block is passed in rather than built here because the composer owns it: a module declares one
      * push-constant block (the SPIR-V rule), and the composer's camera is already in it.
      */
+    /**
+     * A store reading these parameters out of {@code buffer}, whose elements from {@code firstSlot} on are the
+     * parameters in slot order — the other road, for a design with more of them than push constants hold.
+     *
+     * <p>Nothing above this line changes when a design takes it. A host still writes by identity through
+     * {@link #write}, the tree is untouched, and the slot assignment is the same one: which road the values
+     * travel is a fact about the machine, not about the design. That is the whole of what publishing a writer
+     * rather than an offset bought, and it is why the choice can be made at device-creation time.
+     *
+     * @param issued the push-constant block the composer declared anyway — the camera and the lens. It is
+     *               passed in <b>only</b> so that {@link ParamStore#issued} answers the same on both roads:
+     *               an {@link Surface.Implicit} that reads the composer's own block must be accepted or
+     *               refused for what it is, and not for which backing the device happened to choose. A
+     *               surface that compiles on one machine has to compile on every machine
+     */
+    public ParamStore inBuffer(dev.supirvast.vastir.core.Buffer buffer, int firstSlot, PushConstants issued) {
+        return new ParamStore() {
+
+            @Override
+            public Expr read(ParamId id) {
+                return new Expr.BufferLoad(buffer,
+                        new Expr.ConstInt(dev.supirvast.vastir.type.Type.int32(), firstSlot + slot(id)));
+            }
+
+            @Override
+            public boolean issued(PushConstants candidate) {
+                return issued != null && issued.equals(candidate);
+            }
+        };
+    }
+
     public ParamStore inPushConstants(PushConstants block, int firstMember) {
         if (block.members().size() < firstMember + params.size()) {
             throw new IllegalArgumentException(
