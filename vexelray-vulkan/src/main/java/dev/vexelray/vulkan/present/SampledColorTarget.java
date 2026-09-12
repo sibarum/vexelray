@@ -474,6 +474,31 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
      */
     public void renderInto(GraphicsPipeline pipeline, long vertexBuffer, long descriptorSet, int vertexCount,
                            byte[] push, float cr, float cg, float cb, float ca) {
+        renderInto((cmd, w, h) -> drawOne(cmd, pipeline, vertexBuffer, descriptorSet, vertexCount, push),
+                cr, cg, cb, ca);
+    }
+
+    /**
+     * Whatever a caller wants recorded into this target, inside a render pass this class begins, ends and
+     * submits — clearing to {@code (cr,cg,cb,ca)} first. When it returns the image is in
+     * {@code SHADER_READ_ONLY} and can be sampled through {@link #descriptorSet()}, exactly as the pipeline
+     * overloads promise.
+     *
+     * <p><b>This is the seam that makes an offscreen viewport a technique host.</b> The overloads above draw one
+     * pipeline, which is all a single ray-march needs. A caller with an <em>ordered list</em> of things to
+     * composite — a march, then geometry sharing its depth, then a post pass — needs the command buffer itself,
+     * because with one shared pass the order they record in <em>is</em> the composition.
+     *
+     * <p>Deliberately expressed without naming {@code RenderTechnique}, which is the contract on the other end
+     * of it: {@code vexelray-engine-vulkan-api} depends on this module, so this module cannot depend on it
+     * without a cycle. The adapter that spans the two lives in {@code vexelray-engine-embedded}, where both are
+     * visible, and this signature is what it is written against.
+     *
+     * <p>The recorder is called once, on the calling thread, with the pass already begun and nothing bound. It
+     * must not begin or end the pass and must not submit — this method frames it, which is precisely what lets
+     * everything it records share one pass and one command buffer.
+     */
+    public void renderInto(Recorder recorder, float cr, float cg, float cb, float ca) {
         MemorySegment dev = device.handle();
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment poolInfo = arena.allocate(COMMAND_POOL_CREATE_INFO);
@@ -511,31 +536,7 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             sa(rpBegin, RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
 
             invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
-            invokeVoid(vkCmdBindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-            if (descriptorSet != 0) {
-                MemorySegment pSet = arena.allocate(JAVA_LONG);
-                pSet.set(JAVA_LONG, 0, descriptorSet);
-                invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                        0, 1, pSet, 0, MemorySegment.NULL);
-            }
-            if (push != null && push.length > 0) {
-                MemorySegment pPush = arena.allocate(push.length);
-                MemorySegment.copy(push, 0, pPush, JAVA_BYTE, 0, push.length);
-                invokeVoid(vkCmdPushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
-                        push.length, pPush);
-            }
-            // A vertex buffer is optional: a fullscreen triangle synthesises its own positions from
-            // gl_VertexIndex, which is what a ray-marched viewport draws.
-            if (vertexBuffer != 0) {
-                MemorySegment pVb = arena.allocate(JAVA_LONG);
-                pVb.set(JAVA_LONG, 0, vertexBuffer);
-                MemorySegment pOff = arena.allocate(JAVA_LONG);
-                pOff.set(JAVA_LONG, 0, 0L);
-                invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
-            }
-            if (vertexCount > 0) {
-                invokeVoid(vkCmdDraw, cmd, vertexCount, 1, 0, 0);
-            }
+            recorder.record(cmd, width, height);
             invokeVoid(vkCmdEndRenderPass, cmd);
             check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
 
@@ -567,6 +568,66 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             invokeVoid(vkDestroyFence, dev, fence, MemorySegment.NULL);
             invokeVoid(vkDestroyCommandPool, dev, pool, MemorySegment.NULL);
         }
+    }
+
+    /**
+     * The single-pipeline draw the {@link GraphicsPipeline} overloads record — what used to be the middle of
+     * {@link #renderInto(Recorder, float, float, float, float)}, and is now one recorder among the possible
+     * ones.
+     */
+    private void drawOne(MemorySegment cmd, GraphicsPipeline pipeline, long vertexBuffer, long descriptorSet,
+                         int vertexCount, byte[] push) {
+        try (Arena arena = Arena.ofConfined()) {
+            invokeVoid(vkCmdBindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+            if (descriptorSet != 0) {
+                MemorySegment pSet = arena.allocate(JAVA_LONG);
+                pSet.set(JAVA_LONG, 0, descriptorSet);
+                invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
+                        0, 1, pSet, 0, MemorySegment.NULL);
+            }
+            if (push != null && push.length > 0) {
+                MemorySegment pPush = arena.allocate(push.length);
+                MemorySegment.copy(push, 0, pPush, JAVA_BYTE, 0, push.length);
+                invokeVoid(vkCmdPushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
+                        push.length, pPush);
+            }
+            // A vertex buffer is optional: a fullscreen triangle synthesises its own positions from
+            // gl_VertexIndex, which is what a ray-marched viewport draws.
+            if (vertexBuffer != 0) {
+                MemorySegment pVb = arena.allocate(JAVA_LONG);
+                pVb.set(JAVA_LONG, 0, vertexBuffer);
+                MemorySegment pOff = arena.allocate(JAVA_LONG);
+                pOff.set(JAVA_LONG, 0, 0L);
+                invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
+            }
+            if (vertexCount > 0) {
+                invokeVoid(vkCmdDraw, cmd, vertexCount, 1, 0, 0);
+            }
+        }
+    }
+
+    /**
+     * Drawing recorded into a render pass {@link SampledColorTarget} has already begun.
+     *
+     * <p>The command buffer is a {@code MemorySegment} — the Panama handle — so this seam names no type the
+     * engine's own {@code FrameContext} does not already carry, and an adapter between the two is a field copy
+     * rather than a translation.
+     *
+     * <p>Valid only for the duration of the call, and only on the thread that made it: the buffer is being
+     * recorded into by that thread and submitted by it before
+     * {@link #renderInto(Recorder, float, float, float, float)} returns.
+     */
+    @FunctionalInterface
+    public interface Recorder {
+
+        /**
+         * Record draws into {@code commandBuffer}. The pass is begun and nothing is bound; do not begin or end
+         * the pass, and do not submit.
+         *
+         * @param width  the target's width in pixels, for a pipeline with dynamic viewport and scissor
+         * @param height the target's height in pixels
+         */
+        void record(MemorySegment commandBuffer, int width, int height);
     }
 
     private long allocate(Arena arena, MethodHandle vkAllocateMemory, MemorySegment dev, long size, int typeIndex) {

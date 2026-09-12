@@ -57,6 +57,10 @@
              against the concrete runtime below it (D18). -->
         <module>vexelray-engine-vulkan-api</module>
         <module>vexelray-engine</module>
+        <!-- The second runtime: techniques composited into a target the host owns and presents (GuiApp.viewport)
+             rather than into a window and swapchain of the engine's own. Its own module so a GUI application can
+             take it without taking a frame loop and a ServiceLoader it never calls. -->
+        <module>vexelray-engine-embedded</module>
         <module>vexelray-technique-canvas</module>
         <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
         <module>vexelray-demo</module>
