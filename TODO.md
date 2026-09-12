@@ -181,6 +181,39 @@ file is about the engine and its API. Decisions are logged in
 
 ---
 
+### A canvas on a plane in the world (D27)
+
+- [x] **`vexelray-technique-panel`** — the 2D canvas projected through the scene's camera, sharing the frame's
+      depth buffer. `Panel` places a sheet of canvas coordinates in the world (centre, yaw/pitch/roll in the
+      camera's own convention, world units per canvas unit) and resolves it to an affine canvas-to-view map per
+      frame, allocating nothing; `PanelShader` is the canvas uber-shader with the camera in front of it;
+      `PanelTechnique` records it, `TEST_ONLY` by default and `occluding()` when it must hold its ground
+      against a later technique
+- [x] **Nothing in it has a pixel size**, which is the point. A width is a measurement on a surface, so it
+      scales with distance — and the *edge* does not, because the fragment stage computes its own AA width from
+      the closed-form screen-space Jacobian of the projection instead of assuming one canvas unit is one pixel.
+      No texture, so no resolution was chosen in advance; no `fwidth`, so no new SupirVast instruction. MSDF
+      text gets the same factor the other way up and stays sharp as a panel is approached
+- [x] **`ClipDepth.clipZ`** — the raster half of D24's convention. `ofViewZ` is `a - b/z`, so `a*z - b` is
+      affine in the view position and the rasteriser's own interpolation of `z/w` reproduces the march's depth
+      curve exactly. The panel keeps early-z rather than writing `gl_FragDepth` to compute the same number
+- [x] **`CanvasShader.coverage`, `Attributes` and `Varyings` are public seams**, so the world placement reuses
+      the coverage core rather than forking it — the two stages differ in two scalars, both of which are the
+      identity for the screen-space canvas. `Canvas` itself is unchanged: it already stamped the raw canvas
+      position into every vertex for the clip SDF, which is the seam a world placement needed
+- [x] **`PanelTechnique.atlas(AtlasSource)`** — an atlas built at realise from the device the runtime hands
+      over. Without it, text on a panel was available only to an application that wires its own Vulkan, because
+      an `AtlasTexture` needs a device and a pipeline is composed before one exists
+- [x] **Three checks.** `PanelProjectionTest` (no device): the march's ray through the pixel a panel point
+      projects to points back at that point — the check that catches a sign, where four y conventions meet and
+      three of the four ways to be wrong still render a plausible picture. `PanelOcclusionTest`: a sphere and a
+      panel pitched through it, each losing pixels to the other, which ordering cannot produce; plus the
+      reversed frame byte-identical, a no-depth control, and the default depth state measured on its own.
+      `PanelScaleTest`: the width doubles when the distance halves *and* matches the pinhole's absolute
+      prediction, while the partially covered pixels down its column stay at about two at both distances
+
+---
+
 ## P2 — Consistency and polish
 
 - [ ] **The pipeline-state struct layouts are still declared twice.** `VkStructs` (D23) absorbed the layouts
@@ -197,6 +230,21 @@ file is about the engine and its API. Decisions are logged in
 - [ ] **`WindowedPresenter`'s single-pipeline path: keep or retire.** It carries `configureDraw`,
       `setVertexCount`, `setRuns` and a `pushConstantBytes` argument that exist only for the demos above. Decide
       before either grows another user; the answer decides the item above it.
+
+- [ ] **A panel the march can sample (the sibling D27 did not build).** `vexelray-technique-panel` draws its
+      canvas as geometry, which is why it stays sharp and why it exists only inside the pass that draws it.
+      The other half of the fork — canvas into a `SampledColorTarget`, sampled onto a placed quad — makes the
+      result an *image*, and an image is a descriptor the march itself could read: a screen visible in a
+      reflection, or a panel that lights the wall behind it. Most of it exists already (`SampledColorTarget`
+      renders a canvas and ends in `SHADER_READ_ONLY`; `SampledSurfaceDemo` samples one onto a tilted quad),
+      and it would share `Panel` rather than reinventing placement. What it costs is the thing the vector path
+      does not have: a resolution, chosen in advance.
+- [ ] **A panel is told the focal length and the `ClipDepth` by hand.** `PanelTechnique`'s constructor takes
+      both and its javadoc says they must be the scene's; nothing enforces it, and a panel projecting through a
+      different lens from the frame it stands in looks like a placement bug. A `Lens` value carrying focal
+      length and depth convention together — handed to the scene *and* to the panel — would make that agreement
+      structural. Worth doing when a second technique needs the same two numbers, which is the point at which
+      the pattern is real rather than anticipated.
 
 ---
 

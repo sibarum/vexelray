@@ -793,6 +793,92 @@ variable-level decoration and no cache change.
 buffer-reading fragment now emits different SPIR-V, and a consumer should be able to tell which side of that
 it is on.
 
+## 23. A canvas on a plane in the world, as geometry rather than as a texture (D27)
+
+`vexelray-technique-panel`: the 2D canvas projected through the scene's camera, sharing the frame's depth
+buffer, with nothing in it fixed to a pixel size. `Panel` places a sheet of canvas coordinates in the world,
+`PanelShader` is the canvas uber-shader with the camera in front of it, `PanelTechnique` records it.
+
+### The decision that mattered: geometry, not an image
+
+There were two ways to put a canvas on a surface in a marched scene, and they are different products.
+
+**Render the canvas into a sampled image and texture a quad with it.** Most of this already existed —
+`SampledColorTarget` renders a canvas into a `SHADER_READ_ONLY` image, and `SampledSurfaceDemo` has sampled one
+onto a tilted quad since the canvas landed. It is the approach that lets the *march itself* sample the result,
+which is the only way a panel could ever appear in a reflection.
+
+**Transform the canvas's own vertices by the camera.** No intermediate image, so no resolution is chosen in
+advance and no sampler is in the path: the shapes are the geometry, and approaching a panel reveals more of the
+analytic corner rather than more texels of a blur.
+
+The second was chosen, because the requirement that prompted this was that drawn lines *not* have a fixed pixel
+width — and while both satisfy that literally (a texel scales too), only one of them keeps the drawing sharp
+while it scales. The first remains available and is not foreclosed: the two would share `Panel`, and a
+technique that samples an image onto a placed plane is a sibling of this one, not a replacement for it.
+
+### Anti-aliasing is computed in closed form, not sampled
+
+`CanvasShader`'s coverage assumed one canvas unit was one pixel, which is exactly true on a screen-aligned
+canvas and false everywhere on a projected one. The fix was not to pick a compromise AA width but to compute
+the real one: a panel is a plane under a pinhole, so the screen-space Jacobian of its canvas coordinates has a
+closed form, and inverting that 2x2 gives canvas-units-per-pixel per fragment. Coverage then ramps over one
+pixel at every distance and every angle.
+
+`fwidth` would answer the same question approximately and per 2x2 quad, and is not in the IR — adding it would
+have been a SupirVast change (an `Expr`, the `OpDPdx`/`OpFwidth` lowering). The closed form is exact, needs no
+new instruction, and degrades into a widening ramp at grazing angles rather than into aliasing. It also fixes
+MSDF text for free: `screenPxRange` is the same ratio the other way up, so glyphs stay sharp as a panel is
+approached rather than turning soft.
+
+### Depth comes from the rasteriser and still agrees with the march
+
+`ClipDepth` gained `clipZ(viewZ)` — the raster half of the convention D24 introduced. `ofViewZ` is
+`a - b/viewZ`; multiplied through by `viewZ` it is `a*viewZ - b`, which is affine in the view position, which
+is exactly what a rasteriser's interpolation of `z/w` reproduces. So the panel writes `gl_Position.z` and gets
+the march's depth curve from fixed-function hardware, keeping early-z — where writing `gl_FragDepth` from an
+interpolated view depth would have computed the same number and forfeited the early test to do it.
+
+That is the second time the "convention as a value" shape has paid: a shared depth attachment does not make two
+techniques agree about depth, and `ClipDepth` is the thing that does.
+
+### What was generalised rather than duplicated
+
+`CanvasShader.coverage(varyings, fragColor, aa, pixelsPerUnit)`: the `kind` dispatch and every transfer function
+over the rounded-box SDF, extracted from the fragment stage rather than copied into a second one. The two stages
+differ in two scalars and nothing else, and both are the identity for the screen-space canvas — so the extraction
+is also the statement of what was being assumed. `CanvasShader.Attributes`/`Varyings` publish the vertex
+interface for the same reason: two stages that disagree by a location produce a black screen and no validation
+message.
+
+No change to `Canvas` was needed at all. It already stamps the raw canvas-space position into every vertex for
+the clip SDF to evaluate at, so the seam a world placement needs was there before anything wanted it.
+
+### Depth state: test by default, write on request
+
+`PanelTechnique` declares `TEST_ONLY`, so a panel is occluded by what is already in the frame and occludes
+nothing recorded after it. That is right for alpha-blended chrome: translucent pixels that stamp depth stop
+later techniques drawing through them, and a canvas's overlapping shapes must composite in submission order
+rather than fight over one shared depth. `occluding()` switches on the write for an opaque panel that has to
+hold its ground against a later technique. Both states are measured.
+
+### The checks
+
+- `PanelProjectionTest` — no device needed, and the one that catches the failure this module was most likely to
+  have: a sign. Four y conventions meet here (canvas down, world up, device down, the march's screen up), and
+  three of the four ways to get it wrong still render a plausible picture. It asserts that the march's ray
+  through the pixel a panel point projects to *points back at that point*, at corners as well as centres, with
+  both the camera and the panel rotated.
+- `PanelOcclusionTest` — a sphere and a panel pitched through it, so each loses pixels to the other. Ordering
+  can produce "all panel" or "all sphere"; only a per-pixel depth test produces both losing some. Plus the
+  reversed-order frame asserted byte-identical, a no-depth control, and the default depth state measured on its
+  own.
+- `PanelScaleTest` — the headline property, as two separate claims. The line's width doubles when the distance
+  halves *and* matches the absolute pixel count the pinhole predicts (two wrong widths can still have the right
+  ratio). And the count of partially covered pixels down its column stays at about two at both distances, which
+  is the claim a textured quad could not make: magnifying an image stretches its blurred edge in exactly the
+  proportion the line gets wider.
+
 ## Open questions (to revisit as phases land)
 
 - ~~**Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need

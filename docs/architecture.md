@@ -79,7 +79,8 @@ vexelray-engine-vulkan-api   The Vulkan half of the SPI: VulkanTechniqueContext,
       ├───────────────────────────────┐
 vexelray-engine        Runtime impl:  │  vexelray-technique-sdf    SdfScene + SdfComposer + SdfRaymarchTechnique
                        implements     │  vexelray-technique-canvas CanvasTechnique
-                       VexelEngine,   │                            (later: -raster, -splat, …)
+                       VexelEngine,   │  vexelray-technique-panel  Panel + PanelShader + PanelTechnique
+                                      │                            (later: -raster, -splat, …)
                        realises a     │
                        pipeline, owns │  A technique depends on -engine-api and -engine-vulkan-api. It does NOT
                        window/device/ │  depend on -engine: the runtime depends on the contract, not the

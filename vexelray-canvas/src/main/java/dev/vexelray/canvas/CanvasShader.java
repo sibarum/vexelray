@@ -16,6 +16,7 @@ import dev.supirvast.vastir.shader.Shaders;
 import dev.supirvast.vastir.type.Type;
 import dev.vexelray.shader.ComposedShader;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -105,104 +106,195 @@ public final class CanvasShader {
     }
 
     private static CoreModule vertexModule() {
-        InterfaceVar inPos = InterfaceVar.input("inPos", CanvasVertex.LOC_POS, V2);
-        InterfaceVar inColor = InterfaceVar.input("inColor", CanvasVertex.LOC_COLOR, V4);
-        InterfaceVar inUv = InterfaceVar.input("inUv", CanvasVertex.LOC_UV, V2);
-        InterfaceVar inKind = InterfaceVar.input("inKind", CanvasVertex.LOC_KIND, F32);
-        InterfaceVar inLocal = InterfaceVar.input("inLocal", CanvasVertex.LOC_LOCAL, V2);
-        InterfaceVar inShape = InterfaceVar.input("inShape", CanvasVertex.LOC_SHAPE, V4);
-        InterfaceVar inClipBox = InterfaceVar.input("inClipBox", CanvasVertex.LOC_CLIPBOX, V4);
-        InterfaceVar inClipRs = InterfaceVar.input("inClipRs", CanvasVertex.LOC_CLIPRS, V4);
+        Attributes in = Attributes.inputs();
+        Varyings out = Varyings.outputs();
 
-        InterfaceVar vColor = InterfaceVar.output("vColor", CanvasVertex.LOC_COLOR, V4);
-        InterfaceVar vUv = InterfaceVar.output("vUv", CanvasVertex.LOC_UV, V2);
-        InterfaceVar vKind = InterfaceVar.output("vKind", CanvasVertex.LOC_KIND, F32);
-        InterfaceVar vLocal = InterfaceVar.output("vLocal", CanvasVertex.LOC_LOCAL, V2);
-        InterfaceVar vShape = InterfaceVar.output("vShape", CanvasVertex.LOC_SHAPE, V4);
-        InterfaceVar vClipBox = InterfaceVar.output("vClipBox", CanvasVertex.LOC_CLIPBOX, V4);
-        InterfaceVar vClipRs = InterfaceVar.output("vClipRs", CanvasVertex.LOC_CLIPRS, V4);
-
-        Expr pos = new Expr.InterfaceRead(inPos);
+        Expr pos = new Expr.InterfaceRead(in.pos());
         Expr clip = new Expr.VectorConstruct(V4, List.of(
                 new Expr.VectorExtract(pos, 0), new Expr.VectorExtract(pos, 1), f(0.0), f(1.0)));
-        Region body = Region.of(
-                new Statement.BuiltinWrite(Builtin.POSITION, clip),
-                new Statement.InterfaceWrite(vColor, new Expr.InterfaceRead(inColor)),
-                new Statement.InterfaceWrite(vUv, new Expr.InterfaceRead(inUv)),
-                new Statement.InterfaceWrite(vKind, new Expr.InterfaceRead(inKind)),
-                new Statement.InterfaceWrite(vLocal, new Expr.InterfaceRead(inLocal)),
-                new Statement.InterfaceWrite(vShape, new Expr.InterfaceRead(inShape)),
-                new Statement.InterfaceWrite(vClipBox, new Expr.InterfaceRead(inClipBox)),
-                new Statement.InterfaceWrite(vClipRs, new Expr.InterfaceRead(inClipRs)),
-                new Statement.ReturnVoid());
-        Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
+        List<Statement> body = new ArrayList<>();
+        body.add(new Statement.BuiltinWrite(Builtin.POSITION, clip));
+        body.addAll(in.forwardTo(out));
+        body.add(new Statement.ReturnVoid());
+        Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
         return new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.VERTEX));
     }
 
-    /** Fragment stage: branch on {@code kind} — one rounded-box SDF, several transfer functions; MSDF for glyphs. */
+    /**
+     * The vertex stage's inputs, one per {@link CanvasVertex} attribute, at the locations
+     * {@link CanvasVertex#ATTRIBUTES} binds them to.
+     *
+     * <p>Public because the vertex stage is the <em>only</em> part of this shader that a second placement of the
+     * same geometry has to replace. A canvas hung on a plane in the world reads the identical vertex format,
+     * forwards the identical varyings, and differs in one expression - where the position goes. Declaring the
+     * interface here means the two stages cannot drift apart by a location, which is the failure that produces a
+     * black screen and no validation message.
+     *
+     * <p><b>{@link #clipRs} carries the canvas-space position</b> in {@code xy}, which is what makes a world
+     * placement possible at all: {@link #pos} has already been divided down to the 2D target's clip space by
+     * {@code Canvas}, but {@code clipRs.xy} is the untouched canvas coordinate the clip SDF is evaluated at. A
+     * shader that wants to put this vertex somewhere other than the screen reads that, and ignores {@link #pos}.
+     */
+    public record Attributes(InterfaceVar pos, InterfaceVar color, InterfaceVar uv, InterfaceVar kind,
+                             InterfaceVar local, InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs) {
+
+        public static Attributes inputs() {
+            return new Attributes(
+                    InterfaceVar.input("inPos", CanvasVertex.LOC_POS, V2),
+                    InterfaceVar.input("inColor", CanvasVertex.LOC_COLOR, V4),
+                    InterfaceVar.input("inUv", CanvasVertex.LOC_UV, V2),
+                    InterfaceVar.input("inKind", CanvasVertex.LOC_KIND, F32),
+                    InterfaceVar.input("inLocal", CanvasVertex.LOC_LOCAL, V2),
+                    InterfaceVar.input("inShape", CanvasVertex.LOC_SHAPE, V4),
+                    InterfaceVar.input("inClipBox", CanvasVertex.LOC_CLIPBOX, V4),
+                    InterfaceVar.input("inClipRs", CanvasVertex.LOC_CLIPRS, V4));
+        }
+
+        /** The canvas-space position of this vertex, in canvas units - see the record's note on {@code clipRs}. */
+        public Expr canvasPosition() {
+            Expr rs = new Expr.InterfaceRead(clipRs);
+            return new Expr.VectorConstruct(V2,
+                    List.of(new Expr.VectorExtract(rs, 0), new Expr.VectorExtract(rs, 1)));
+        }
+
+        /** Copy every attribute except the position through to {@code out}, in location order. */
+        public List<Statement> forwardTo(Varyings out) {
+            return List.of(
+                    new Statement.InterfaceWrite(out.color(), new Expr.InterfaceRead(color)),
+                    new Statement.InterfaceWrite(out.uv(), new Expr.InterfaceRead(uv)),
+                    new Statement.InterfaceWrite(out.kind(), new Expr.InterfaceRead(kind)),
+                    new Statement.InterfaceWrite(out.local(), new Expr.InterfaceRead(local)),
+                    new Statement.InterfaceWrite(out.shape(), new Expr.InterfaceRead(shape)),
+                    new Statement.InterfaceWrite(out.clipBox(), new Expr.InterfaceRead(clipBox)),
+                    new Statement.InterfaceWrite(out.clipRs(), new Expr.InterfaceRead(clipRs)));
+        }
+    }
+
+    /** The varyings between the two stages: every attribute but the position, which became {@code gl_Position}. */
+    public record Varyings(InterfaceVar color, InterfaceVar uv, InterfaceVar kind, InterfaceVar local,
+                           InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs) {
+
+        /** The fragment stage's side. */
+        public static Varyings inputs() {
+            return new Varyings(
+                    InterfaceVar.input("vColor", CanvasVertex.LOC_COLOR, V4),
+                    InterfaceVar.input("vUv", CanvasVertex.LOC_UV, V2),
+                    InterfaceVar.input("vKind", CanvasVertex.LOC_KIND, F32),
+                    InterfaceVar.input("vLocal", CanvasVertex.LOC_LOCAL, V2),
+                    InterfaceVar.input("vShape", CanvasVertex.LOC_SHAPE, V4),
+                    InterfaceVar.input("vClipBox", CanvasVertex.LOC_CLIPBOX, V4),
+                    InterfaceVar.input("vClipRs", CanvasVertex.LOC_CLIPRS, V4));
+        }
+
+        /** The vertex stage's side. */
+        public static Varyings outputs() {
+            return new Varyings(
+                    InterfaceVar.output("vColor", CanvasVertex.LOC_COLOR, V4),
+                    InterfaceVar.output("vUv", CanvasVertex.LOC_UV, V2),
+                    InterfaceVar.output("vKind", CanvasVertex.LOC_KIND, F32),
+                    InterfaceVar.output("vLocal", CanvasVertex.LOC_LOCAL, V2),
+                    InterfaceVar.output("vShape", CanvasVertex.LOC_SHAPE, V4),
+                    InterfaceVar.output("vClipBox", CanvasVertex.LOC_CLIPBOX, V4),
+                    InterfaceVar.output("vClipRs", CanvasVertex.LOC_CLIPRS, V4));
+        }
+    }
+
+    /** Fragment stage: branch on {@code kind} - one rounded-box SDF, several transfer functions; MSDF for glyphs. */
     private static CoreModule fragmentModule() {
-        InterfaceVar vColor = InterfaceVar.input("vColor", CanvasVertex.LOC_COLOR, V4);
-        InterfaceVar vUv = InterfaceVar.input("vUv", CanvasVertex.LOC_UV, V2);
-        InterfaceVar vKind = InterfaceVar.input("vKind", CanvasVertex.LOC_KIND, F32);
-        InterfaceVar vLocal = InterfaceVar.input("vLocal", CanvasVertex.LOC_LOCAL, V2);
-        InterfaceVar vShape = InterfaceVar.input("vShape", CanvasVertex.LOC_SHAPE, V4);
-        InterfaceVar vClipBox = InterfaceVar.input("vClipBox", CanvasVertex.LOC_CLIPBOX, V4);
-        InterfaceVar vClipRs = InterfaceVar.input("vClipRs", CanvasVertex.LOC_CLIPRS, V4);
+        Varyings in = Varyings.inputs();
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, V4);
+        // Both arguments are the identity here, and that is the statement worth making: a canvas drawn straight
+        // into the frame is authored 1:1 in pixels, so the AA half-width is one canvas unit and a glyph's
+        // screenPxRange was already computed in the units it will be read in. Neither stays the identity once the
+        // same geometry hangs on a plane in the world, which is why coverage() takes them instead of assuming.
+        Region body = Region.of(coverage(in, fragColor, f(1.0), f(1.0)), new Statement.ReturnVoid());
+        Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
+        return new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+    }
+
+    /**
+     * The uber-shader's coverage core: the {@code kind} dispatch and every transfer function over the one
+     * rounded-box SDF, as a single statement writing {@code fragColor}.
+     *
+     * <p>Extracted from the fragment stage rather than copied into a second one, because the two differ in
+     * exactly two scalars and nothing else. Everything that makes a canvas look like a canvas - the analytic
+     * corner, the shadow's squared falloff, the stroke ring, the emboss, the MSDF median - is authored once and
+     * read by both, so a fix to a corner case is a fix in both places by construction.
+     *
+     * <h2>The two scalars, and why they are not constants</h2>
+     *
+     * <p>{@code aa} is the anti-aliasing half-width <b>in canvas units</b>: the distance either side of an edge
+     * over which coverage ramps from 1 to 0. On a screen-aligned canvas it is 1, because a canvas unit is a
+     * pixel and a one-pixel ramp is what analytic AA means. On a plane in the world, one canvas unit projects to
+     * however many pixels perspective says it does, and the caller passes the reciprocal of that, per fragment -
+     * which is what makes a line's <em>width</em> scale with distance while its <em>edge</em> stays one pixel
+     * soft at every distance.
+     *
+     * <p>{@code pixelsPerUnit} is the same relationship the other way up, and only glyphs need it: an MSDF's
+     * coverage is a distance in atlas texels converted to pixels by {@code screenPxRange}, which
+     * {@code TextLayout} computed on the assumption that a canvas unit is a pixel. Multiplying by the true
+     * pixels-per-unit restores the assumption wherever it stopped holding, and is what keeps text sharp rather
+     * than soft as a panel is approached.
+     *
+     * @param in            the fragment stage's varyings
+     * @param fragColor     the colour output to write
+     * @param aa            anti-aliasing half-width in canvas units
+     * @param pixelsPerUnit screen pixels covered by one canvas unit
+     */
+    public static Statement coverage(Varyings in, InterfaceVar fragColor, Expr aa, Expr pixelsPerUnit) {
         Texture atlas = new Texture("uAtlas", ATLAS_SET, ATLAS_BINDING);
         Texture image = new Texture("uImage", IMAGE_SET, IMAGE_BINDING);
 
-        Expr color = new Expr.InterfaceRead(vColor);
+        Expr color = new Expr.InterfaceRead(in.color());
         Expr rgb = new Expr.VectorConstruct(V3, List.of(x(color), y(color), z(color)));
 
-        // --- clip: rounded-box SDF coverage at the fragment's screen position, multiplied into alpha ---
-        Expr clipBox = new Expr.InterfaceRead(vClipBox);
-        Expr clipRs = new Expr.InterfaceRead(vClipRs);
+        // --- clip: rounded-box SDF coverage at the fragment's canvas position, multiplied into alpha ---
+        Expr clipBox = new Expr.InterfaceRead(in.clipBox());
+        Expr clipRs = new Expr.InterfaceRead(in.clipRs());
         Expr clipCenter = new Expr.VectorConstruct(V2, List.of(x(clipBox), y(clipBox)));
         Expr clipHalf = new Expr.VectorConstruct(V2, List.of(z(clipBox), w(clipBox)));
         Expr fragScreen = new Expr.VectorConstruct(V2, List.of(x(clipRs), y(clipRs)));
         Expr clipR = z(clipRs);
-        Expr clipAa = w(clipRs);
+        // The vertex carries an AA in clipRs.w as well, and it is ignored in favour of the argument: it is a
+        // constant of the Canvas (1 px) stamped into every vertex, so reading it would be interpolating a
+        // constant - and on a plane in the world it would be the wrong constant.
         Expr cl = sub(fragScreen, clipCenter);
         Expr qc = add(sub(Expr.MathCall.abs(cl), clipHalf), new Expr.VectorConstruct(V2, List.of(clipR, clipR)));
         Expr outsideC = Expr.MathCall.length(Expr.MathCall.max(qc, v2(0.0, 0.0)));
         Expr insideC = Expr.MathCall.min(Expr.MathCall.max(x(qc), y(qc)), f(0.0));
         Expr dc = sub(add(outsideC, insideC), clipR);
-        Expr clipCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(clipAa), clipAa, dc));
+        Expr clipCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa, dc));
 
         Expr alpha = mul(w(color), clipCov);
-        Expr shape = new Expr.InterfaceRead(vShape);
-        Expr uv = new Expr.InterfaceRead(vUv);
+        Expr shape = new Expr.InterfaceRead(in.shape());
+        Expr uv = new Expr.InterfaceRead(in.uv());
 
         // --- shape kinds: one analytic rounded-box SDF, several transfer functions over its distance ---
-        Expr local = new Expr.InterfaceRead(vLocal);
+        Expr local = new Expr.InterfaceRead(in.local());
         Expr half = new Expr.VectorConstruct(V2, List.of(x(shape), y(shape)));
         Expr rTop = z(shape);
         Expr rBottom = w(shape);
-        // AA is a constant of the system (geometry is authored 1:1 in pixels), not per-vertex data — which is
-        // what freed shape.w to carry the second radius.
-        Expr aa = f(1.0);
         Expr d = roundedBoxSdf(local, half, rTop, rBottom);
 
-        // KIND_SHAPE — flat fill.
+        // KIND_SHAPE - flat fill.
         Expr shapeCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa, d));
         Expr shapeOut = new Expr.VectorConstruct(V4, List.of(x(rgb), y(rgb), z(rgb), mul(alpha, shapeCov)));
 
-        // KIND_SHADOW — coverage is a soft falloff over uv.x blur px around the edge; squared, so the tail eases
+        // KIND_SHADOW - coverage is a soft falloff over uv.x blur px around the edge; squared, so the tail eases
         // out gaussian-ish instead of stopping dead at the smoothstep edge. Also an outer glow when tinted.
         Expr blur = Expr.MathCall.max(x(uv), aa);
         Expr shadowS = sub(f(1.0), Expr.MathCall.smoothstep(neg(blur), blur, d));
         Expr shadowCov = mul(shadowS, shadowS);
         Expr shadowOut = new Expr.VectorConstruct(V4, List.of(x(rgb), y(rgb), z(rgb), mul(alpha, shadowCov)));
 
-        // KIND_STROKE — a ring of width uv.x hugging the inside of the edge: abs(d + w/2) - w/2 re-centres the
+        // KIND_STROKE - a ring of width uv.x hugging the inside of the edge: abs(d + w/2) - w/2 re-centres the
         // zero level set onto the ring, then the normal AA coverage applies.
         Expr halfWStroke = mul(x(uv), f(0.5));
         Expr dRing = sub(Expr.MathCall.abs(add(d, halfWStroke)), halfWStroke);
         Expr strokeCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa, dRing));
         Expr strokeOut = new Expr.VectorConstruct(V4, List.of(x(rgb), y(rgb), z(rgb), mul(alpha, strokeCov)));
 
-        // KIND_LIT — fill coverage, colour modulated by light. The emboss trick: evaluate the same SDF a second
+        // KIND_LIT - fill coverage, colour modulated by light. The emboss trick: evaluate the same SDF a second
         // time at the fragment shifted toward a fixed top-left light; the difference (bounded by the shift, since
         // an SDF is 1-Lipschitz) is +1 on light-facing edges and -1 on shaded ones. A band mask confines it to
         // uv.x bevel px inside the edge so the interior stays flat. uv.y adds a vertical luminance gradient.
@@ -227,16 +319,17 @@ public final class CanvasShader {
         Expr litOut = new Expr.VectorConstruct(V4,
                 List.of(x(litRgb), y(litRgb), z(litRgb), mul(alpha, shapeCov)));
 
-        // KIND_GLYPH — MSDF median + screenPxRange.
+        // KIND_GLYPH - MSDF median + screenPxRange, the latter carried per vertex in the units the canvas was
+        // laid out in and rescaled here into the units this fragment is actually being drawn at.
         Expr msd = new Expr.SampleTexture(atlas, uv);
         Expr median = Expr.MathCall.max(Expr.MathCall.min(x(msd), y(msd)),
                 Expr.MathCall.min(Expr.MathCall.max(x(msd), y(msd)), z(msd)));
-        Expr spr = x(shape);
+        Expr spr = mul(x(shape), pixelsPerUnit);
         Expr glyphCov = Expr.MathCall.clamp(
                 add(mul(spr, sub(median, f(0.5))), f(0.5)), f(0.0), f(1.0));
         Expr glyphOut = new Expr.VectorConstruct(V4, List.of(x(rgb), y(rgb), z(rgb), mul(alpha, glyphCov)));
 
-        // KIND_IMAGE — the shape SDF's own coverage, multiplied by a texel from the image sampler and tinted by
+        // KIND_IMAGE - the shape SDF's own coverage, multiplied by a texel from the image sampler and tinted by
         // the vertex colour. Straight-alpha texel: its alpha multiplies coverage, so a transparent PNG and a
         // rounded corner compose rather than fight. A white opaque tint is the identity, which is what a viewport
         // wants; anything else modulates, which is what an icon wants.
@@ -246,22 +339,18 @@ public final class CanvasShader {
                 mul(mul(alpha, shapeCov), w(texel))));
 
         // Dispatch: kind < 0.5 shape, < 1.5 glyph, < 2.5 shadow, < 3.5 stroke, < 4.5 lit, else image.
-        Expr kind = new Expr.InterfaceRead(vKind);
+        Expr kind = new Expr.InterfaceRead(in.kind());
         Region imageRegion = Region.of(new Statement.InterfaceWrite(fragColor, imageOut));
         Region litRegion = Region.of(new Statement.InterfaceWrite(fragColor, litOut));
         Region strokeRegion = Region.of(new Statement.InterfaceWrite(fragColor, strokeOut));
         Region shadowRegion = Region.of(new Statement.InterfaceWrite(fragColor, shadowOut));
         Region glyphRegion = Region.of(new Statement.InterfaceWrite(fragColor, glyphOut));
         Region shapeRegion = Region.of(new Statement.InterfaceWrite(fragColor, shapeOut));
-        Region body = Region.of(
-                new Statement.If(lt(kind, 0.5), shapeRegion, Region.of(
-                        new Statement.If(lt(kind, 1.5), glyphRegion, Region.of(
-                                new Statement.If(lt(kind, 2.5), shadowRegion, Region.of(
-                                        new Statement.If(lt(kind, 3.5), strokeRegion, Region.of(
-                                                new Statement.If(lt(kind, 4.5), litRegion, imageRegion))))))))),
-                new Statement.ReturnVoid());
-        Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
-        return new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+        return new Statement.If(lt(kind, 0.5), shapeRegion, Region.of(
+                new Statement.If(lt(kind, 1.5), glyphRegion, Region.of(
+                        new Statement.If(lt(kind, 2.5), shadowRegion, Region.of(
+                                new Statement.If(lt(kind, 3.5), strokeRegion, Region.of(
+                                        new Statement.If(lt(kind, 4.5), litRegion, imageRegion)))))))));
     }
 
     /**

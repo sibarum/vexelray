@@ -62,6 +62,11 @@
              take it without taking a frame loop and a ServiceLoader it never calls. -->
         <module>vexelray-engine-embedded</module>
         <module>vexelray-technique-canvas</module>
+        <!-- The same canvas on a plane in the world: projected through the scene's camera, sharing the frame's
+             depth buffer, with nothing in it fixed to a pixel size. Its own module because a canvas coordinate
+             means something different here (a point on a surface, not a pixel of the window), and that one
+             difference changes the vertex stage, the anti-aliasing, the depth state and the per-frame data. -->
+        <module>vexelray-technique-panel</module>
         <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
         <module>vexelray-demo</module>
         <!-- Research harness: build/run/compare shape-definition + rendering techniques (perf, fidelity, scope). -->

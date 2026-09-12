@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>vexelray-technique-panel</artifactId>
+
+    <description>
+        A Canvas hung on a plane in the world, as a RenderTechnique: the same 2D drawing API, the same fat-vertex
+        batch and the same coverage core, projected through the camera instead of straight at the screen, and
+        sharing the frame's depth buffer so a marched scene occludes it per pixel.
+
+        A separate module from vexelray-technique-canvas, not a mode of it. The two differ in what a canvas
+        coordinate *means* — a pixel of the window there, a point on a surface in the world here — and that one
+        difference changes the vertex stage, the anti-aliasing, the depth state and the per-frame data. What they
+        share is the geometry (vexelray-canvas) and the coverage core (CanvasShader.coverage), which is shared as
+        code rather than by being the same technique.
+
+        The distinguishing property is that nothing here has a fixed pixel size. A line 4 canvas units wide is 4
+        units wide on the surface: it grows as you approach it and shrinks as you leave, and stays exactly one
+        pixel soft at its edge either way, because the AA width is computed per fragment from the projection
+        rather than assumed to be one pixel.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-canvas</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- For ClipDepth: the depth convention as a value, shared with whatever else writes into the frame's
+             depth buffer. A panel that invented its own would composite against the march by luck. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- For VulkanTechniqueContext — the Vulkan-bearing subtype a technique casts to (D3). The contract
+             only: a technique that compiled against the concrete runtime could never be served by a second
+             one (D18). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-vulkan-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Test-only: the checks and the demo drive a real engine, which is a ServiceLoader lookup. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Test-only: the panel is drawn against a marched scene, which is what makes the occlusion check a
+             measurement rather than a picture of a quad. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-technique-sdf</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-os-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation>
+                <os><family>unix</family><name>linux</name></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation>
+                <os><family>mac</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

@@ -88,6 +88,30 @@ public record ClipDepth(double near, double far) {
     }
 
     /**
+     * The <b>clip-space z</b> a rasterised vertex must emit so that, after the perspective divide by
+     * {@code w = viewZ}, its interpolated depth is exactly {@link #ofViewZ}.
+     *
+     * <p>This is the raster half of the convention the march writes by hand, and it exists because the two
+     * halves have to agree or the picture is wrong in a way that reads as a modelling mistake. {@link #ofViewZ}
+     * is {@code a - b/viewZ}; multiplying through by {@code viewZ} gives {@code a*viewZ - b}, which is
+     * <em>affine</em> in the view position — and an affine function of position is precisely what a rasteriser's
+     * interpolation of {@code z/w} reproduces exactly. So a technique that hands this to {@code gl_Position.z}
+     * gets the march's depth curve from fixed-function hardware, and keeps early-z: the alternative, writing
+     * {@code gl_FragDepth} from an interpolated view depth, computes the same number and forfeits the early
+     * test to do it.
+     *
+     * <p><b>What differs from {@link #ofViewZ}, deliberately.</b> No clamp. A vertex nearer than {@link #near}
+     * produces a negative clip z and is <em>clipped</em> by the hardware rather than pinned to the near plane,
+     * which is the correct behaviour for geometry and the only one available to a rasteriser. A march has no
+     * geometry to clip and so clamps instead; the two do not disagree about any point they can both see.
+     *
+     * @param viewZ the view-space z of the vertex — the same quantity {@link #ofViewZ} takes, before the divide
+     */
+    public Expr clipZ(Expr viewZ) {
+        return Ir.sub(Ir.mul(Ir.f(a()), viewZ), Ir.f(b()));
+    }
+
+    /**
      * Clip depth for a <b>planar</b> distance: the view-space z of a point, measured along the camera's
      * forward axis. What a rasteriser's interpolated depth already is.
      *

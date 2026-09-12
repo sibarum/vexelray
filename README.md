@@ -68,6 +68,8 @@ vexelray                 parent (pom)
 ├─ vexelray-engine       the Vulkan runtime behind VexelEngine: window, device, swapchain, shared render pass,
 │    dev.vexelray.engine.vulkan.runtime  depth, the frame loop, and the ordered list of RenderTechniques
 ├─ vexelray-technique-canvas  the canvas technique: a Canvas batch recorded into a frame the runtime began
+├─ vexelray-technique-panel  the same canvas on a plane in the world: projected through the scene's camera,
+│    dev.vexelray.technique.panel  sharing the frame's depth, with nothing in it fixed to a pixel size
 ├─ vexelray-demo         Fathom — the reference demo app (first-person SDF dungeon), -Pnative single binary;
 │                        HelloTechnique is the worked example a third party copies
 └─ vexelray-experimental research harness: build/run/compare shape-definition + rendering techniques
