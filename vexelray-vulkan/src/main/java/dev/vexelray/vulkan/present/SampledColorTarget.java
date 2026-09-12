@@ -161,6 +161,8 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     private final int width;
     private final int height;
     private final VulkanRenderPass renderPass;
+    /** The depth attachment, or null for a colour-only target. Owned here, and closed with it. */
+    private final DepthAttachment depth;
     private final long image;
     private final long imageMemory;
     private final long imageView;
@@ -206,7 +208,29 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     private final MethodHandle vkDestroyFence;
     private final MethodHandle vkWaitForFences;
 
+    /** A colour-only target: one technique, or several that composite in submission order. */
     public SampledColorTarget(VulkanDevice device, int width, int height) {
+        this(device, width, height, false);
+    }
+
+    /**
+     * A target that may carry depth as well as colour.
+     *
+     * <p><b>What the depth attachment is for, and why it is not the default.</b> Without one, techniques
+     * drawn into this target composite by submission order alone: a march and then chrome over it is exactly
+     * right, and two things meant to occlude each other <em>per pixel</em> are not expressible — the second
+     * one wins everywhere it draws. With one, a technique declaring
+     * {@link GraphicsPipeline.Config.Depth#TEST_AND_WRITE} interleaves with everything else in the pass, which
+     * is the whole argument for compositing N techniques into one target rather than into N textures.
+     *
+     * <p>It is opt-in because it is not free and most targets do not want it: a {@code D32_SFLOAT} image the
+     * size of the colour one, cleared every pass. A target showing a single fullscreen effect has nothing to
+     * interleave with and should not pay for the attachment or the clear.
+     *
+     * <p>Both are honoured whichever way it is set: {@link #hasDepth()} is what a technique branches on at
+     * realise time, and a technique that asks gets the truth about the target it was actually given.
+     */
+    public SampledColorTarget(VulkanDevice device, int width, int height, boolean withDepth) {
         Probe.opened(Lane.GPU, "SampledColorTarget", this);
         this.device = device;
         this.width = width;
@@ -234,8 +258,13 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
         MethodHandle vkUpdateDescriptorSets = device.command("vkUpdateDescriptorSets",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
 
+        // The depth attachment is made before the pass, because the pass is built over its format and the two
+        // must describe the same thing. Null when the caller asked for none, which is every caller that draws
+        // one thing into this target and the default the three-argument constructor keeps.
+        this.depth = withDepth ? new DepthAttachment(device, width, height) : null;
         this.renderPass = new VulkanRenderPass(device, Vk.FORMAT_R8G8B8A8_UNORM,
-                Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                withDepth ? DepthAttachment.FORMAT : VulkanRenderPass.NO_DEPTH);
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment imgInfo = arena.allocate(IMAGE_CREATE_INFO);
@@ -288,12 +317,19 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             check(invoke(vkCreateSampler, dev, sampInfo, MemorySegment.NULL, pSampler), "vkCreateSampler");
             this.sampler = pSampler.get(JAVA_LONG, 0);
 
-            MemorySegment pAttach = arena.allocate(JAVA_LONG);
-            pAttach.set(JAVA_LONG, 0, imageView);
+            // Colour at 0 and depth at 1, which is the order VulkanRenderPass describes them in. A framebuffer
+            // whose attachments disagree with its pass in count or order is a validation error at creation
+            // rather than a bad picture, which is the one mercy here.
+            int attachments = depth == null ? 1 : 2;
+            MemorySegment pAttach = arena.allocate(JAVA_LONG, attachments);
+            pAttach.setAtIndex(JAVA_LONG, 0, imageView);
+            if (depth != null) {
+                pAttach.setAtIndex(JAVA_LONG, 1, depth.view());
+            }
             MemorySegment fbInfo = arena.allocate(FRAMEBUFFER_CREATE_INFO);
             si(fbInfo, FRAMEBUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
             sl(fbInfo, FRAMEBUFFER_CREATE_INFO, "renderPass", renderPass.handle());
-            si(fbInfo, FRAMEBUFFER_CREATE_INFO, "attachmentCount", 1);
+            si(fbInfo, FRAMEBUFFER_CREATE_INFO, "attachmentCount", attachments);
             sa(fbInfo, FRAMEBUFFER_CREATE_INFO, "pAttachments", pAttach);
             si(fbInfo, FRAMEBUFFER_CREATE_INFO, "width", width);
             si(fbInfo, FRAMEBUFFER_CREATE_INFO, "height", height);
@@ -401,6 +437,23 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     /** The {@code VkDescriptorSet} a downstream pipeline binds to sample this target. */
     public long descriptorSet() {
         return descriptorSet;
+    }
+
+    /**
+     * Whether this target carries a depth attachment — what a technique branches on to decide whether it may
+     * declare a depth mode other than {@link GraphicsPipeline.Config.Depth#NONE}.
+     *
+     * <p>Asked rather than assumed, because the answer belongs to the target and not to the technique: the
+     * same technique drawn into a windowed swapchain, an offscreen frame and one of these should interleave
+     * wherever it can and composite by order where it cannot, without being told which it is in.
+     */
+    public boolean hasDepth() {
+        return depth != null;
+    }
+
+    /** The depth attachment's format, or {@link VulkanRenderPass#NO_DEPTH} for a colour-only target. */
+    public int depthFormat() {
+        return depth == null ? VulkanRenderPass.NO_DEPTH : DepthAttachment.FORMAT;
     }
 
     public int width() {
@@ -536,18 +589,26 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             si(begin, COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(invoke(vkBeginCommandBuffer, cmd, begin), "vkBeginCommandBuffer");
 
-            MemorySegment clear = arena.allocate(JAVA_FLOAT, 4);
+            // A VkClearValue is a union of four floats, so an array of them is four floats apiece whichever
+            // member each one is. The depth one is (1.0, 0): the far plane, and a stencil of zero whose bit
+            // pattern is the same word as 0.0f -- there is no stencil in this pass to read it either way.
+            int clears = depth == null ? 1 : 2;
+            MemorySegment clear = arena.allocate(JAVA_FLOAT, 4L * clears);
             clear.setAtIndex(JAVA_FLOAT, 0, cr);
             clear.setAtIndex(JAVA_FLOAT, 1, cg);
             clear.setAtIndex(JAVA_FLOAT, 2, cb);
             clear.setAtIndex(JAVA_FLOAT, 3, ca);
+            if (depth != null) {
+                clear.setAtIndex(JAVA_FLOAT, 4, 1.0f);
+                clear.setAtIndex(JAVA_FLOAT, 5, 0.0f);
+            }
             MemorySegment rpBegin = arena.allocate(RENDER_PASS_BEGIN_INFO);
             si(rpBegin, RENDER_PASS_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
             sl(rpBegin, RENDER_PASS_BEGIN_INFO, "renderPass", renderPass.handle());
             sl(rpBegin, RENDER_PASS_BEGIN_INFO, "framebuffer", framebuffer);
             si(rpBegin, RENDER_PASS_BEGIN_INFO, "area_extent_width", width);
             si(rpBegin, RENDER_PASS_BEGIN_INFO, "area_extent_height", height);
-            si(rpBegin, RENDER_PASS_BEGIN_INFO, "clearValueCount", 1);
+            si(rpBegin, RENDER_PASS_BEGIN_INFO, "clearValueCount", clears);
             sa(rpBegin, RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
 
             MemorySegment pViewport = arena.allocate(VkStructs.VIEWPORT);
@@ -656,6 +717,9 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
         invokeVoid(vkDestroyImageView, dev, imageView, MemorySegment.NULL);
         invokeVoid(vkDestroyImage, dev, image, MemorySegment.NULL);
         invokeVoid(vkFreeMemory, dev, imageMemory, MemorySegment.NULL);
+        if (depth != null) {
+            depth.close();
+        }
         renderPass.close();
     }
 }

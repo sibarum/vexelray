@@ -47,13 +47,14 @@ import java.util.Optional;
  *
  * <h2>Depth, and what its absence costs</h2>
  *
- * <p>A {@link SampledColorTarget} is colour-only, so {@link TechniqueContext#depthFormat()} is empty here and
- * {@link TechniqueContext#hasDepth()} is false. Techniques composite by <b>submission order alone</b>: a march
- * then chrome over it is exactly right, and opaque geometry then sprites meant to interleave with it by depth is
- * not expressible yet. That is a property of the target rather than of this host — it reads {@code hasDepth} from
- * whatever it was given, and a first-party technique already branches on it ({@code SdfRaymarchTechnique} builds
- * {@code Depth.NONE} and the same shader, writing a {@code gl_FragDepth} that goes nowhere). Growing a depth
- * attachment on the target is what turns that branch on, and nothing here has to change when it does.
+ * <p>Whether depth is available is <b>the target's</b> answer and not this host's: {@code SampledColorTarget}
+ * takes depth as a constructor argument, and {@link TechniqueContext#depthFormat()} here reports whatever the
+ * one it was handed carries. Given a colour-only target, techniques composite by <b>submission order alone</b>
+ * — a march then chrome over it is exactly right, and opaque geometry meant to interleave with it per pixel is
+ * not expressible. Given one with depth, a technique declaring {@code TEST_AND_WRITE} occludes and is occluded
+ * by everything else in the pass, which is the whole argument for compositing into one target rather than into
+ * several textures. First-party techniques already branch on it — {@code SdfRaymarchTechnique} writes a
+ * {@code gl_FragDepth} that goes nowhere against a colour-only target and means something against this one.
  *
  * <h2>Threading</h2>
  *
@@ -229,7 +230,10 @@ public final class SampledTechniqueHost implements AutoCloseable {
 
         @Override
         public Optional<AttachmentFormat> depthFormat() {
-            return Optional.empty();
+            // The target's answer rather than this host's. A SampledColorTarget carries depth only when it was
+            // asked for one, and a technique deciding whether it may test depth has to hear that -- this was a
+            // constant empty back when no such target could carry depth at all.
+            return target.hasDepth() ? Optional.of(AttachmentFormat.DEPTH32F) : Optional.empty();
         }
 
         @Override
