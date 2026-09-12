@@ -3,6 +3,7 @@ package dev.vexelray.vulkan.present;
 import sibarum.probe.Lane;
 import sibarum.probe.Probe;
 import dev.vexelray.vulkan.vk.Vk;
+import dev.vexelray.vulkan.vk.VkStructs;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
 import java.lang.foreign.Arena;
@@ -19,6 +20,7 @@ import static dev.vexelray.vulkan.vk.Ffm.gl;
 import static dev.vexelray.vulkan.vk.Ffm.invoke;
 import static dev.vexelray.vulkan.vk.Ffm.invokeVoid;
 import static dev.vexelray.vulkan.vk.Ffm.sa;
+import static dev.vexelray.vulkan.vk.Ffm.sf;
 import static dev.vexelray.vulkan.vk.Ffm.si;
 import static dev.vexelray.vulkan.vk.Ffm.sl;
 import static java.lang.foreign.ValueLayout.ADDRESS;
@@ -42,6 +44,8 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     private static final FunctionDescriptor D_LONG = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);
     private static final FunctionDescriptor MEMREQ = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);
     private static final FunctionDescriptor BIND = FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG);
+    private static final FunctionDescriptor SET_VIEWPORT_SCISSOR =
+            FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS);
 
     private static final GroupLayout IMAGE_CREATE_INFO = MemoryLayout.structLayout(
             JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
@@ -194,6 +198,8 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     private final MethodHandle vkCmdBindVertexBuffers;
     private final MethodHandle vkCmdBindDescriptorSets;
     private final MethodHandle vkCmdDraw;
+    private final MethodHandle vkCmdSetViewport;
+    private final MethodHandle vkCmdSetScissor;
     private final MethodHandle vkQueueSubmit;
     private final MethodHandle vkCmdPushConstants;
     private final MethodHandle vkCreateFence;
@@ -365,6 +371,8 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
         this.vkCmdDraw = device.command("vkCmdDraw",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
+        this.vkCmdSetViewport = device.command("vkCmdSetViewport", SET_VIEWPORT_SCISSOR);
+        this.vkCmdSetScissor = device.command("vkCmdSetScissor", SET_VIEWPORT_SCISSOR);
         this.vkQueueSubmit = device.command("vkQueueSubmit",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
         this.vkCmdPushConstants = device.command("vkCmdPushConstants",
@@ -494,9 +502,16 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
      * without a cycle. The adapter that spans the two lives in {@code vexelray-engine-embedded}, where both are
      * visible, and this signature is what it is written against.
      *
-     * <p>The recorder is called once, on the calling thread, with the pass already begun and nothing bound. It
-     * must not begin or end the pass and must not submit — this method frames it, which is precisely what lets
-     * everything it records share one pass and one command buffer.
+     * <p>{@link Recorder}'s contract exactly, and the same one both presenters honour — which is the point of
+     * taking that interface rather than one of this class's own. The recorder is called once, on the calling
+     * thread, inside the begun pass, with <b>the dynamic viewport and scissor already set to this target's
+     * extent</b> and nothing else bound. It must not begin or end the pass and must not submit: this method
+     * frames it, which is what lets everything it records share one pass and one command buffer.
+     *
+     * <p>The viewport half is not a detail. A pipeline built with dynamic viewport state — which is what the
+     * technique SPI tells a technique to build, so that a resize needs no rebuild — draws <em>nothing at all</em>
+     * in a command buffer where nobody set it. That failure is what {@code Recorder}'s own javadoc was written
+     * about, and it is invisible to a recorder that draws nothing.
      */
     public void renderInto(Recorder recorder, float cr, float cg, float cb, float ca) {
         MemorySegment dev = device.handle();
@@ -535,7 +550,21 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             si(rpBegin, RENDER_PASS_BEGIN_INFO, "clearValueCount", 1);
             sa(rpBegin, RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
 
+            MemorySegment pViewport = arena.allocate(VkStructs.VIEWPORT);
+            sf(pViewport, VkStructs.VIEWPORT, "width", width);
+            sf(pViewport, VkStructs.VIEWPORT, "height", height);
+            sf(pViewport, VkStructs.VIEWPORT, "maxDepth", 1.0f);
+            MemorySegment pScissor = arena.allocate(VkStructs.RECT_2D);
+            si(pScissor, VkStructs.RECT_2D, "extent_width", width);
+            si(pScissor, VkStructs.RECT_2D, "extent_height", height);
+
             invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
+            // Unconditionally, and before the recorder, because that is what Recorder promises and what both
+            // presenters already do. A pipeline built with dynamic viewport state and handed a buffer where
+            // nothing set it draws nothing at all -- which is the failure Recorder's own javadoc was written
+            // about, and the one a recorder that draws nothing cannot detect.
+            invokeVoid(vkCmdSetViewport, cmd, 0, 1, pViewport);
+            invokeVoid(vkCmdSetScissor, cmd, 0, 1, pScissor);
             recorder.record(cmd, width, height);
             invokeVoid(vkCmdEndRenderPass, cmd);
             check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
@@ -604,30 +633,6 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
                 invokeVoid(vkCmdDraw, cmd, vertexCount, 1, 0, 0);
             }
         }
-    }
-
-    /**
-     * Drawing recorded into a render pass {@link SampledColorTarget} has already begun.
-     *
-     * <p>The command buffer is a {@code MemorySegment} — the Panama handle — so this seam names no type the
-     * engine's own {@code FrameContext} does not already carry, and an adapter between the two is a field copy
-     * rather than a translation.
-     *
-     * <p>Valid only for the duration of the call, and only on the thread that made it: the buffer is being
-     * recorded into by that thread and submitted by it before
-     * {@link #renderInto(Recorder, float, float, float, float)} returns.
-     */
-    @FunctionalInterface
-    public interface Recorder {
-
-        /**
-         * Record draws into {@code commandBuffer}. The pass is begun and nothing is bound; do not begin or end
-         * the pass, and do not submit.
-         *
-         * @param width  the target's width in pixels, for a pipeline with dynamic viewport and scissor
-         * @param height the target's height in pixels
-         */
-        void record(MemorySegment commandBuffer, int width, int height);
     }
 
     private long allocate(Arena arena, MethodHandle vkAllocateMemory, MemorySegment dev, long size, int typeIndex) {

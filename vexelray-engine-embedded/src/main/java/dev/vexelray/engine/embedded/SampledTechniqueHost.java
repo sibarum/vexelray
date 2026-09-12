@@ -5,6 +5,7 @@ import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.target.AttachmentFormat;
+import dev.vexelray.vulkan.present.Recorder;
 import dev.vexelray.vulkan.present.SampledColorTarget;
 import dev.vexelray.vulkan.vk.VulkanDevice;
 
@@ -65,8 +66,15 @@ public final class SampledTechniqueHost implements AutoCloseable {
 
     private final List<RenderTechnique> techniques;
 
-    /** Bound once rather than per frame: a capturing lambda in {@link #render} would allocate inside the budget. */
-    private final SampledColorTarget.Recorder recorder = this::recordAll;
+    /**
+     * Bound once rather than per frame: a capturing lambda in {@link #render} would allocate inside the budget.
+     *
+     * <p>{@link Recorder} is the presenters' own interface, not one of this module's. Taking it is what puts
+     * this host on the same contract the windowed and offscreen paths honour — including the promise that
+     * viewport and scissor are already set when a technique records, without which a pipeline built with
+     * dynamic viewport state draws nothing.
+     */
+    private final Recorder recorder = this::recordAll;
 
     private SampledColorTarget target;
 
