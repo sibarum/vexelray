@@ -109,6 +109,16 @@ public final class CoreCheck {
                 checkExpr(s.index(), in, faults);
                 checkExpr(s.value(), in, faults);
             }
+            // An atomic's operand types are checked where it is built, so only the operands' insides are left.
+            case Statement.AtomicUpdate s -> {
+                checkExpr(s.index(), in, faults);
+                checkExpr(s.value(), in, faults);
+            }
+            case Statement.AtomicCompareExchange s -> {
+                checkExpr(s.index(), in, faults);
+                checkExpr(s.expected(), in, faults);
+                checkExpr(s.desired(), in, faults);
+            }
             case Statement.BuiltinWrite s -> checkExpr(s.value(), in, faults);
             case Statement.InterfaceWrite s -> {
                 checkExpr(s.value(), in, faults);
