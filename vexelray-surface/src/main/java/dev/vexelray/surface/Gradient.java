@@ -92,6 +92,9 @@ public final class Gradient {
             case Expr.PushConstantRead r -> Ir.zero(r.type());
             case Expr.BuiltinRead r -> Ir.zero(r.type());
             case Expr.InvocationId id -> Ir.zero(id.type());
+            case Expr.LocalInvocationId id -> Ir.zero(id.type());
+            case Expr.WorkgroupId id -> Ir.zero(id.type());
+            case Expr.InvocationCount n -> Ir.zero(n.type());
 
             case Expr.ConstBool ignored -> throw undifferentiable("a boolean constant");
 
@@ -131,6 +134,7 @@ public final class Gradient {
             case Expr.Call ignored -> throw undifferentiable(
                     "a call into another function (inline the callee, or differentiate it separately)");
             case Expr.BufferLoad ignored -> throw undifferentiable("a buffer load");
+            case Expr.SharedLoad ignored -> throw undifferentiable("a workgroup-memory load");
             case Expr.SampleTexture ignored -> throw undifferentiable("a texture sample");
             case Expr.Bitcast ignored -> throw undifferentiable("a bitcast");
         };

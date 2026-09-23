@@ -119,6 +119,22 @@ public final class CoreCheck {
                 checkExpr(s.expected(), in, faults);
                 checkExpr(s.desired(), in, faults);
             }
+            case Statement.SharedStore s -> {
+                checkExpr(s.index(), in, faults);
+                checkExpr(s.value(), in, faults);
+            }
+            case Statement.SharedAtomicUpdate s -> {
+                checkExpr(s.index(), in, faults);
+                checkExpr(s.value(), in, faults);
+            }
+            case Statement.SharedAtomicCompareExchange s -> {
+                checkExpr(s.index(), in, faults);
+                checkExpr(s.expected(), in, faults);
+                checkExpr(s.desired(), in, faults);
+            }
+            // Where a barrier may stand is SupirVast's Barriers.check, which both of its lowerings run.
+            case Statement.Barrier ignored -> {
+            }
             case Statement.BuiltinWrite s -> checkExpr(s.value(), in, faults);
             case Statement.InterfaceWrite s -> {
                 checkExpr(s.value(), in, faults);
