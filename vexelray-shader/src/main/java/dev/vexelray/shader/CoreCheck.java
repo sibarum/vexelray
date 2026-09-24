@@ -135,6 +135,13 @@ public final class CoreCheck {
             // Where a barrier may stand is SupirVast's Barriers.check, which both of its lowerings run.
             case Statement.Barrier ignored -> {
             }
+            // A subgroup operation's operand and result types are checked where it is built, like an atomic's.
+            case Statement.SubgroupArithmetic s -> checkExpr(s.value(), in, faults);
+            case Statement.SubgroupShuffle s -> {
+                checkExpr(s.value(), in, faults);
+                checkExpr(s.lane(), in, faults);
+            }
+            case Statement.SubgroupVote s -> checkExpr(s.value(), in, faults);
             case Statement.BuiltinWrite s -> checkExpr(s.value(), in, faults);
             case Statement.InterfaceWrite s -> {
                 checkExpr(s.value(), in, faults);

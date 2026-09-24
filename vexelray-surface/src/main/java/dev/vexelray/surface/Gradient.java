@@ -95,6 +95,8 @@ public final class Gradient {
             case Expr.LocalInvocationId id -> Ir.zero(id.type());
             case Expr.WorkgroupId id -> Ir.zero(id.type());
             case Expr.InvocationCount n -> Ir.zero(n.type());
+            case Expr.SubgroupInvocationId id -> Ir.zero(id.type());
+            case Expr.SubgroupSize n -> Ir.zero(n.type());
 
             case Expr.ConstBool ignored -> throw undifferentiable("a boolean constant");
 
