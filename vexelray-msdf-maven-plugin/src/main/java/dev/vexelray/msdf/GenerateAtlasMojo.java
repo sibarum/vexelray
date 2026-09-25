@@ -39,7 +39,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
     @Parameter(property = "msdf.mode", defaultValue = "primary")
     private String mode;
 
-    /** Base output directory; each atlas writes {@code <name>.png} and {@code <name>.json} here. */
+    /** Base output directory; each atlas writes {@code <name>.png}, {@code <name>.json} and {@code <name>.rgba} here. */
     @Parameter(required = true)
     private File outputDir;
 
@@ -125,6 +125,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
                         + "). Switch to the default primary mode to regenerate, or commit the atlas.");
             }
             getLog().info("Atlas '" + cfg.name + "' (prebuilt): " + pngOut.getName() + " + " + jsonOut.getName());
+            writePixels(cfg, pngOut);
             return;
         }
 
@@ -139,6 +140,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
         if (isUpToDate(cfg, pngOut, jsonOut)) {
             getLog().info("Atlas '" + cfg.name + "' is up to date — skipping.");
             bakeNotdef(cfg, pngOut, jsonOut);
+            writePixels(cfg, pngOut);
             reportCoverage(cfg, jsonOut);
             return;
         }
@@ -152,6 +154,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
         getLog().info("Atlas '" + cfg.name + "' generated: " + pngOut.length() + " bytes png + "
                 + jsonOut.length() + " bytes json");
         bakeNotdef(cfg, pngOut, jsonOut);
+        writePixels(cfg, pngOut);
         reportCoverage(cfg, jsonOut);
     }
 
@@ -214,6 +217,19 @@ public class GenerateAtlasMojo extends AbstractMojo {
     private void bakeNotdef(AtlasConfig cfg, File pngOut, File jsonOut) throws MojoExecutionException {
         if (NotdefGlyph.ensure(pngOut, jsonOut)) {
             getLog().info("Atlas '" + cfg.name + "': baked missing-glyph box (U+FFFD).");
+        }
+    }
+
+    /**
+     * The atlas's pixels as {@code <name>.rgba} beside the PNG, for a runtime that must not decode a PNG (see
+     * {@link AtlasPixels}). After the missing-glyph box is baked, so both hold it. Prebuilt mode writes it too:
+     * it needs only the committed PNG, and no binary.
+     */
+    private void writePixels(AtlasConfig cfg, File pngOut) throws MojoExecutionException {
+        File rgbaOut = new File(outputDir, cfg.name + ".rgba");
+        if (AtlasPixels.ensure(pngOut, rgbaOut)) {
+            getLog().info("Atlas '" + cfg.name + "': wrote " + rgbaOut.getName() + ", " + rgbaOut.length()
+                    + " bytes of deflated RGBA.");
         }
     }
 
