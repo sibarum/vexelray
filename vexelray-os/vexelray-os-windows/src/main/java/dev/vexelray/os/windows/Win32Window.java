@@ -120,6 +120,8 @@ public final class Win32Window implements NativeWindow {
     // makes a veto impossible: the host cannot tell "the user clicked X" from "this window no longer exists".
     private volatile boolean closeRequested;
     private volatile boolean destroyed;
+    // Whether this window is one of the holders of the fine timer. See TimerResolution.
+    private final java.util.concurrent.atomic.AtomicBoolean timerHeld = new java.util.concurrent.atomic.AtomicBoolean();
     // Desired client-area cursor; read by the (message-pump-thread) window procedure on WM_SETCURSOR.
     private volatile Cursor desiredCursor = Cursor.ARROW;
     // Caption/content geometry, republished by the application every frame and read by the window procedure.
@@ -194,6 +196,11 @@ public final class Win32Window implements NativeWindow {
             show();
         }
         pumpEvents();
+        // Last, so a constructor that throws above never holds it: nothing would call close() to give it back.
+        // Held for the window's life and not the process's, so an application with no window is not asking
+        // Windows for a finer timer than it needs.
+        TimerResolution.acquire();
+        timerHeld.set(true);
     }
 
     private static synchronized void ensureClassRegistered(MemorySegment hInstance) {
@@ -755,5 +762,10 @@ public final class Win32Window implements NativeWindow {
         // After the window is gone, not before: the icons are still what it is drawn with until then.
         destroyIcons();
         arena.close();
+        // Once, whatever calls close() and however often: the count is per window and a double release would
+        // hand the timer back while another window still wants it.
+        if (timerHeld.compareAndSet(true, false)) {
+            TimerResolution.release();
+        }
     }
 }
