@@ -503,6 +503,26 @@ public final class Win32Window implements NativeWindow {
     }
 
     @Override
+    public void waitForCompositor() {
+        Dwmapi.flush();
+    }
+
+    @Override
+    public String compositorTiming() {
+        long[] t = new long[9];
+        if (!Dwmapi.timingInfo(hwnd, t)) {
+            return "unavailable: " + Dwmapi.timingFailure();
+        }
+        // System.nanoTime is the performance counter, scaled to nanoseconds, so a hundredth of it is the counter's
+        // own ticks at the 10 MHz Windows reports. The phase is how far into the refresh interval this moment is:
+        // a frame begun at 0 has a whole interval to be displayed, one begun near the end has almost none.
+        long ticks = System.nanoTime() / 100L;
+        long phase = t[0] > 0 ? Math.floorMod(ticks - t[1], t[0]) : -1;
+        return "vblank=" + t[2] + " phaseUs=" + phase / 10 + " composed=" + t[3] + " submitted=" + t[4]
+                + " confirmed=" + t[5] + " late=" + t[6] + " outstanding=" + t[7] + " displayed=" + t[8];
+    }
+
+    @Override
     public void setEnabled(boolean enabled) {
         User32.enableWindow(hwnd, enabled);
     }

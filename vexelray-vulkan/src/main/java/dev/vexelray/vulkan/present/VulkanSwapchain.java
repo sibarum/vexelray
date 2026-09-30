@@ -1,6 +1,7 @@
 package dev.vexelray.vulkan.present;
 
 import sibarum.probe.Lane;
+import sibarum.probe.Log;
 import sibarum.probe.Probe;
 import dev.vexelray.os.ffi.NativeException;
 import dev.vexelray.vulkan.vk.VkLoader;
@@ -33,6 +34,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * so drawing a pipeline into them is a later step. Owned internally by the runtime — never surfaced to the engine.
  */
 public final class VulkanSwapchain implements AutoCloseable {
+
+    private static final Log LOG = Log.of("vulkan.swapchain");
 
     private static final GroupLayout SURFACE_CAPABILITIES = MemoryLayout.structLayout(
             JAVA_INT.withName("minImageCount"), JAVA_INT.withName("maxImageCount"),
@@ -138,7 +141,8 @@ public final class VulkanSwapchain implements AutoCloseable {
                         gi(caps, SURFACE_CAPABILITIES, "maxExtent_h"));
             }
 
-            int minCount = gi(caps, SURFACE_CAPABILITIES, "minImageCount") + 1;
+            int driverMin = gi(caps, SURFACE_CAPABILITIES, "minImageCount");
+            int minCount = driverMin + 1;
             int maxCount = gi(caps, SURFACE_CAPABILITIES, "maxImageCount");
             if (maxCount > 0 && minCount > maxCount) {
                 minCount = maxCount;
@@ -174,6 +178,8 @@ public final class VulkanSwapchain implements AutoCloseable {
             MemorySegment pImages = temp.allocate(JAVA_LONG, imageCount);
             check(invoke(vkGetSwapchainImagesKHR, device.handle(), handle, pImageCount, pImages),
                     "vkGetSwapchainImagesKHR");
+            LOG.debug("created {}x{}: {} images (driver min {}, asked for {}, max {}), FIFO",
+                    extentWidth, extentHeight, imageCount, driverMin, minCount, maxCount);
             this.images = new long[imageCount];
             for (int i = 0; i < imageCount; i++) {
                 this.images[i] = pImages.getAtIndex(JAVA_LONG, i);

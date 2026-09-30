@@ -2,6 +2,7 @@ package dev.vexelray.vulkan.present;
 
 import dev.vexelray.os.NativeWindow;
 import sibarum.probe.Lane;
+import sibarum.probe.Log;
 import sibarum.probe.Probe;
 import sibarum.probe.Zone;
 import dev.vexelray.vulkan.vk.Vk;
@@ -65,6 +66,9 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * (camera, time) arrive with the pipeline-layout work in a later step.
  */
 public final class WindowedPresenter implements AutoCloseable {
+    private static final Log LOG = Log.of("vulkan.present");
+    /** Experiment: hold the present queue to one frame by waiting out the vblank after every present. */
+    private static final boolean FLUSH_AFTER_PRESENT = Boolean.getBoolean("vexelray.present.flush");
 
     /**
      * The one struct here that no other class needs: presenting is what this presenter is for.
@@ -117,6 +121,8 @@ public final class WindowedPresenter implements AutoCloseable {
     // The imageAvailable semaphore is per slot too, because it is signalled by the acquire that begins a
     // frame and waited by that frame's own submit.
     private final long[] inFlight;
+    /** When each slot last submitted, so the next wait on its fence can say how long the GPU took to finish it. */
+    private final long[] submittedAt;
     private final long[] imageAvailable;
     private final MemorySegment[] cmds;
     private final long pool;
@@ -283,6 +289,7 @@ public final class WindowedPresenter implements AutoCloseable {
         }
         Probe.opened(Lane.GPU, "WindowedPresenter", this);
         this.framesInFlight = framesInFlight;
+        LOG.debug("{} frame(s) in flight over {} swapchain images", framesInFlight, swapchain.images().length);
         this.depthFormat = depthFormat;
         this.device = device;
         this.dev = device.handle();
@@ -323,6 +330,7 @@ public final class WindowedPresenter implements AutoCloseable {
 
         this.pool = createPool(createPool);
         this.inFlight = new long[framesInFlight];
+        this.submittedAt = new long[framesInFlight];
         this.imageAvailable = new long[framesInFlight];
         this.cmds = new MemorySegment[framesInFlight];
         for (int slot = 0; slot < framesInFlight; slot++) {
@@ -481,13 +489,25 @@ public final class WindowedPresenter implements AutoCloseable {
         // line that says so. Raising framesInFlight is precisely the move that shrinks this number, by
         // giving the CPU an older frame to wait on.
         s.pFence.set(JAVA_LONG, 0, inFlight[slot]);
+        compositorMark("dwm.start");
         try (Zone w = Probe.zone(Lane.GPU, "wait fence")) {
             check(invoke(waitFences, dev, 1, s.pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+        }
+        if (Probe.ON && submittedAt[slot] != 0L) {
+            // Submit to fence, as seen from here: the GPU's time on the previous frame plus everything it queued
+            // behind, including the wait on the swapchain image. A value that climbs over a burst of frames and
+            // then plateaus at a multiple of the refresh interval is a full present queue, not a slow GPU.
+            Probe.mark(Lane.GPU, "frame.latency", "frame=" + frameCounter + " slot=" + slot + " submit-to-fence "
+                    + (System.nanoTime() - submittedAt[slot]) / 1_000L + "us");
         }
         int acq;
         try (Zone w = Probe.zone(Lane.GPU, "acquire image")) {
             acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable[slot], 0L,
                     s.pImageIndex);
+        }
+        if (Probe.ON) {
+            Probe.mark(Lane.GPU, "frame.image", "frame=" + frameCounter + " image=" + s.pImageIndex.get(JAVA_INT, 0)
+                    + " acquire=" + acq);
         }
         if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
             rebuild();
@@ -627,10 +647,19 @@ public final class WindowedPresenter implements AutoCloseable {
         try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
             check(invoke(submitCmd, device.queue(), 1, s.submit, fence), "vkQueueSubmit");
         }
+        if (Probe.ON) {
+            submittedAt[(int) ((frameCounter - 1) % framesInFlight)] = System.nanoTime();
+        }
         s.pSwapchains.set(JAVA_LONG, 0, swapchain.handle());
         int res;
         try (Zone w = Probe.zone(Lane.GPU, "queue present")) {
             res = invoke(present, device.queue(), s.presentInfo);
+        }
+        compositorMark("dwm.presented");
+        if (FLUSH_AFTER_PRESENT) {
+            try (Zone w = Probe.zone(Lane.GPU, "compositor flush")) {
+                window.waitForCompositor();
+            }
         }
         if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
             rebuild();
@@ -642,6 +671,20 @@ public final class WindowedPresenter implements AutoCloseable {
             s.shown = true;
         }
         return true;
+    }
+
+    /**
+     * The compositor's counts at this point in the frame, into the trace. Two of these a frame (before the wait on
+     * the last frame, and after this one is presented) put the loop's view of a frame next to what reached the
+     * glass: vblanks elapsed, frames handed over, displayed, late. Nothing at all unless a probe is recording.
+     */
+    private void compositorMark(String name) {
+        if (Probe.ON) {
+            String timing = window.compositorTiming();
+            if (timing != null) {
+                Probe.mark(Lane.GPU, name, timing);
+            }
+        }
     }
 
     private FrameState state;

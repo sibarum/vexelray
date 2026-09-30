@@ -65,6 +65,24 @@ public interface NativeWindow extends AutoCloseable {
         return true;
     }
 
+    /**
+     * What the platform's compositor says it has done with this window's frames, as one line for a trace, or
+     * {@code null} where it cannot say. A diagnostic and nothing else: it may allocate and make a system call, so
+     * a caller asks only while a probe is recording. It exists because a frame the loop finished and a frame that
+     * reached the glass are different events, and the gap between them is where a hitch can hide.
+     */
+    default String compositorTiming() {
+        return null;
+    }
+
+    /**
+     * Block until the compositor has taken what was last presented, which is the next vblank. Returns at once
+     * where the platform has nothing to wait on. An experiment's hook for now: what it buys is a present queue
+     * that is never deeper than one frame, at the price of a thread that sleeps through the vblank.
+     */
+    default void waitForCompositor() {
+    }
+
     // ---- Outer bounds, for persisting and restoring window placement. The rect these describe is the same one
     // WindowConfig's width/height/x/y request, so save-then-recreate round-trips exactly (a client-rect size fed
     // back as an outer size would shrink the window by its frame on every launch). Defaults are for platforms
