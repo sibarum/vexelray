@@ -22,8 +22,17 @@
         picture is indistinguishable from a taste decision. Making each of those say so is one boolean and one
         line; making five of them say so the same way, across three modules, is this.
 
-        Depends on nothing, so every module can reach it. Deliberately not in vexelray-core: nothing depends on
-        that module today, and pulling FrameGraph and its neighbours in for one utility would be the wrong
-        trade for the modules that need this most.
+        Depends on atchung-probe alone, which every module already reaches and which has no dependencies of its
+        own: a dropped capability is a WARN in the stack's one log (see atchung/docs/logging.md), so it reaches
+        the file as well as the console. Deliberately not in vexelray-core: nothing depends on that module
+        today, and pulling FrameGraph and its neighbours in for one utility would be the wrong trade for the
+        modules that need this most.
     </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.atchung</groupId>
+            <artifactId>atchung-probe</artifactId>
+        </dependency>
+    </dependencies>
 </project>

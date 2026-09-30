@@ -1,5 +1,7 @@
 package dev.vexelray.diag;
 
+import sibarum.probe.Log;
+
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,7 +57,7 @@ public final class Diagnostics {
      */
     public static final int KEY_LIMIT = 256;
 
-    private static final String PREFIX = "vexelray: ";
+    private static final Log LOG = Log.of("vexelray.diag");
     private static final String OVERFLOW_KEY = "Diagnostics/keyLimit";
 
     private static final Set<String> SEEN = ConcurrentHashMap.newKeySet();
@@ -101,7 +103,10 @@ public final class Diagnostics {
     private static void emit(String message) {
         RECORDED.add(message);
         if (!"off".equalsIgnoreCase(System.getProperty("vexelray.diag", "on"))) {
-            System.err.println(PREFIX + message);
+            // A WARN in the stack's one log, so a dropped capability reaches the file a run leaves behind and
+            // not only a console nobody was watching. Once per key stays here: warn-once is this class's
+            // contract, and it is keyed by call site, which a logger's name is not.
+            LOG.warn(message);
         }
     }
 
