@@ -105,8 +105,21 @@ public final class PanelTechnique implements RenderTechnique {
     private final double focalLength;
     private final ClipDepth clipDepth;
 
+    /**
+     * What {@link #camera(double, double, double, double, double, double)} is passed to mean "the frame's own
+     * shape" — the default, and what the five-argument form uses.
+     *
+     * <p>Zero rather than a {@code Double} that may be null: an aspect is a positive ratio, so zero is a value
+     * the quantity never takes and a caller who computes one from a zero-height box gets an exception rather
+     * than a silent fallback.
+     */
+    public static final double FRAME_ASPECT = 0;
+
     private Panel panel;
     private boolean writesDepth;
+
+    /** The aspect to project at, or {@link #FRAME_ASPECT} to take the frame's. */
+    private double aspect = FRAME_ASPECT;
 
     private double camX;
     private double camY;
@@ -235,13 +248,47 @@ public final class PanelTechnique implements RenderTechnique {
     /**
      * The camera to project through: the same five numbers, in the same convention, as the scene's own camera.
      * Per frame, from the engine's frame callback.
+     *
+     * <p>The aspect comes from the frame, which is right whenever the frame is shown at its own shape. When it
+     * is not, say so with {@link #camera(double, double, double, double, double, double)}.
      */
     public PanelTechnique camera(double x, double y, double z, double yaw, double pitch) {
+        return camera(x, y, z, yaw, pitch, FRAME_ASPECT);
+    }
+
+    /**
+     * The same, for a frame that is <b>not presented at its own shape</b>.
+     *
+     * <p>{@code SdfRaymarchTechnique} says it in the strongest terms — "aspect is the frame's, never the
+     * caller's" — and it is right about a window: a camera API that took an aspect would make every application
+     * responsible for noticing a resize. But it is right because a swapchain image is shown at its own extent,
+     * and that is a property of the frame rather than a law about aspects.
+     *
+     * <p>An offscreen target <em>sampled</em> into a box is the case where it does not hold. Such a target has
+     * fixed pixels and the box is laid out by flex, so the image is stretched — and the shape it must be
+     * authored for is the box's, not its own. A marcher drawing into one already has to be told (the same trap,
+     * from the other side, is what makes a circle come out 9% wide), and a panel drawn into the same target has
+     * to be told the same number or the two disagree: the panel's world scales by the frame's aspect while the
+     * march's scales by the box's, so a drawn grid measures a different unit from the geometry beside it, and
+     * changes size whenever the target does.
+     *
+     * <p>So this is the door for a caller who knows something about presentation that the frame cannot: pass
+     * the aspect the image will be <em>displayed</em> at. Pass {@link #FRAME_ASPECT} to go back to the frame's
+     * own, which is what the five-argument form does.
+     *
+     * @param aspect width over height of the image as displayed, or {@link #FRAME_ASPECT} for the frame's own
+     */
+    public PanelTechnique camera(double x, double y, double z, double yaw, double pitch, double aspect) {
+        if (aspect != FRAME_ASPECT && (!(aspect > 0) || !Double.isFinite(aspect))) {
+            throw new IllegalArgumentException("aspect must be finite and positive, or FRAME_ASPECT, got "
+                    + aspect);
+        }
         this.camX = x;
         this.camY = y;
         this.camZ = z;
         this.yaw = yaw;
         this.pitch = pitch;
+        this.aspect = aspect;
         return this;
     }
 
@@ -344,10 +391,13 @@ public final class PanelTechnique implements RenderTechnique {
         // canvas on the screen: its extent is a measurement of a thing in the world, and a window getting wider
         // does not make a sign on a wall wider. What the frame does decide is the projection -- aspect, and the
         // pixel scale the anti-aliasing is computed against.
-        double aspect = height == 0 ? 1.0 : (double) width / height;
+        // The caller's, when it knows something about presentation the frame cannot -- a target sampled into a
+        // box of another shape is displayed at the box's aspect and not its own. See camera(..., aspect).
+        double shown = aspect != FRAME_ASPECT ? aspect
+                : (height == 0 ? 1.0 : (double) width / height);
         panel.viewBasis(canvas.width(), canvas.height(), camX, camY, camZ, yaw, pitch, pushFloats);
         pushFloats[PanelShader.PUSH_FOCAL] = (float) focalLength;
-        pushFloats[PanelShader.PUSH_ASPECT] = (float) aspect;
+        pushFloats[PanelShader.PUSH_ASPECT] = (float) shown;
         pushFloats[PanelShader.PUSH_HALF_HEIGHT] = height * 0.5f;
 
         cmds.bindPipeline(cmd, pipeline);
