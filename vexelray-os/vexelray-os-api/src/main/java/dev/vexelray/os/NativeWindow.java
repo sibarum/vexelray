@@ -76,6 +76,18 @@ public interface NativeWindow extends AutoCloseable {
     }
 
     /**
+     * How long one refresh of the display this window is on lasts, in nanoseconds, or 0 when the platform cannot
+     * say. What a frame ceiling is set to so that it holds the loop to the display and not to a guess: a constant
+     * 60 Hz caps a 144 Hz panel, and no ceiling lets a loop run frames faster than they are shown.
+     *
+     * <p>May allocate and make a system call, so a caller reads it now and then (when a window appears or moves)
+     * and never per frame.
+     */
+    default long refreshIntervalNanos() {
+        return 0L;
+    }
+
+    /**
      * Block until the compositor has taken what was last presented, which is the next vblank. Returns at once
      * where the platform has nothing to wait on. An experiment's hook for now: what it buys is a present queue
      * that is never deeper than one frame, at the price of a thread that sleeps through the vblank.

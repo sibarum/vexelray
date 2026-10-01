@@ -503,6 +503,11 @@ public final class Win32Window implements NativeWindow {
     }
 
     @Override
+    public long refreshIntervalNanos() {
+        return Dwmapi.refreshIntervalNanos();
+    }
+
+    @Override
     public void waitForCompositor() {
         Dwmapi.flush();
     }

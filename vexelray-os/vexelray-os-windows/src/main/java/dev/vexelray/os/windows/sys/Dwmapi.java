@@ -89,21 +89,7 @@ public final class Dwmapi {
     public static boolean timingInfo(MemorySegment hwnd, long[] out) {
         try (Arena temp = Arena.ofConfined()) {
             MemorySegment info = temp.allocate(512);
-            int hr = -1;
-            if (timingInfoSize != 0) {
-                info.set(JAVA_INT, 0, timingInfoSize);
-                hr = (int) DwmGetCompositionTimingInfo.invokeExact(MemorySegment.NULL, info);
-            } else {
-                for (int size = 200; size <= 400 && hr != 0; size += 4) {
-                    info.set(JAVA_INT, 0, size);
-                    hr = (int) DwmGetCompositionTimingInfo.invokeExact(MemorySegment.NULL, info);
-                    if (hr == 0) {
-                        timingInfoSize = size;
-                    }
-                }
-            }
-            if (hr != 0) {
-                timingFailure = "HRESULT 0x" + Integer.toHexString(hr) + " for every size tried";
+            if (!queryTiming(info)) {
                 return false;
             }
             int[] at = {T_PERIOD_QPC, T_VBLANK_QPC, T_REFRESH, T_FRAME, T_FRAME_SUBMITTED, T_FRAME_CONFIRMED,
@@ -115,6 +101,55 @@ public final class Dwmapi {
         } catch (Throwable t) {
             timingFailure = t.toString();
             return false;
+        }
+    }
+
+    /**
+     * Fill {@code info} with the compositor's global timing, finding the size it accepts the first time. The
+     * window argument is null on purpose: asked about a Vulkan window the compositor answers
+     * {@code 0x88980090}, and asked about none it answers for itself.
+     */
+    private static boolean queryTiming(MemorySegment info) throws Throwable {
+        int hr = -1;
+        if (timingInfoSize != 0) {
+            info.set(JAVA_INT, 0, timingInfoSize);
+            hr = (int) DwmGetCompositionTimingInfo.invokeExact(MemorySegment.NULL, info);
+        } else {
+            for (int size = 200; size <= 400 && hr != 0; size += 4) {
+                info.set(JAVA_INT, 0, size);
+                hr = (int) DwmGetCompositionTimingInfo.invokeExact(MemorySegment.NULL, info);
+                if (hr == 0) {
+                    timingInfoSize = size;
+                }
+            }
+        }
+        if (hr != 0) {
+            timingFailure = "HRESULT 0x" + Integer.toHexString(hr) + " for every size tried";
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * How long one refresh of the display takes, in nanoseconds, or 0 when the compositor will not say. The
+     * struct's {@code rateRefresh} is a ratio of the performance counter's ticks a second to the ticks one
+     * refresh lasts (10 000 000 over 69 448 for a 144 Hz panel), so the interval is the second ratio inverted.
+     *
+     * <p>The compositor's, not the window's: on a machine with displays of different rates it is the rate the
+     * compositor itself runs at, which is not necessarily the one this window is on.
+     */
+    public static long refreshIntervalNanos() {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment info = temp.allocate(512);
+            if (!queryTiming(info)) {
+                return 0L;
+            }
+            long ticksPerSecond = Integer.toUnsignedLong(info.get(JAVA_INT, 4));
+            long ticksPerRefresh = Integer.toUnsignedLong(info.get(JAVA_INT, 8));
+            return ticksPerSecond == 0 ? 0L : ticksPerRefresh * 1_000_000_000L / ticksPerSecond;
+        } catch (Throwable t) {
+            timingFailure = t.toString();
+            return 0L;
         }
     }
 
