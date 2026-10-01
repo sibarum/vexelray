@@ -14,8 +14,9 @@
     <artifactId>vexelray-vulkan</artifactId>
 
     <description>
-        The Panama Vulkan runtime: hand-rolled bindings to the Vulkan loader (vulkan-1) plus the concrete
-        RuntimeManager/ResourceManager that own VexelRay's device, swapchain, and frame loop. Depends on the
+        The Panama Vulkan runtime: the concrete RuntimeManager/ResourceManager that own VexelRay's swapchain,
+        render passes, targets and frame loop, over supirvast's vastir-vulkan (the loader, instance and device
+        bindings). Depends on the
         platform-agnostic OS API for windowing/surface, and on exactly one platform module chosen at build time
         by the host OS (the selection profiles below). Follows docs/native-bindings.md.
     </description>
@@ -25,10 +26,16 @@
             <groupId>sibarum.atchung</groupId>
             <artifactId>atchung-probe</artifactId>
         </dependency>
-        <!-- Always: the platform-agnostic native API (Ffi helper, NativePlatform, NativeWindow). -->
+        <!-- Always: the platform-agnostic native API (NativePlatform, NativeWindow). -->
         <dependency>
             <groupId>dev.vexelray</groupId>
             <artifactId>vexelray-os-api</artifactId>
+        </dependency>
+        <!-- The Vulkan binding itself: loader, instance, device. Lives in supirvast so that compute and rendering
+             run on one device through one binding. This module is what draws on it: pipelines, targets, buffers. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-vulkan</artifactId>
         </dependency>
 
         <!-- Engine vocabulary: ImageHandle, the marker a drawing layer holds a texture as. The substrate names

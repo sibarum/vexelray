@@ -17,10 +17,10 @@ import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
 import dev.vexelray.vulkan.present.WindowedPresenter;
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VkLoader;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VkLoader;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;

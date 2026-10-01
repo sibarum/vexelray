@@ -8,11 +8,11 @@ import dev.vexelray.vulkan.present.Recorder;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
 import dev.vexelray.vulkan.present.WindowedPresenter;
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VkLoader;
-import dev.vexelray.vulkan.vk.VulkanDebugMessenger;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VkLoader;
+import dev.supirvast.vulkan.VulkanDebugMessenger;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertNotEquals;

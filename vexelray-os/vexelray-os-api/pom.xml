@@ -15,8 +15,16 @@
 
     <description>
         The platform-agnostic native API the engine codes against — NativePlatform, NativeWindow, WindowConfig,
-        the Platform enum — plus the single sanctioned Panama entry point (the Ffi helper) and NativeException.
-        Depends on nothing but the JDK. Platform modules implement this; the engine resolves the active one via
-        ServiceLoader. See docs/native-bindings.md.
+        the Platform enum. The single sanctioned Panama entry point (the Ffi helper) and NativeException live in
+        supirvast's vastir-ffi, which this depends on and which depends on nothing but the JDK. Platform modules
+        implement this; the engine resolves the active one via ServiceLoader. See docs/native-bindings.md.
     </description>
+
+    <dependencies>
+        <!-- Ffi and NativeException: the Panama layer every native binding in the stack is built on. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-ffi</artifactId>
+        </dependency>
+    </dependencies>
 </project>

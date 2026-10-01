@@ -3,7 +3,7 @@ package dev.vexelray.engine.vulkan.runtime;
 import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.target.AttachmentFormat;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.VulkanDevice;
 
 import java.util.Optional;
 

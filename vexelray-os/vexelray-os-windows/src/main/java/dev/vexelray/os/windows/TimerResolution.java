@@ -1,6 +1,6 @@
 package dev.vexelray.os.windows;
 
-import dev.vexelray.os.ffi.NativeException;
+import dev.supirvast.ffi.NativeException;
 import dev.vexelray.os.windows.sys.Kernel32;
 import dev.vexelray.os.windows.sys.Winmm;
 

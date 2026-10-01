@@ -3,9 +3,9 @@ package dev.vexelray.vulkan;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
-import dev.vexelray.vulkan.vk.VkLoader;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
+import dev.supirvast.vulkan.VkLoader;
 
 /**
  * Manual smoke check (not a unit test): the full OS↔Vulkan loop — open a window, create an instance, mint a

@@ -31,8 +31,8 @@ import sibarum.tactroller.api.Tactroller;
 import sibarum.tactroller.atchung.TactrollerInputBridge;
 import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;

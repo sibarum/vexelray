@@ -6,7 +6,7 @@ import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.Platform;
 import dev.vexelray.os.WindowConfig;
 import dev.vexelray.os.WorkArea;
-import dev.vexelray.os.ffi.NativeException;
+import dev.supirvast.ffi.NativeException;
 import dev.vexelray.os.windows.sys.User32;
 
 import java.lang.foreign.Arena;

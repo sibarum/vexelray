@@ -5,8 +5,8 @@ import dev.supirvast.vast.CoreToTruffle;
 import dev.supirvast.vastir.tools.Fullscreen;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;

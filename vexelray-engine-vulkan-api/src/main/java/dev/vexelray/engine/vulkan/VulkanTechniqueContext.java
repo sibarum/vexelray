@@ -2,7 +2,7 @@ package dev.vexelray.engine.vulkan;
 
 import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.VulkanDevice;
 
 /**
  * The {@link TechniqueContext} a Vulkan runtime hands to a technique at realise time — the Vulkan-bearing

@@ -1,7 +1,7 @@
 package dev.vexelray.vulkan;
 
 import dev.vexelray.os.NativePlatform;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanInstance;
 
 import java.util.List;
 

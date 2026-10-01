@@ -1,7 +1,7 @@
 package dev.vexelray.technique.sdf;
 
 import dev.vexelray.os.NativePlatform;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanInstance;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

@@ -1,8 +1,8 @@
 package dev.vexelray.vulkan;
 
 import dev.vexelray.os.NativePlatform;
-import dev.vexelray.vulkan.vk.VulkanDebugMessenger;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDebugMessenger;
+import dev.supirvast.vulkan.VulkanInstance;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -7,7 +7,7 @@ import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.target.AttachmentFormat;
 import dev.vexelray.vulkan.present.Recorder;
 import dev.vexelray.vulkan.present.SampledColorTarget;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.VulkanDevice;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;

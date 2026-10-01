@@ -2,8 +2,8 @@ package dev.vexelray.vulkan;
 
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.vulkan.offscreen.OffscreenReadback;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;

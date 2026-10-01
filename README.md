@@ -53,14 +53,14 @@ vexelray                 parent (pom)
 │    dev.vexelray.canvas    Canvas, CanvasVertex, CanvasShader, Color — shapes, text and sampled images all
 │                           share one fat-vertex batch, so a whole scene composites as a single draw
 ├─ vexelray-os           OS integration (nested aggregator) — direct Panama bindings, no LWJGL/GLFW
-│    ├─ vexelray-os-api     platform-agnostic API: NativePlatform, NativeWindow, WindowConfig, Ffi helper,
-│    │                      Decorations + HitRegions (application-drawn window chrome)
+│    ├─ vexelray-os-api     platform-agnostic API: NativePlatform, NativeWindow, WindowConfig,
+│    │                      Decorations + HitRegions (application-drawn window chrome); Ffi is supirvast's
 │    ├─ vexelray-os-windows WindowsPlatform  (user32/kernel32 + VK_KHR_win32_surface)
 │    ├─ vexelray-os-linux   LinuxPlatform    (libX11 + VK_KHR_xlib_surface)      — skeleton
 │    └─ vexelray-os-macos   MacosPlatform    (AppKit/QuartzCore + VK_EXT_metal_surface) — skeleton
 ├─ vexelray-vulkan       the Panama Vulkan runtime + resource implementation; hosts the OS-activated
 │                        selection profiles that pick the platform module
-│    dev.vexelray.vulkan.vk        VkLoader, VulkanInstance, VulkanDevice, Vk/Ffm binding helpers
+│    (the loader, instance and device bindings are supirvast's vastir-vulkan, dev.supirvast.vulkan)
 │    dev.vexelray.vulkan.present   VulkanSwapchain, SwapchainFramebuffers, VulkanRenderPass, DepthAttachment,
 │                           GraphicsPipeline, DrawCommands, VertexBuffer, AtlasTexture, SampledImage,
 │                           SampledColorTarget, OffscreenDraw, WindowedPresenter

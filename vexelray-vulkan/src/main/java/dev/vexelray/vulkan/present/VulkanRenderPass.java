@@ -2,8 +2,8 @@ package dev.vexelray.vulkan.present;
 
 import sibarum.probe.Lane;
 import sibarum.probe.Probe;
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VulkanDevice;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -12,11 +12,11 @@ import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 
-import static dev.vexelray.vulkan.vk.Ffm.check;
-import static dev.vexelray.vulkan.vk.Ffm.invoke;
-import static dev.vexelray.vulkan.vk.Ffm.invokeVoid;
-import static dev.vexelray.vulkan.vk.Ffm.sa;
-import static dev.vexelray.vulkan.vk.Ffm.si;
+import static dev.supirvast.vulkan.Ffm.check;
+import static dev.supirvast.vulkan.Ffm.invoke;
+import static dev.supirvast.vulkan.Ffm.invokeVoid;
+import static dev.supirvast.vulkan.Ffm.sa;
+import static dev.supirvast.vulkan.Ffm.si;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;

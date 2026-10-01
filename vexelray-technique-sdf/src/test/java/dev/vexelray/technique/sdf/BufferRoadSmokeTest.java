@@ -8,8 +8,8 @@ import dev.vexelray.surface.Scalar;
 import dev.vexelray.surface.Surface;
 import dev.vexelray.vulkan.offscreen.OffscreenRenderer;
 import dev.vexelray.vulkan.present.StorageBuffer;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

@@ -7,8 +7,8 @@ import dev.vexelray.diag.Diagnostics;
 import dev.vexelray.runtime.EngineConfig;
 import dev.vexelray.target.AttachmentFormat;
 import dev.vexelray.target.Target;
-import dev.vexelray.vulkan.vk.VulkanDebugMessenger;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDebugMessenger;
+import dev.supirvast.vulkan.VulkanInstance;
 import org.junit.jupiter.api.Test;
 
 import java.util.ServiceLoader;

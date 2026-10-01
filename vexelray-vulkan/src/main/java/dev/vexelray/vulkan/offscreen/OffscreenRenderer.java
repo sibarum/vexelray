@@ -1,8 +1,8 @@
 package dev.vexelray.vulkan.offscreen;
 
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VkStructs;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VkStructs;
+import dev.supirvast.vulkan.VulkanDevice;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -11,15 +11,15 @@ import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 
-import static dev.vexelray.vulkan.vk.Ffm.check;
-import static dev.vexelray.vulkan.vk.Ffm.gi;
-import static dev.vexelray.vulkan.vk.Ffm.gl;
-import static dev.vexelray.vulkan.vk.Ffm.invoke;
-import static dev.vexelray.vulkan.vk.Ffm.invokeVoid;
-import static dev.vexelray.vulkan.vk.Ffm.sa;
-import static dev.vexelray.vulkan.vk.Ffm.sf;
-import static dev.vexelray.vulkan.vk.Ffm.si;
-import static dev.vexelray.vulkan.vk.Ffm.sl;
+import static dev.supirvast.vulkan.Ffm.check;
+import static dev.supirvast.vulkan.Ffm.gi;
+import static dev.supirvast.vulkan.Ffm.gl;
+import static dev.supirvast.vulkan.Ffm.invoke;
+import static dev.supirvast.vulkan.Ffm.invokeVoid;
+import static dev.supirvast.vulkan.Ffm.sa;
+import static dev.supirvast.vulkan.Ffm.sf;
+import static dev.supirvast.vulkan.Ffm.si;
+import static dev.supirvast.vulkan.Ffm.sl;
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;

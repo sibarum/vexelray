@@ -4,7 +4,7 @@ import dev.vexelray.engine.EngineProvider;
 import dev.vexelray.engine.VexelEngine;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.runtime.EngineConfig;
-import dev.vexelray.vulkan.vk.VkLoader;
+import dev.supirvast.vulkan.VkLoader;
 
 /**
  * How {@link VexelEngine#create} finds this runtime: a {@link EngineProvider} service, so an application depends

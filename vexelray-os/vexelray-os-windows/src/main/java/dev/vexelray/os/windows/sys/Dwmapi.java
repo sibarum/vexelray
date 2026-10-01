@@ -1,7 +1,7 @@
 package dev.vexelray.os.windows.sys;
 
-import dev.vexelray.os.ffi.Ffi;
-import dev.vexelray.os.ffi.NativeException;
+import dev.supirvast.ffi.Ffi;
+import dev.supirvast.ffi.NativeException;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;

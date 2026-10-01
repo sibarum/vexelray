@@ -6,8 +6,8 @@ import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.vulkan.present.SampledColorTarget;
-import dev.vexelray.vulkan.vk.VulkanDevice;
-import dev.vexelray.vulkan.vk.VulkanInstance;
+import dev.supirvast.vulkan.VulkanDevice;
+import dev.supirvast.vulkan.VulkanInstance;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

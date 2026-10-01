@@ -1,7 +1,7 @@
 package dev.vexelray.vulkan.present;
 
 import dev.vexelray.target.ImageHandle;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.VulkanDevice;
 
 /**
  * Something a fragment stage can read: a combined image sampler already written into a descriptor set.

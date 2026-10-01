@@ -1,8 +1,8 @@
 package dev.vexelray.vulkan.present;
 
-import dev.vexelray.vulkan.vk.Ffm;
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.Ffm;
+import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VulkanDevice;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;

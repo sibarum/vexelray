@@ -65,13 +65,20 @@ required instance extensions (§5); the Vulkan module enables exactly what the a
 
 ```
 vexelray-os                    aggregator (packaging=pom, no code) — groups the OS layer
-├─ vexelray-os-api             shared, platform-agnostic API + the Ffi helper (§4.1). Depends on NOTHING.
+├─ vexelray-os-api             shared, platform-agnostic API. Depends only on supirvast's vastir-ffi (§4.1).
 ├─ vexelray-os-windows         WindowsPlatform + user32/kernel32 bindings + reachability metadata
 ├─ vexelray-os-linux           LinuxPlatform (X11 first) + libX11 bindings + reachability metadata
 └─ vexelray-os-macos           MacosPlatform + AppKit/QuartzCore bindings + reachability metadata
 
 vexelray-vulkan  ──depends on──►  vexelray-os-api   (and, via a Maven profile, the one active platform module)
+                 ──depends on──►  vastir-vulkan     (supirvast: the Vulkan loader, instance and device)
+
+supirvast:  vastir-ffi  ◄──  vastir-vulkan          (Ffi and NativeException; the Vulkan binding built on them)
 ```
+
+The Ffi helper and the Vulkan binding live in supirvast, below vexelray, because compute (`vastir-tools`) and
+rendering must run on one Vulkan device through one binding. Two bindings meant two devices, and a buffer cannot
+be shared across devices.
 
 `vexelray-os` is a nested aggregator: the root reactor lists it once, and it lists the four modules above. The
 folder nesting is organizational only — the reactor flattens it and orders modules by dependency
@@ -148,13 +155,13 @@ dev.vexelray.os.windows.WindowsPlatform
 Every native library is bound by **one `final` class**, named after the library, in package
 `dev.vexelray.os.<platform>.sys`. The class has an invariant shape. Copy it; do not improvise.
 
-### 4.1 The shared FFI helper (`vexelray-os-api`)
+### 4.1 The shared FFI helper (`vastir-ffi`, in supirvast)
 
 All the FFM ceremony lives in one helper so bindings never hand-roll it. This is the *only* place `Linker`,
 `SymbolLookup`, and `upcallStub` are touched.
 
 ```java
-package dev.vexelray.os.ffi;
+package dev.supirvast.ffi;
 
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
@@ -199,8 +206,8 @@ public final class Ffi {
 ```java
 package dev.vexelray.os.windows.sys;
 
-import dev.vexelray.os.ffi.Ffi;
-import dev.vexelray.os.ffi.NativeException;
+import dev.supirvast.ffi.Ffi;
+import dev.supirvast.ffi.NativeException;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import static java.lang.foreign.ValueLayout.*;

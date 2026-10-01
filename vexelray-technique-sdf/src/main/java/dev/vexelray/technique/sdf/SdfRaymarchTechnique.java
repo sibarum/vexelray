@@ -10,8 +10,8 @@ import dev.vexelray.surface.ParamBlock;
 import dev.vexelray.surface.ParamId;
 import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
-import dev.vexelray.vulkan.vk.Vk;
-import dev.vexelray.vulkan.vk.VulkanDevice;
+import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VulkanDevice;
 
 import java.lang.foreign.MemorySegment;
 import java.util.List;
