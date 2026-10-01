@@ -420,6 +420,43 @@ public interface NativeWindow extends AutoCloseable {
 Vulkan module never grows a `#ifdef`. The OS module loads the entry point through the passed proc-addr pointer —
 it needs no Vulkan-binding dependency, only the loader pointer and the extension name it already reports.
 
+### 5.1 Optional queries: a default that says "I cannot", never a throw
+
+The sketch above is the minimum. `NativeWindow` also carries queries and hooks a platform may implement, each with a
+default that is safe to leave: a platform that has not written one keeps working and loses only what the query was for.
+
+| Method | Default | What it is for |
+|---|---|---|
+| `waitEvents(nanos)` / `postWake()` | return at once / no-op | park the frame loop until something happens, and end the park from another thread. Implement both or neither |
+| `isFocused()` | `true` | spend the idle budget where it is noticed; a platform that cannot tell is treated as focused |
+| `refreshIntervalNanos()` | `0` ("cannot say") | one refresh of the display, which a frame ceiling is set to. May allocate and call the OS: read it when a window appears or moves, never per frame |
+| `compositorTiming()` | `null` | one line of what the compositor says it did with the window's frames, **for a probe trace only**; the caller asks only while a probe is recording |
+| `waitForCompositor()` | no-op | block until the compositor has taken the last present. An experiment's hook (`-Dvexelray.present.flush=true` in `WindowedPresenter`), off by default |
+
+**On Windows these come from `dwmapi.dll`** (`sys/Dwmapi`), and three facts in it were found by measurement, not read from
+a header, so they are written down here:
+
+- *`DwmGetCompositionTimingInfo` refuses a Vulkan window.* Asked about one it answers `0x88980090`; asked with a null
+  window it answers for the compositor as a whole. Everything above uses the null form, so **the values are the
+  compositor's, not the window's monitor's**. On displays of different rates that is the rate the compositor runs at.
+- *`DWM_TIMING_INFO` is packed on four bytes.* Its 64-bit fields start at 4-byte offsets, and the size the call accepts is
+  292 on the Windows measured, found by trying sizes until one is accepted (a wrong `cbSize` is an error, not a wrong
+  answer). The layout was fixed by dumping the whole struct and finding `rateRefresh` as exactly 10 000 000 / 69 448,
+  which is 144 Hz. Read the 64-bit fields with an *unaligned* layout.
+- *`rateRefresh` is a ratio of performance-counter ticks a second to ticks a refresh*, so the interval is the second
+  number over the first, in nanoseconds. The counter is the one `System.nanoTime` reads on Windows, scaled.
+
+`RefreshIntervalTest` asserts only a range (1 to 41.7 ms), because the failure it exists to catch, a struct read at the
+wrong offsets, gives nonsense and not a nearby value.
+
+**The presenter reports through a probe, not the log, per frame** (the frame budget rules out a log call). Once, at
+`DEBUG`: `vulkan.swapchain` says what was created (extent, images, the driver's minimum, what was asked for) and
+`vulkan.present` says how many frames are in flight over how many images. Per frame, only while a probe is recording, in
+the `gpu` lane: `frame.image` (frame and image index), `frame.latency` (submit to fence: a value that climbs over a burst
+of frames and plateaus at a multiple of the refresh interval is a full present queue, not a slow GPU), and `dwm.start` /
+`dwm.presented` (the compositor's counters and the vblank *phase*, how far into the refresh interval the moment fell).
+The compositor's frame counts only follow this application's own presents, so the phase is the useful field.
+
 ---
 
 ## 6. Native-image rules (P2)
