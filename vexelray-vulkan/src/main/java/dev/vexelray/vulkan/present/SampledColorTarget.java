@@ -658,6 +658,21 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             invokeVoid(vkDestroyFence, dev, fence, MemorySegment.NULL);
             invokeVoid(vkDestroyCommandPool, dev, pool, MemorySegment.NULL);
         }
+        Runnable listener = rendered;
+        if (listener != null) {
+            listener.run();
+        }
+    }
+
+    private volatile Runnable rendered;
+
+    /**
+     * Run {@code listener} after every {@link #renderInto(Recorder, float, float, float, float)} completes — the
+     * one thing a host that draws only on change needs to hear from a target: its pixels are new, and nothing in
+     * any tree that shows it has changed to say so. Replaces any earlier listener; null removes it.
+     */
+    public void onRendered(Runnable listener) {
+        this.rendered = listener;
     }
 
     /**
