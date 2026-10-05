@@ -23,49 +23,42 @@ package dev.vexelray.runtime;
  *                        target's, and letting this stand in for it would recreate in miniature the duplication
  *                        the class note above describes
  * @param validation      load the Vulkan validation layers — development on, native-image/release off
- * @param framesInFlight  how many frames the CPU may record ahead of the GPU. Raising it buys throughput —
- *                        the CPU records frame N+1 while the GPU draws frame N — and costs latency, because
- *                        a frame is now that many frames from the screen. It costs GPU memory too: the
- *                        windowed runtime duplicates command buffers and sync per frame, and depth per
- *                        swapchain image. It does <b>not</b> start a thread; see {@code RenderTechnique}'s
- *                        threading contract, which is unaffected. Honoured by the windowed path only — an
- *                        offscreen run is always one, and says so through {@code Diagnostics} if asked for
- *                        more
+ * @param framesInFlight  how many frames the CPU may record ahead of the GPU. <b>Always one</b>; see
+ *                        {@link #MAX_FRAMES_IN_FLIGHT} for why it is a rule and not a default
  */
 public record EngineConfig(String applicationName, boolean validation, int framesInFlight) {
 
     /**
-     * The most frames any implementation here accepts. Not a hardware limit — a statement that the sync objects
-     * are sized in the runtime and a caller asking for more has misunderstood what this dial does.
+     * The most frames any implementation here accepts: one. <b>A frame is not redrawn while the one before it is
+     * still being drawn.</b>
      *
-     * <p>Three is already past the point of diminishing returns: two is enough to keep the GPU fed while the
-     * CPU records, and each further frame buys less throughput for another whole frame of latency.
+     * <p>A rule, not a tuning default, and it was more than one before (2026-10-04). Two or three let the CPU
+     * record frame N+1 while the GPU drew frame N, and the presenter's sync was built for that, but every buffer
+     * a frame writes through a mapping — the canvas's vertices, a storage buffer's parameters — is one buffer,
+     * rewritten each frame. With a second frame in flight the CPU overwrites what the GPU is still reading, and
+     * nothing says so: the picture is right almost always, on this driver, at this refresh rate. Making that safe
+     * means a copy of every such buffer per frame slot, for throughput this stack has never been short of.
+     *
+     * <p>Kept as a constant and as a record component, rather than deleted, so a caller asking for more is told
+     * why by name instead of finding the method gone.
      */
-    public static final int MAX_FRAMES_IN_FLIGHT = 3;
+    public static final int MAX_FRAMES_IN_FLIGHT = 1;
 
     public EngineConfig {
         if (applicationName == null || applicationName.isBlank()) {
             throw new IllegalArgumentException("applicationName must be non-blank");
         }
-        if (framesInFlight < 1 || framesInFlight > MAX_FRAMES_IN_FLIGHT) {
-            throw new IllegalArgumentException(
-                    "framesInFlight must be 1.." + MAX_FRAMES_IN_FLIGHT + ", got " + framesInFlight);
+        if (framesInFlight != MAX_FRAMES_IN_FLIGHT) {
+            throw new IllegalArgumentException("framesInFlight must be " + MAX_FRAMES_IN_FLIGHT + ", got "
+                    + framesInFlight + ": a frame is not redrawn while the one before it is still being drawn, "
+                    + "because the buffers a frame writes are shared by every frame (EngineConfig.MAX_FRAMES_IN_FLIGHT)");
         }
     }
 
     /**
-     * A development configuration: validation on, one frame in flight.
-     *
-     * <p>Still one now that the runtime honours more, and the reason has changed rather than expired. It used
-     * to be that a config promising two would be a number the engine quietly ignored. Now it is that one is
-     * the value <em>both</em> present paths do identically: an offscreen run is always one frame in flight,
-     * and D23's whole argument for headless capture is that a captured frame is evidence about what a window
-     * would show. A default that made the two paths differ in how many frames are in flight would weaken
-     * that for every test in the build, in exchange for throughput no test wants.
-     *
-     * <p>So the choice is deliberate rather than conservative, and it is one call to change:
-     * {@code EngineConfig.of("app").withFramesInFlight(2)} is what an interactive application that is
-     * CPU-bound on recording should say.
+     * A development configuration: validation on, one frame in flight — the only number of frames in flight
+     * there is (see {@link #MAX_FRAMES_IN_FLIGHT}). It is also what makes a headless capture evidence about a
+     * window: both present paths draw one frame at a time.
      */
     public static EngineConfig of(String applicationName) {
         return new EngineConfig(applicationName, true, 1);
@@ -76,7 +69,11 @@ public record EngineConfig(String applicationName, boolean validation, int frame
         return new EngineConfig(applicationName, false, framesInFlight);
     }
 
-    /** This configuration recording {@code frames} ahead of the GPU. */
+    /**
+     * This configuration recording {@code frames} ahead of the GPU — which must be one.
+     *
+     * @throws IllegalArgumentException for any other number, with the reason; see {@link #MAX_FRAMES_IN_FLIGHT}
+     */
     public EngineConfig withFramesInFlight(int frames) {
         return new EngineConfig(applicationName, validation, frames);
     }

@@ -187,9 +187,14 @@ public final class VulkanSwapchain implements AutoCloseable {
         }
     }
 
-    /** Rebuild at a new size after a resize / out-of-date surface, reusing the old swapchain for a smooth handoff. */
+    /**
+     * Rebuild at a new size after a resize / out-of-date surface, reusing the old swapchain for a smooth handoff.
+     *
+     * <p>The caller must already have waited for every use of the old images to finish — and has to anyway,
+     * since whatever it built on them (views, framebuffers) it destroys before calling this. Waiting again here
+     * was a second whole-device idle per resize, during a drag up to once every 8 ms.
+     */
     public void recreate(int width, int height) {
-        device.waitIdle();
         long old = handle;
         create(width, height, old);
         destroyHandle(old);

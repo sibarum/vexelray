@@ -412,7 +412,9 @@ public final class OffscreenPresenter implements AutoCloseable {
         try (Zone w = Probe.zone(Lane.GPU, "wait fence")) {
             check(invoke(waitFences, dev, 1, pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
         }
-        check(invoke(resetFences, dev, 1, pFence), "vkResetFences");
+        // Not reset yet: perFrame and the recorder are the caller's code, and a fence reset ahead of one that
+        // throws is never signalled again, so the next frame's wait above would block for ever. It is reset
+        // immediately before the submit that signals it.
 
         long now = System.nanoTime();
         double dt = (now - previousNanos) / 1_000_000_000.0;
@@ -433,6 +435,7 @@ public final class OffscreenPresenter implements AutoCloseable {
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
 
         pCmd.set(ADDRESS, 0, cmd);
+        check(invoke(resetFences, dev, 1, pFence), "vkResetFences");
         try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
             check(invoke(submitQueue, device.queue(), 1, submit, fence), "vkQueueSubmit");
         }

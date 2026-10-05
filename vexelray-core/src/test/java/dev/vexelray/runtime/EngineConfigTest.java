@@ -28,12 +28,8 @@ class EngineConfigTest {
 
         assertEquals("Fathom", config.applicationName());
         assertTrue(config.validation(), "a development default loads validation layers");
-        // Pinned deliberately, and the reason changed when the presenter grew frames-in-flight rather than
-        // going away. It is no longer "one is all the runtime does" -- the windowed path honours up to
-        // MAX_FRAMES_IN_FLIGHT. It is that one is what *both* present paths do: an offscreen run is always
-        // one frame in flight, and a headless capture is only evidence about a windowed frame while the two
-        // paths differ in the presenter and nowhere else. Raising this default would trade that property,
-        // across every test in the build, for throughput no test wants.
+        // Not a default any more but the only value: a frame is not redrawn while the one before it is still
+        // being drawn (EngineConfig.MAX_FRAMES_IN_FLIGHT says why).
         assertEquals(1, config.framesInFlight());
     }
 
@@ -56,10 +52,14 @@ class EngineConfigTest {
     }
 
     @Test
-    void refusesAFrameCountTheRuntimeCannotSize() {
+    void refusesEveryFrameCountButOne() {
+        assertEquals(1, EngineConfig.MAX_FRAMES_IN_FLIGHT);
         assertThrows(IllegalArgumentException.class, () -> new EngineConfig("Fathom", true, 0));
-        assertThrows(IllegalArgumentException.class, () ->
-                new EngineConfig("Fathom", true, EngineConfig.MAX_FRAMES_IN_FLIGHT + 1));
+        IllegalArgumentException two = assertThrows(IllegalArgumentException.class,
+                () -> new EngineConfig("Fathom", true, 2));
+        assertTrue(two.getMessage().contains("not redrawn while the one before it is still being drawn"),
+                () -> "a refused frame count should say why, not just what: " + two.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> EngineConfig.of("Fathom").withFramesInFlight(3));
     }
 
     @Test
@@ -69,8 +69,8 @@ class EngineConfigTest {
         assertEquals("Fathom", release.applicationName());
         assertEquals(1, release.framesInFlight());
 
-        EngineConfig deeper = release.withFramesInFlight(2);
-        assertEquals(2, deeper.framesInFlight());
-        assertFalse(deeper.validation(), "withFramesInFlight must not quietly restore a dropped default");
+        EngineConfig same = release.withFramesInFlight(1);
+        assertEquals(1, same.framesInFlight());
+        assertFalse(same.validation(), "withFramesInFlight must not quietly restore a dropped default");
     }
 }

@@ -477,8 +477,24 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         device.waitIdle();
     }
 
+    private boolean closed;
+
+    /** Whether {@link #close} has run, so an owner keeping a list of these can drop the ones already released. */
+    public boolean isClosed() {
+        return closed;
+    }
+
+    /**
+     * Release everything. Idempotent, because a texture an application replaces is closed by the application and
+     * then again by whatever owns the list it was made from; a second destroy of a Vulkan handle is not reported,
+     * it corrupts the loader's heap.
+     */
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         Probe.closed(Lane.GPU, "AtlasTexture", this);
         MemorySegment dev = device.handle();
         invokeVoid(vkDestroyDescriptorPool, dev, descriptorPool, MemorySegment.NULL);

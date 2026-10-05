@@ -706,8 +706,24 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
         return pMem.get(JAVA_LONG, 0);
     }
 
+    private boolean closed;
+
+    /** Whether {@link #close} has run, so an owner keeping a list of these can drop the ones already released. */
+    public boolean isClosed() {
+        return closed;
+    }
+
+    /**
+     * Release everything. Idempotent: an application closes a viewport it has replaced, and the application
+     * object closes every viewport it ever made on the way out, so the same target is routinely closed twice. A
+     * second destroy of a Vulkan handle is not reported; it corrupts the loader's heap and crashes later.
+     */
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         Probe.closed(Lane.GPU, "SampledColorTarget", this);
         MemorySegment dev = device.handle();
         invokeVoid(vkDestroyDescriptorPool, dev, descriptorPool, MemorySegment.NULL);

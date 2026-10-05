@@ -156,6 +156,11 @@ file is about the engine and its API. Decisions are logged in
 
 ### Frames in flight, and the validation layer earning its keep (D25)
 
+- [x] **Limited to one, 2026-10-04.** A frame is not redrawn while the one before it is still being drawn:
+      the mapped buffers a frame writes (canvas vertices, storage-buffer parameters) are one buffer each, and a
+      second frame in flight overwrote them under the GPU. `EngineConfig` and `WindowedPresenter` refuse any
+      other number; the slot machinery below stays. See the note at the top of D25 in `refactor-decisions.md`
+
 - [x] **The windowed runtime honours `EngineConfig.framesInFlight`** (1–3). Per slot: a command buffer, an
       in-flight fence and an image-available semaphore. Per swapchain image: a depth attachment, a
       framebuffer and — the subtle one — the render-finished semaphore, because a present's wait completes

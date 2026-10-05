@@ -20,13 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Resizing a window with several frames in flight — the path where the per-image objects are destroyed and
- * remade while frames are still moving through the slots.
+ * Resizing a window mid-run — the path where the per-image objects are destroyed and remade while the swapchain's
+ * images are still being presented. (This ran at three frames in flight until that was taken away on 2026-10-04;
+ * one is now the only number, see EngineConfig.MAX_FRAMES_IN_FLIGHT. A rebuild's hazards do not depend on it.)
  *
  * <h2>Why this needs its own test</h2>
  *
- * <p>{@code FramesInFlightTest} drives the engine at three frames in flight and asserts the validation layer
- * stays quiet, but it never resizes, so it only ever exercises one set of per-image objects. A rebuild is
+ * <p>{@code FramesInFlightTest} asserts the validation layer stays quiet across a run, but it never resizes,
+ * so it only ever exercises one set of per-image objects. A rebuild is
  * where that set changes: a recreated swapchain may return a different number of images, so the depth
  * array, the render-finished semaphores and the in-flight table are not refilled but <em>re-sized</em>, and
  * every semaphore in one of them is a new object. Destroying one a present still waits on, or keeping a
@@ -49,8 +50,8 @@ class PresenterResizeTest {
     private static final int RESIZED_WIDTH = 560;
     private static final int RESIZED_HEIGHT = 400;
 
-    /** Three, so slots wrap several times over both halves of the run and outnumber neither image count. */
-    private static final int FRAMES_IN_FLIGHT = 3;
+    /** One: the presenter refuses any other number. */
+    private static final int FRAMES_IN_FLIGHT = 1;
 
     @Test
     void aResizeRebuildsThePerImageObjectsWithoutAValidationError() {

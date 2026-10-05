@@ -690,6 +690,16 @@ mechanism.
 **DECISION (D25, DONE).** The windowed runtime honours `EngineConfig.framesInFlight` for real. The default
 stays at one, and the reason it stays changed.
 
+> **Reversed in part, 2026-10-04: one frame in flight is now the only number.** `EngineConfig` and
+> `WindowedPresenter` refuse anything else, with the reason in the message. The per-slot and per-image design
+> below was sound and is kept — it is how one frame waits for the last, and the per-image half is what a
+> rebuild exercises. What it missed is everything *outside* the presenter that a frame writes through a
+> mapping: the canvas's vertex buffer and a storage buffer's parameters are one buffer each, rewritten every
+> frame, so with a second frame in flight the CPU overwrote what the GPU was still reading. Found by an audit
+> of the Vulkan seam, not by the validation layer, which does not see host writes to mapped memory. The rule
+> chosen over per-slot copies of every such buffer: **a frame is not redrawn while the one before it is still
+> being drawn.** The offscreen path's "asked for more" diagnostic went with it, since nothing can ask.
+
 **Which objects come in sets.** That is the whole design, and getting an object into the wrong set is a bug
 no picture shows.
 

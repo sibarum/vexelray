@@ -104,13 +104,13 @@ public final class WindowedPresenter implements AutoCloseable {
     private final MethodHandle createSem;
 
     /**
-     * How many frames the CPU may record ahead of the GPU — the number of <em>slots</em> below.
+     * How many frames the CPU may record ahead of the GPU — the number of <em>slots</em> below. Always one: the
+     * constructor refuses anything else (see EngineConfig.MAX_FRAMES_IN_FLIGHT).
      *
      * <p>At one, the fence wait at the top of a frame is the CPU waiting for the GPU to finish the previous
-     * frame, and the two never overlap. At two or three, the wait is for the frame <em>N slots</em> ago, so
-     * the CPU can be recording frame N+1 while the GPU is still drawing frame N. What that buys is
-     * throughput; what it costs is latency, because a frame the CPU records is now one or two frames from
-     * being on screen. It never costs a thread: everything here still happens on the caller's.
+     * frame, and the two never overlap — a frame is not redrawn while the one before it is still being drawn.
+     * The slot arrays are kept rather than flattened to scalars because they are correct at any size and the
+     * reason for the limit lives outside this class: the mapped buffers a frame writes are not per slot.
      */
     private final int framesInFlight;
 
@@ -166,6 +166,26 @@ public final class WindowedPresenter implements AutoCloseable {
      * last.
      */
     private long[] imageInFlight;
+
+    /**
+     * The window size the per-image objects were last built for — the window's, not the swapchain's.
+     *
+     * <p>Compared against the window at the top of every frame, so a resize is followed by one rebuild and then
+     * the frame it was for, in the same call. The swapchain's own extent is the wrong thing to compare: the
+     * surface may hand back an extent that differs from the window by a pixel of rounding, and a comparison
+     * against it would rebuild on every frame for as long as the window stayed that size.
+     */
+    private int builtWidth;
+    private int builtHeight;
+
+    /**
+     * Set when present reports the swapchain out of date at a size that has not changed. The next frame rebuilds
+     * before it acquires, rather than this one rebuilding after a present and returning with nothing new drawn.
+     */
+    private boolean stale;
+
+    /** How long {@link #frame} parks a minimized window between pumps; a restore ends it early. */
+    private static final long MINIMIZED_WAIT_NANOS = 100_000_000L;
 
     /** The depth format this presenter's render pass was built with, or {@link VulkanRenderPass#NO_DEPTH}. */
     private final int depthFormat;
@@ -284,8 +304,14 @@ public final class WindowedPresenter implements AutoCloseable {
     public WindowedPresenter(VulkanDevice device, VulkanSwapchain swapchain, long renderPass,
                              GraphicsPipeline pipeline, NativeWindow window, int depthFormat,
                              int framesInFlight) {
-        if (framesInFlight < 1) {
-            throw new IllegalArgumentException("framesInFlight must be at least 1, got " + framesInFlight);
+        if (framesInFlight != 1) {
+            // The slots below still work at any number, and are kept: they are also how one frame waits for the
+            // last. What does not is everything outside this class that a frame writes through a mapping — one
+            // vertex buffer, one storage buffer — which a second frame in flight would overwrite while the GPU
+            // still reads it. So the presenter refuses, rather than drawing right almost always.
+            throw new IllegalArgumentException("framesInFlight must be 1, got " + framesInFlight
+                    + ": a frame is not redrawn while the one before it is still being drawn "
+                    + "(see EngineConfig.MAX_FRAMES_IN_FLIGHT)");
         }
         Probe.opened(Lane.GPU, "WindowedPresenter", this);
         this.framesInFlight = framesInFlight;
@@ -352,6 +378,9 @@ public final class WindowedPresenter implements AutoCloseable {
      * hand back a different number of images — so the arrays are not merely re-filled, they are re-sized.
      */
     private void buildPerImage() {
+        builtWidth = window.width();
+        builtHeight = window.height();
+        stale = false;
         int images = swapchain.images().length;
         this.renderFinished = new long[images];
         for (int i = 0; i < images; i++) {
@@ -374,17 +403,26 @@ public final class WindowedPresenter implements AutoCloseable {
 
     /** Destroy what {@link #buildPerImage} made. The caller must have waited for the device to go idle. */
     private void destroyPerImage() {
-        framebuffers.close();
+        // Each field is emptied before what it held is destroyed, so a rebuild that throws anywhere between here
+        // and buildPerImage leaves nothing behind for close() to destroy a second time. A double destroy is not an
+        // error Vulkan reports; it corrupts the loader's heap and surfaces much later as a crash somewhere else.
+        if (framebuffers != null) {
+            SwapchainFramebuffers old = framebuffers;
+            framebuffers = null;
+            old.close();
+        }
         if (depths != null) {
-            for (DepthAttachment d : depths) {
+            DepthAttachment[] attachments = depths;
+            depths = null;
+            for (DepthAttachment d : attachments) {
                 d.close();
             }
-            depths = null;
         }
-        for (long semaphore : renderFinished) {
+        long[] semaphores = renderFinished;
+        renderFinished = new long[0];
+        for (long semaphore : semaphores) {
             invokeVoid(destroySem, dev, semaphore, MemorySegment.NULL);
         }
-        renderFinished = new long[0];
     }
 
     /** Run until the window closes, or until {@code maxFrames} presented if {@code maxFrames > 0}. No push constants. */
@@ -433,6 +471,13 @@ public final class WindowedPresenter implements AutoCloseable {
         if (!window.pumpEvents()) {
             return false;
         }
+        if (noArea()) {
+            // Minimized. render() would skip the frame anyway, but returning at once would make the caller's loop
+            // a hot one for as long as the window stayed down; this owns the pump, so it owns the wait too. The
+            // restore is OS input and ends the wait early, so coming back costs nothing.
+            window.waitEvents(MINIMIZED_WAIT_NANOS);
+            return true;
+        }
         return render(pushConstantBytes, perFrame, recorder);
     }
 
@@ -479,6 +524,20 @@ public final class WindowedPresenter implements AutoCloseable {
             s.pushSeg = a.allocate(pushConstantBytes);
             s.pushCapacity = pushConstantBytes;
         }
+        // A resize is noticed here, before anything is acquired, so the rebuild and the frame at the new size
+        // happen in this one call. Waiting for acquire to report the surface out of date instead was the old
+        // order, and it cost a whole pull per resize: rebuild, return with nothing drawn, and during a drag the
+        // next pull found the window resized again. A drag was then nearly all rebuilds and almost no frames.
+        if (noArea()) {
+            // Minimized. Acquiring against a surface with no extent can block for ever rather than fail, so
+            // nothing is acquired; and with no area there is nothing to rebuild at either.
+            return true;
+        }
+        if (stale || resized()) {
+            if (!rebuild()) {
+                return true;   // nothing to draw into at 0x0; the window is still open
+            }
+        }
         int slot = (int) (frameCounter % framesInFlight);
         MemorySegment cmd = cmds[slot];
 
@@ -500,21 +559,28 @@ public final class WindowedPresenter implements AutoCloseable {
             Probe.mark(Lane.GPU, "frame.latency", "frame=" + frameCounter + " slot=" + slot + " submit-to-fence "
                     + (System.nanoTime() - submittedAt[slot]) / 1_000L + "us");
         }
-        int acq;
-        try (Zone w = Probe.zone(Lane.GPU, "acquire image")) {
-            acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable[slot], 0L,
-                    s.pImageIndex);
-        }
-        if (Probe.ON) {
-            Probe.mark(Lane.GPU, "frame.image", "frame=" + frameCounter + " image=" + s.pImageIndex.get(JAVA_INT, 0)
-                    + " acquire=" + acq);
-        }
+        int acq = acquireImage(s, slot);
         if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
-            rebuild();
-            // Not counted: the slot's fence is still signalled and its imageAvailable semaphore was never
-            // waited on, so the next frame must reuse this slot rather than move past it. Advancing here
-            // would leave a semaphore signalled with nothing to consume it.
-            return true;   // skip this frame; the window is still open
+            // The surface changed under a size check that saw nothing: rebuild and acquire again, once, so this
+            // pull still draws. A failed acquire signals nothing, so the slot's imageAvailable semaphore is
+            // unsignalled and its fence untouched, and both are fit to use for the second attempt.
+            if (!rebuild()) {
+                return true;
+            }
+            acq = acquireImage(s, slot);
+            if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
+                // Not counted: the slot's fence is still signalled and its imageAvailable semaphore was never
+                // waited on, so the next frame must reuse this slot rather than move past it. Advancing here
+                // would leave a semaphore signalled with nothing to consume it.
+                stale = true;
+                return true;   // skip this frame; the window is still open
+            }
+        }
+        if (acq < 0) {
+            // Anything else negative is a real failure — a lost surface, a lost device — and pImageIndex was not
+            // written, so carrying on would draw into whichever image the previous frame had. Device loss comes
+            // out as DeviceLostException, which callers already handle by name.
+            check(acq, "vkAcquireNextImageKHR");
         }
         int imageIndex = s.pImageIndex.get(JAVA_INT, 0);
 
@@ -528,10 +594,9 @@ public final class WindowedPresenter implements AutoCloseable {
         }
         imageInFlight[imageIndex] = inFlight[slot];
 
-        // Reset after every wait above, and only once this frame is certain to submit: a fence reset on a
-        // frame that then returned early would never be signalled again, and the next visit to this slot
-        // would wait on it for ever.
-        check(invoke(resetFences, dev, 1, s.pFence), "vkResetFences");
+        // The fence is reset in submitAndPresent, immediately before the submit that will signal it, and not
+        // here: the application's callbacks run between the two, and a fence reset ahead of a callback that
+        // throws is never signalled again, so the next visit to this slot would wait on it for ever.
         s.pCmd.set(ADDRESS, 0, cmd);
         s.waitSems.set(JAVA_LONG, 0, imageAvailable[slot]);
         s.signalSems.set(JAVA_LONG, 0, renderFinished[imageIndex]);
@@ -644,6 +709,9 @@ public final class WindowedPresenter implements AutoCloseable {
     }
 
     private boolean submitAndPresent(FrameState s, long fence) {
+        // Reset here, with nothing that can throw between it and the submit that signals it again.
+        s.pFence.set(JAVA_LONG, 0, fence);
+        check(invoke(resetFences, dev, 1, s.pFence), "vkResetFences");
         try (Zone w = Probe.zone(Lane.GPU, "queue submit")) {
             check(invoke(submitCmd, device.queue(), 1, s.submit, fence), "vkQueueSubmit");
         }
@@ -661,8 +729,16 @@ public final class WindowedPresenter implements AutoCloseable {
                 window.waitForCompositor();
             }
         }
-        if (res == Vk.ERROR_OUT_OF_DATE_KHR || res == Vk.SUBOPTIMAL_KHR) {
-            rebuild();
+        // Not rebuilt here: the next frame does it before it acquires, and then draws, instead of this one
+        // rebuilding after a present and the frame at the new size waiting for another pull. Suboptimal alone is
+        // not a reason: the image still presents correctly, and a surface that stays suboptimal at an unchanged
+        // size would otherwise be rebuilt on every frame. A size change is caught by the check at the top.
+        if (res == Vk.ERROR_OUT_OF_DATE_KHR) {
+            stale = true;
+        } else if (res < 0) {
+            // Out of date is recoverable and handled above; any other failure is not, and used to be dropped
+            // here silently, leaving the next frame to fail somewhere less obvious.
+            check(res, "vkQueuePresentKHR");
         }
         if (!s.shown) {
             // First frame is on screen — reveal the (until-now hidden) window already painted, so slow Vulkan
@@ -762,7 +838,17 @@ public final class WindowedPresenter implements AutoCloseable {
         }
     }
 
-    private void rebuild() {
+    /**
+     * Remake the swapchain and everything per image at the window's current size.
+     *
+     * @return false, having changed nothing, if the window has no area — minimized, or mid-restore — since a
+     *         swapchain cannot be built at 0x0, and a failed build halfway through {@link #destroyPerImage} would
+     *         leave this presenter holding handles it had already destroyed
+     */
+    private boolean rebuild() {
+        if (noArea()) {
+            return false;
+        }
         // Counted because swapchain churn is a cost that hides: a drag-resize rebuilds every frame, each one
         // a full device idle, and the frame times it produces look like a rendering problem rather than the
         // resize it actually is.
@@ -773,11 +859,47 @@ public final class WindowedPresenter implements AutoCloseable {
             // only when the extent changed; that saving is gone with per-image depth, and paying it back on
             // a resize — an operation that already does a full device idle — is the cheap half of the
             // trade.
+            //
+            // The device idle, rather than a wait on this presenter's own fences, because the fences only say
+            // the drawing finished. A present can still be waiting on a renderFinished semaphore destroyed
+            // below, and there is no fence for a present. It is the one idle a rebuild does: recreate leaves the
+            // waiting to its caller.
             device.waitIdle();
             destroyPerImage();
             swapchain.recreate(window.width(), window.height());
             buildPerImage();
         }
+        return true;
+    }
+
+    /**
+     * Whether the window has nothing to present to. Minimized is asked for by name and not only read off the size,
+     * because a platform may keep reporting the last real size while minimized (Windows does, so a restore comes
+     * back at the size it left), and the surface's extent is then 0x0 while the window's is not.
+     */
+    private boolean noArea() {
+        return window.isMinimized() || window.width() <= 0 || window.height() <= 0;
+    }
+
+    /** True when the window is not the size the per-image objects were built for, and has an area to build at. */
+    private boolean resized() {
+        int w = window.width();
+        int h = window.height();
+        return w > 0 && h > 0 && (w != builtWidth || h != builtHeight);
+    }
+
+    /** Acquire the next image into {@code s.pImageIndex}, signalling the slot's imageAvailable semaphore. */
+    private int acquireImage(FrameState s, int slot) {
+        int acq;
+        try (Zone w = Probe.zone(Lane.GPU, "acquire image")) {
+            acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable[slot], 0L,
+                    s.pImageIndex);
+        }
+        if (Probe.ON) {
+            Probe.mark(Lane.GPU, "frame.image", "frame=" + frameCounter + " image=" + s.pImageIndex.get(JAVA_INT, 0)
+                    + " acquire=" + acq);
+        }
+        return acq;
     }
 
     private long createSemaphore(MethodHandle create) {

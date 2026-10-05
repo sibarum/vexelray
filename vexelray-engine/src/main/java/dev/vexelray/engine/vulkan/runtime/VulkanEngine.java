@@ -100,9 +100,6 @@ public final class VulkanEngine implements VexelEngine {
      */
     private static final String DIAG_COLOR_FORMAT_OFFSCREEN = "engine.target.colorFormat.offscreen";
 
-    /** Diagnostic key for an offscreen run asked to keep more than one frame in flight. */
-    private static final String DIAG_FRAMES_IN_FLIGHT_OFFSCREEN = "engine.framesInFlight.offscreen";
-
     /** What {@link EngineEvents.RunStarted} reports as the runtime that drew — the provider's own name. */
     static final String ENGINE_NAME = "vexelray-engine (Vulkan, Panama)";
 
@@ -270,13 +267,6 @@ public final class VulkanEngine implements VexelEngine {
     private void renderOffscreen(RenderPipeline pipeline, Target target, Events events, FrameCallback onFrame) {
         List<RenderTechnique> techniques = pipeline.techniques();
         int depthFormat = target.hasDepth() ? DepthAttachment.FORMAT : VulkanRenderPass.NO_DEPTH;
-        if (config.framesInFlight() > 1) {
-            Diagnostics.dropped(DIAG_FRAMES_IN_FLIGHT_OFFSCREEN,
-                    config.framesInFlight() + " frames in flight for an offscreen run",
-                    "an offscreen run renders one frame at a time so that lastFrameRgba() is the frame the "
-                            + "run finished on rather than whichever of several was furthest along; "
-                            + "rendering one at a time instead");
-        }
 
         try (VulkanInstance instance = new VulkanInstance(config.applicationName(), List.of())) {
             VulkanInstance.DeviceSelection selection = instance.selectGraphicsDevice()

@@ -211,6 +211,7 @@ public final class WindowedClearDemo {
 
                 int acq = invoke(acquire, dev, swapchain.handle(), Long.MAX_VALUE, imageAvailable, 0L, pImageIndex);
                 if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
+                    device.waitIdle();   // recreate leaves the waiting to its caller
                     swapchain.recreate(window.width(), window.height());
                     continue;
                 }
