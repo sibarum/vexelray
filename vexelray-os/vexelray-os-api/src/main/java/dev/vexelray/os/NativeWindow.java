@@ -221,8 +221,18 @@ public interface NativeWindow extends AutoCloseable {
     /** Whether {@code key} is currently held down (updated by {@link #pumpEvents()}). */
     boolean isKeyDown(Key key);
 
-    /** The mouse-cursor shapes a window can display over its client area. */
-    enum Cursor { ARROW, TEXT }
+    /**
+     * The mouse-cursor shapes a window can display over its client area. Only shapes every desktop platform has a
+     * standard system cursor for: a backend shows the arrow for any it cannot, and never draws its own.
+     */
+    enum Cursor {
+        ARROW,
+        TEXT,
+        /** The two-headed horizontal arrow: something whose width is dragged, a divider between side-by-side panes. */
+        RESIZE_HORIZONTAL,
+        /** The two-headed vertical arrow: something whose height is dragged, a divider between stacked panes. */
+        RESIZE_VERTICAL
+    }
 
     /**
      * Request the cursor shape shown over the client area (e.g. an I-beam over editable text). Takes effect the

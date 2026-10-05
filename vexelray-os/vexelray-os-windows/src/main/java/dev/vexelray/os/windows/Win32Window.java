@@ -68,7 +68,8 @@ public final class Win32Window implements NativeWindow {
 
     // Predefined system cursors, loaded once and shared (process-lifetime; the OS owns them).
     private static MemorySegment arrowCursor = MemorySegment.NULL;
-    private static MemorySegment ibeamCursor = MemorySegment.NULL;
+    /** Every other shape by its handle; a shape not here shows the arrow. Filled once, before any window exists. */
+    private static final Map<Cursor, MemorySegment> CURSORS = new java.util.EnumMap<>(Cursor.class);
 
     private static final FunctionDescriptor WNDPROC_DESC =
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_LONG);
@@ -211,7 +212,9 @@ public final class Win32Window implements NativeWindow {
         MemorySegment wndProc = Ffi.upcall(MethodHandles.lookup(), Win32Window.class, "wndProc",
                 WNDPROC_DESC, Ffi.GLOBAL);
         arrowCursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_ARROW);
-        ibeamCursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_IBEAM);
+        CURSORS.put(Cursor.TEXT, User32.loadCursorW(MemorySegment.NULL, User32.IDC_IBEAM));
+        CURSORS.put(Cursor.RESIZE_HORIZONTAL, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZEWE));
+        CURSORS.put(Cursor.RESIZE_VERTICAL, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZENS));
         MemorySegment cursor = arrowCursor;
         // A neutral dark background painted before the first Vulkan present (0x11141b). Process-lifetime, like the
         // class itself — the OS reclaims it at exit.
@@ -271,7 +274,7 @@ public final class Win32Window implements NativeWindow {
                     // Under CLIENT decorations the resize bands and the caption are non-client by hit-test, so
                     // this still covers exactly the pixels the GUI is answerable for.
                     if ((int) (lParam & 0xFFFF) == User32.HTCLIENT) {
-                        User32.setCursor(window.desiredCursor == Cursor.TEXT ? ibeamCursor : arrowCursor);
+                        User32.setCursor(CURSORS.getOrDefault(window.desiredCursor, arrowCursor));
                         return 1; // TRUE — we handled it, so Windows won't reset the class cursor
                     }
                 }
