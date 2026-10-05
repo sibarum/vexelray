@@ -21,7 +21,7 @@ package dev.vexelray.os;
  * That is a different promise from a GUI's own smallest layout, which decides what the UI is laid out on when
  * the window is smaller than it can represent, and shows part of it. Both are worth having and they answer
  * different questions — one stops the window shrinking, the other decides what happens when it does anyway
- * (a maximized-then-restored window, a display mode change, a call to {@link NativeWindow#resize}).
+ * (a maximized-then-restored window, a display mode change, a call to {@link NativeWindow#setBounds}).
  * {@link #NO_MINIMUM} leaves the platform's own metric, which is what every window had before this existed.
  *
  * <p><b>The mark it wears.</b> {@code icon} is this window's own, and {@code null} — the default — means "the

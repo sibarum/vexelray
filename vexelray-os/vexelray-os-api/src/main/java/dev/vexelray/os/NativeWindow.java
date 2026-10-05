@@ -8,10 +8,15 @@ import java.lang.foreign.MemorySegment;
  */
 public interface NativeWindow extends AutoCloseable {
 
-    /** Current framebuffer width in pixels (after DPI scaling). */
+    /**
+     * Current client-area width, in the units the OS gives this process: logical (one per 1/96 inch on Windows)
+     * while the process is not DPI-aware, physical pixels once it is. DPI awareness is declared by packaging,
+     * not by code, and nothing here reports which applies or what the content scale is — that is gap E4 in
+     * vexelray-gui's architecture.md.
+     */
     int width();
 
-    /** Current framebuffer height in pixels (after DPI scaling). */
+    /** Current client-area height, in the same units as {@link #width()}. */
     int height();
 
     /** Pump the OS event queue once. Returns {@code false} once the window has been asked to close. */
