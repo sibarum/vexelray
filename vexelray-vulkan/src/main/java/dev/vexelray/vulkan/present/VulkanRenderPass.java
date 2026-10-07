@@ -82,6 +82,9 @@ public final class VulkanRenderPass implements AutoCloseable {
     /** Passed as {@code depthFormat} by a caller that wants the colour-only pass this class has always built. */
     public static final int NO_DEPTH = 0;
 
+    /** {@code VK_IMAGE_LAYOUT_GENERAL}: the final layout for an image shared with another API. */
+    public static final int IMAGE_LAYOUT_GENERAL = 1;
+
     private final VulkanDevice device;
     private final long handle;
     private final boolean hasDepth;
@@ -110,6 +113,10 @@ public final class VulkanRenderPass implements AutoCloseable {
         // follow-up work sees the colour writes — a copy (TRANSFER_SRC) or a later sample (SHADER_READ_ONLY).
         boolean present = finalLayout == Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR;
         boolean sampled = finalLayout == Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // GENERAL: an image another API reads next (a D3D12 copy, for DXGI presentation). What hands it over is the
+        // semaphore the submit signals, whose signal already waits for every command and makes every write
+        // available — so the end dependency only orders the pass, and names no Vulkan access to wait for.
+        boolean shared = finalLayout == IMAGE_LAYOUT_GENERAL;
 
         try (Arena arena = Arena.ofConfined()) {
             int attachmentCount = hasDepth ? 2 : 1;
@@ -184,11 +191,11 @@ public final class VulkanRenderPass implements AutoCloseable {
                 si(dep1, SUBPASS_DEPENDENCY, "srcSubpass", 0);
                 si(dep1, SUBPASS_DEPENDENCY, "dstSubpass", Vk.SUBPASS_EXTERNAL);
                 si(dep1, SUBPASS_DEPENDENCY, "srcStageMask", Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "dstStageMask",
-                        sampled ? Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT : Vk.PIPELINE_STAGE_TRANSFER_BIT);
+                si(dep1, SUBPASS_DEPENDENCY, "dstStageMask", shared ? Vk.PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT
+                        : sampled ? Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT : Vk.PIPELINE_STAGE_TRANSFER_BIT);
                 si(dep1, SUBPASS_DEPENDENCY, "srcAccessMask", Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-                si(dep1, SUBPASS_DEPENDENCY, "dstAccessMask",
-                        sampled ? Vk.ACCESS_SHADER_READ_BIT : Vk.ACCESS_TRANSFER_READ_BIT);
+                si(dep1, SUBPASS_DEPENDENCY, "dstAccessMask", shared ? 0
+                        : sampled ? Vk.ACCESS_SHADER_READ_BIT : Vk.ACCESS_TRANSFER_READ_BIT);
             }
 
             MemorySegment rpInfo = arena.allocate(RENDER_PASS_CREATE_INFO);

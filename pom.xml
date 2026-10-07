@@ -52,6 +52,10 @@
         <!-- The Panama Vulkan runtime + resource implementation. Hosts the OS-activated selection profiles that
              add the matching platform module (so the platform dep never leaks into core/shader). -->
         <module>vexelray-vulkan</module>
+        <!-- Presenting through DXGI on Windows (a PresenterProvider): Vulkan draws, a D3D12 queue copies and
+             presents, so a window resize is the OS's buffer resize and not a new Vulkan swapchain. Compiles
+             anywhere; only ever selected on Windows. Needs the sibling dxgi-bridge repo installed. -->
+        <module>vexelray-present-dxgi</module>
         <!-- The Vulkan half of the technique SPI: VulkanTechniqueContext, the subtype a technique casts to when
              it must create GPU objects. Its own module so a technique compiles against the contract and not
              against the concrete runtime below it (D18). -->

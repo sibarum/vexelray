@@ -65,7 +65,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * <p>v0 draws a fixed vertex count with no per-frame data (the fullscreen triangle); per-frame push constants
  * (camera, time) arrive with the pipeline-layout work in a later step.
  */
-public final class WindowedPresenter implements AutoCloseable {
+public final class WindowedPresenter implements WindowPresenter {
     private static final Log LOG = Log.of("vulkan.present");
     /** Experiment: hold the present queue to one frame by waiting out the vblank after every present. */
     private static final boolean FLUSH_AFTER_PRESENT = Boolean.getBoolean("vexelray.present.flush");
@@ -184,6 +184,28 @@ public final class WindowedPresenter implements AutoCloseable {
      */
     private boolean stale;
 
+    /**
+     * Whether a size change may wait for its rebuild — on while the platform pulls frames from inside a live
+     * resize ({@link #throttleResize}). See {@link #deferRebuild}.
+     */
+    private boolean resizeThrottled;
+    /** When the last rebuild finished, for the interval a throttled resize keeps between rebuilds. */
+    private long lastRebuildNanos;
+    /** The window size a throttled resize last saw, and since when — a size that holds still has settled. */
+    private int seenWidth;
+    private int seenHeight;
+    private long seenSinceNanos;
+
+    /**
+     * During a live resize, the longest a size change waits for its rebuild. A drag used to rebuild on every
+     * pulled frame, 20-30 times a second, and every so often the driver held one rebuild for a round 1, 2 or 10
+     * seconds — measured on both the calculator and the editor (2026-10-06). Fewer rebuilds is fewer of those.
+     * {@code -Dvexelray.resizeRebuildMs} tunes it; 0 turns the throttle off.
+     */
+    private static final long RESIZE_REBUILD_NANOS = Long.getLong("vexelray.resizeRebuildMs", 100L) * 1_000_000L;
+    /** A size unchanged for this long has settled: the drag paused, so it is rebuilt now rather than at the interval. */
+    private static final long RESIZE_SETTLE_NANOS = 40_000_000L;
+
     /** How long {@link #frame} parks a minimized window between pumps; a restore ends it early. */
     private static final long MINIMIZED_WAIT_NANOS = 100_000_000L;
 
@@ -230,6 +252,17 @@ public final class WindowedPresenter implements AutoCloseable {
      * <p>Clears any {@link #setRuns runs}: a caller that sets a plain vertex count is drawing one span, and leaving
      * last frame's runs standing would draw the new buffer through the old frame's split.
      */
+    /** The swapchain's width: what a frame is drawn at, which may differ from the window's by the surface's choice. */
+    @Override
+    public int width() {
+        return swapchain.width();
+    }
+
+    @Override
+    public int height() {
+        return swapchain.height();
+    }
+
     public void setVertexCount(int vertexCount) {
         this.vertexCount = vertexCount;
         this.runs = List.of();
@@ -533,6 +566,9 @@ public final class WindowedPresenter implements AutoCloseable {
             // nothing is acquired; and with no area there is nothing to rebuild at either.
             return true;
         }
+        if (resized() && deferRebuild()) {
+            return true;   // skipped: the window keeps showing the last frame until the rebuild is due
+        }
         if (stale || resized()) {
             if (!rebuild()) {
                 return true;   // nothing to draw into at 0x0; the window is still open
@@ -563,7 +599,11 @@ public final class WindowedPresenter implements AutoCloseable {
         if (acq == Vk.ERROR_OUT_OF_DATE_KHR) {
             // The surface changed under a size check that saw nothing: rebuild and acquire again, once, so this
             // pull still draws. A failed acquire signals nothing, so the slot's imageAvailable semaphore is
-            // unsignalled and its fence untouched, and both are fit to use for the second attempt.
+            // unsignalled and its fence untouched, and both are fit to use for the second attempt. A throttled
+            // resize skips instead, on the same footing as the stale return below: the slot is reused next frame.
+            if (resized() && deferRebuild()) {
+                return true;
+            }
             if (!rebuild()) {
                 return true;
             }
@@ -869,6 +909,41 @@ public final class WindowedPresenter implements AutoCloseable {
             swapchain.recreate(window.width(), window.height());
             buildPerImage();
         }
+        lastRebuildNanos = System.nanoTime();
+        return true;
+    }
+
+    /**
+     * Let a size change wait for its rebuild while {@code on}. For the frames a platform pulls from inside a live
+     * resize ({@link NativeWindow#setFrameSink}): there a resize arrives with nearly every pulled frame, and each
+     * rebuild is a device idle plus a new swapchain. Off again, the next frame rebuilds at once, so the frame the
+     * host loop draws when the drag ends is at the final size.
+     */
+    public void throttleResize(boolean on) {
+        this.resizeThrottled = on;
+    }
+
+    /**
+     * Whether this frame's resize waits: throttled, and the size neither settled nor the interval since the last
+     * rebuild up. A frame that waits is skipped whole — nothing acquired, nothing drawn — and the compositor goes on
+     * showing the last frame meanwhile, stretched or clipped to the new size.
+     */
+    private boolean deferRebuild() {
+        if (!resizeThrottled || RESIZE_REBUILD_NANOS <= 0) {
+            return false;
+        }
+        long now = System.nanoTime();
+        int w = window.width();
+        int h = window.height();
+        if (w != seenWidth || h != seenHeight) {
+            seenWidth = w;
+            seenHeight = h;
+            seenSinceNanos = now;
+        }
+        if (now - seenSinceNanos >= RESIZE_SETTLE_NANOS || now - lastRebuildNanos >= RESIZE_REBUILD_NANOS) {
+            return false;
+        }
+        Probe.count(Lane.GPU, "rebuild deferred", 1);
         return true;
     }
 
