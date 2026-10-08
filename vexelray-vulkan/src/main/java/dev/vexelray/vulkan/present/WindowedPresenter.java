@@ -223,14 +223,25 @@ public final class WindowedPresenter implements WindowPresenter {
 
     /**
      * One span of the vertex buffer drawn with {@code descriptorSet1} bound at set 1 — the presenter's view of a
-     * {@code Canvas.Run}. The vertex buffer, the pipeline and set 0 are bound once for the frame; only set 1 is
-     * rebound between runs, so a frame of N images is one bind + N rebinds + N+1 draws rather than N pipelines.
+     * {@code Canvas.Run}. The vertex buffer and the pipeline are bound once for the frame; the sets are rebound
+     * between runs only when a run changes them, so a frame of N images is one bind + N rebinds + N+1 draws rather
+     * than N pipelines.
      *
+     * <p>Set 0 is the glyph atlas. A run that names one ({@code descriptorSet0 != 0}) has it bound before it draws —
+     * text in two faces is two runs over two atlases. A run that names none draws under whatever set 0 is already
+     * bound, starting with the frame's own from {@link #configureDraw}.
+     *
+     * @param descriptorSet0 the set to bind at index 0 before this span, or 0 to leave set 0 as it is
      * @param descriptorSet1 the set to bind at index 1 before this span (never 0 — pass the placeholder's)
      * @param firstVertex    index of the span's first vertex
      * @param vertexCount    how many vertices it covers
      */
-    public record Run(long descriptorSet1, int firstVertex, int vertexCount) {
+    public record Run(long descriptorSet0, long descriptorSet1, int firstVertex, int vertexCount) {
+
+        /** A span that leaves set 0 as it is. */
+        public Run(long descriptorSet1, int firstVertex, int vertexCount) {
+            this(0L, descriptorSet1, firstVertex, vertexCount);
+        }
     }
 
     /**
@@ -707,9 +718,16 @@ public final class WindowedPresenter implements WindowPresenter {
             // drawing them back to back is the same picture the single draw would have made — the split is a
             // binding concern, never a layering one.
             long bound = 0;
+            long bound0 = descriptorSet;
             for (Run r : frameRuns) {
                 if (r.vertexCount() <= 0) {
                     continue;
+                }
+                if (r.descriptorSet0() != 0 && r.descriptorSet0() != bound0) {
+                    bound0 = r.descriptorSet0();
+                    s.pDescriptorSet.set(JAVA_LONG, 0, bound0);
+                    invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
+                            0, 1, s.pDescriptorSet, 0, MemorySegment.NULL);
                 }
                 if (r.descriptorSet1() != bound) {
                     bound = r.descriptorSet1();

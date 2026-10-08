@@ -129,8 +129,10 @@ public final class PanelTechnique implements RenderTechnique {
 
     private VulkanDevice device;
     private AtlasTexture atlas;
+    /** One atlas per face, indexed by face id; empty until atlases are given. {@link #atlas} is face 0's. */
+    private List<AtlasTexture> faces = List.of();
     private boolean ownsAtlas;
-    private AtlasSource atlasSource;
+    private AtlasesSource atlasSource;
     private GraphicsPipeline pipeline;
     private VertexBuffer vertices;
     private int vertexCount;
@@ -172,11 +174,24 @@ public final class PanelTechnique implements RenderTechnique {
      * the uber-shader samples set 0 for glyph coverage and a placeholder has none.
      */
     public PanelTechnique atlas(AtlasTexture atlas) {
+        return atlases(List.of(atlas));
+    }
+
+    /**
+     * Give this technique one glyph atlas per face, indexed by face id — {@code FontSet.faces()} order — so text in
+     * several faces draws in one frame; set 0 is rebound to a run's face's atlas only when a run changes it. As
+     * {@link #atlas(AtlasTexture)}: before {@link #realize}, and not owned.
+     */
+    public PanelTechnique atlases(List<AtlasTexture> byFace) {
         if (pipeline != null) {
             throw new IllegalStateException("the pipeline was already built against an atlas layout; set the "
-                    + "atlas before realise");
+                    + "atlases before realise");
         }
-        this.atlas = atlas;
+        if (byFace.isEmpty()) {
+            throw new IllegalArgumentException("at least one atlas: face 0 is the one every run without text names");
+        }
+        this.faces = List.copyOf(byFace);
+        this.atlas = faces.get(0);
         this.ownsAtlas = false;
         this.atlasSource = null;
         return this;
@@ -198,12 +213,22 @@ public final class PanelTechnique implements RenderTechnique {
      */
     public PanelTechnique atlas(AtlasSource source) {
         Objects.requireNonNull(source, "source");
+        return atlases(device -> List.of(source.create(device)));
+    }
+
+    /**
+     * As {@link #atlas(AtlasSource)}, for one atlas per face: {@code source} is called at {@link #realize}, and every
+     * atlas it returns is owned and closed by this technique.
+     */
+    public PanelTechnique atlases(AtlasesSource source) {
+        Objects.requireNonNull(source, "source");
         if (pipeline != null) {
             throw new IllegalStateException("the pipeline was already built against an atlas layout; set the "
-                    + "atlas before realise");
+                    + "atlases before realise");
         }
         this.atlasSource = source;
         this.atlas = null;
+        this.faces = List.of();
         return this;
     }
 
@@ -211,6 +236,12 @@ public final class PanelTechnique implements RenderTechnique {
     @FunctionalInterface
     public interface AtlasSource {
         AtlasTexture create(VulkanDevice device);
+    }
+
+    /** Builds one glyph atlas per face once the device exists. See {@link #atlases(AtlasesSource)}. */
+    @FunctionalInterface
+    public interface AtlasesSource {
+        List<AtlasTexture> create(VulkanDevice device);
     }
 
     /**
@@ -325,7 +356,14 @@ public final class PanelTechnique implements RenderTechnique {
         VulkanTechniqueContext vk = (VulkanTechniqueContext) ctx;
         this.device = vk.device();
         if (atlasSource != null) {
-            this.atlas = Objects.requireNonNull(atlasSource.create(device), "the atlas source returned null");
+            List<AtlasTexture> made = Objects.requireNonNull(atlasSource.create(device),
+                    "the atlas source returned null");
+            if (made.isEmpty() || made.contains(null)) {
+                throw new IllegalStateException("the atlas source returned " + made
+                        + "; it must return at least one atlas, and no nulls");
+            }
+            this.faces = List.copyOf(made);
+            this.atlas = faces.get(0);
             this.ownsAtlas = true;
         } else if (atlas == null) {
             this.atlas = AtlasTexture.placeholder(device);
@@ -415,10 +453,16 @@ public final class PanelTechnique implements RenderTechnique {
         // Set 1 is rebound only when a run changes it. A null image means "no image bound", and the placeholder
         // stands in so the descriptor is never unbound while a draw references it.
         long bound = 0;
+        long bound0 = atlas.descriptorSet();
         for (int i = 0; i < frameRuns.size(); i++) {
             Canvas.Run run = frameRuns.get(i);
             if (run.vertexCount() <= 0) {
                 continue;
+            }
+            long set0 = atlasFor(run.face()).descriptorSet();
+            if (set0 != bound0) {
+                bound0 = set0;
+                cmds.bindDescriptorSet(cmd, pipeline, CanvasShader.ATLAS_SET, set0);
             }
             long set = run.image() instanceof SampledImage image ? image.descriptorSet() : atlas.descriptorSet();
             if (set != bound) {
@@ -440,12 +484,34 @@ public final class PanelTechnique implements RenderTechnique {
             pipeline = null;
         }
         if (ownsAtlas && atlas != null) {
+            for (AtlasTexture face : faces) {
+                if (face != atlas) {
+                    face.close();
+                }
+            }
             atlas.close();
             atlas = null;
+            faces = List.of();
         }
         if (cmds != null) {
             cmds.close();
             cmds = null;
         }
+    }
+
+    /**
+     * The atlas a run's glyphs index. Without atlases (the placeholder) every face is the placeholder, which draws
+     * text as nothing. A face past the list is a font set and an atlas list that disagree, and is refused rather
+     * than drawn against another face's atlas, which would show the wrong letters.
+     */
+    private AtlasTexture atlasFor(int face) {
+        if (faces.isEmpty()) {
+            return atlas;
+        }
+        if (face < 0 || face >= faces.size()) {
+            throw new IllegalStateException("a run names face " + face + " and this technique has atlases for "
+                    + faces.size() + " faces; give it one atlas per face of the FontSet the text was laid out with");
+        }
+        return faces.get(face);
     }
 }

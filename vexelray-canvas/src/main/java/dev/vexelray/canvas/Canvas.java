@@ -50,6 +50,12 @@ public final class Canvas {
     private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
     private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
+    private int runFace = NO_FACE;       // the face whose atlas the open run's glyphs index, or NO_FACE before one
+    private int activeFace = NO_FACE;    // the face of the glyph being pushed; NO_FACE for everything else
+    private int lastFace;                // the face of the last run closed: what a run without glyphs inherits
+
+    /** No glyph has said which atlas it needs yet: shapes and images draw under any. */
+    private static final int NO_FACE = -1;
 
     /**
      * A contiguous span of the vertex buffer that shares one bound image.
@@ -65,11 +71,23 @@ public final class Canvas {
      * image. The marker keeps the ignorance and loses the hole: this module still cannot name a
      * {@code VkImageView}, and can no longer be handed something that is not an image at all.
      *
+     * <p>A run also names the <b>face</b> whose glyph atlas its glyphs index (the {@code GlyphQuad.face()} they were
+     * laid out from), and a glyph from a different face closes the run just as a new image does: the binding layer
+     * rebinds set 0 to that face's atlas. Shapes and images sample no atlas, so they never split a run on face — they
+     * join whichever face the run already has. A canvas whose text is all in one face is therefore still exactly the
+     * runs it was before faces existed.
+     *
      * @param firstVertex index of this run's first vertex
      * @param vertexCount how many vertices it covers
      * @param image       the binding layer's image handle, or {@code null} for the placeholder
+     * @param face        the face whose atlas this run's glyphs sample; 0 for a run with no glyphs in it
      */
-    public record Run(int firstVertex, int vertexCount, ImageHandle image) {
+    public record Run(int firstVertex, int vertexCount, ImageHandle image, int face) {
+
+        /** A run in face 0 — the one atlas every canvas had before faces. */
+        public Run(int firstVertex, int vertexCount, ImageHandle image) {
+            this(firstVertex, vertexCount, image, 0);
+        }
     }
 
     /** A canvas sized to the target it will be drawn into, in pixels. */
@@ -112,6 +130,9 @@ public final class Canvas {
         runImage = null;
         runStartVertex = 0;
         activeImage = null;
+        runFace = NO_FACE;
+        lastFace = 0;
+        activeFace = NO_FACE;
         return this;
     }
 
@@ -291,7 +312,7 @@ public final class Canvas {
     /** Lay {@code text} out inside {@code box} (wrap + align per {@code style}) and append its glyphs in {@code color}. */
     public Canvas text(TextLayout layout, String text, TextLayout.TextBox box, TextLayout.TextStyle style, Color color) {
         TextLayout.PlacedText placed = layout.place(text, box, style);
-        appendGlyphs(placed.quads(), layout.screenPxRange(style.pixelSize()), color);
+        appendGlyphs(placed.quads(), 1f, color);
         return this;
     }
 
@@ -304,27 +325,38 @@ public final class Canvas {
     /** Place {@code text} with its top-left at {@code (x,y)} (no wrapping beyond {@code '\n'}) in {@code color}. */
     public Canvas text(TextLayout layout, String text, float x, float y, TextLayout.TextStyle style, Color color) {
         TextLayout.PlacedText placed = layout.placeAt(text, x, y, TextLayout.Anchor.TOP_LEFT, style);
-        appendGlyphs(placed.quads(), layout.screenPxRange(style.pixelSize()), color);
+        appendGlyphs(placed.quads(), 1f, color);
         return this;
     }
 
-    private void appendGlyphs(List<GlyphQuad> quads, float screenPxRange, Color c) {
-        appendGlyphs(quads, screenPxRange, c, 0f, 0f);
+    private void appendGlyphs(List<GlyphQuad> quads, float rangeScale, Color c) {
+        appendGlyphs(quads, rangeScale, c, 0f, 0f);
     }
 
-    /** Append glyph quads offset by {@code (dx,dy)} px. */
-    private void appendGlyphs(List<GlyphQuad> quads, float screenPxRange, Color c, float dx, float dy) {
-        for (GlyphQuad q : quads) {
-            float x0 = q.x() + dx;
-            float y0 = q.y() + dy;
-            float x1 = x0 + q.w();
-            float y1 = y0 + q.h();
-            glyphVert(x0, y0, q.u0(), q.v0(), screenPxRange, c);
-            glyphVert(x1, y0, q.u1(), q.v0(), screenPxRange, c);
-            glyphVert(x1, y1, q.u1(), q.v1(), screenPxRange, c);
-            glyphVert(x0, y0, q.u0(), q.v0(), screenPxRange, c);
-            glyphVert(x1, y1, q.u1(), q.v1(), screenPxRange, c);
-            glyphVert(x0, y1, q.u0(), q.v1(), screenPxRange, c);
+    /**
+     * Append glyph quads offset by {@code (dx,dy)} px. Each samples its own face's atlas at its own
+     * {@code screenPxRange}, scaled by {@code rangeScale} — below 1 softens the edge, which is what a letterpress
+     * shadow is. Per quad rather than per call because under fallback one string's glyphs come from atlases that
+     * need not share an em size.
+     */
+    private void appendGlyphs(List<GlyphQuad> quads, float rangeScale, Color c, float dx, float dy) {
+        try {
+            for (GlyphQuad q : quads) {
+                activeFace = q.face();
+                float spr = q.screenPxRange() * rangeScale;
+                float x0 = q.x() + dx;
+                float y0 = q.y() + dy;
+                float x1 = x0 + q.w();
+                float y1 = y0 + q.h();
+                glyphVert(x0, y0, q.u0(), q.v0(), spr, c);
+                glyphVert(x1, y0, q.u1(), q.v0(), spr, c);
+                glyphVert(x1, y1, q.u1(), q.v1(), spr, c);
+                glyphVert(x0, y0, q.u0(), q.v0(), spr, c);
+                glyphVert(x1, y1, q.u1(), q.v1(), spr, c);
+                glyphVert(x0, y1, q.u0(), q.v1(), spr, c);
+            }
+        } finally {
+            activeFace = NO_FACE;
         }
     }
 
@@ -338,10 +370,9 @@ public final class Canvas {
     public Canvas textSunken(TextLayout layout, String text, float x, float y, float w, float h,
                              TextLayout.TextStyle style, Color color, float depthPx) {
         TextLayout.PlacedText placed = layout.place(text, new TextLayout.TextBox(x, y, w, h), style);
-        float spr = layout.screenPxRange(style.pixelSize());
-        appendGlyphs(placed.quads(), spr * 0.7f, SUNKEN_SHADE, 0f, -depthPx);
-        appendGlyphs(placed.quads(), spr * 0.7f, SUNKEN_GLINT, 0f, depthPx);
-        appendGlyphs(placed.quads(), spr, color);
+        appendGlyphs(placed.quads(), 0.7f, SUNKEN_SHADE, 0f, -depthPx);
+        appendGlyphs(placed.quads(), 0.7f, SUNKEN_GLINT, 0f, depthPx);
+        appendGlyphs(placed.quads(), 1f, color);
         return this;
     }
 
@@ -431,9 +462,18 @@ public final class Canvas {
         List<Run> out = new java.util.ArrayList<>(runs);
         int open = vertexCount() - runStartVertex;
         if (open > 0) {
-            out.add(new Run(runStartVertex, open, runImage));
+            out.add(new Run(runStartVertex, open, runImage, openFace()));
         }
         return out;
+    }
+
+    /**
+     * The face the open run names. One with no glyphs samples no atlas, so it names the face of the run before it —
+     * whatever is bound already serves, and an image between two lines of mono text costs no rebind of set 0. The
+     * first run of a frame inherits face 0, the atlas every binding layer starts the frame with.
+     */
+    private int openFace() {
+        return runFace == NO_FACE ? lastFace : runFace;
     }
 
     /** Number of vertices accumulated. */
@@ -526,13 +566,21 @@ public final class Canvas {
         // The one place a run boundary can open. Every vertex belongs to the image that was active when it was
         // pushed (null for shapes and glyphs), so a change of image closes the open run and starts the next one —
         // in submission order, which is the whole reason the runs can be drawn back-to-back and still layer right.
-        if (activeImage != runImage) {
+        // A glyph from another face than the run's closes it the same way; anything that is not a glyph, and the
+        // first glyph of a run, just joins it.
+        boolean faceChanges = activeFace != NO_FACE && runFace != NO_FACE && activeFace != runFace;
+        if (activeImage != runImage || faceChanges) {
             int open = vertexCount() - runStartVertex;
             if (open > 0) {
-                runs.add(new Run(runStartVertex, open, runImage));
+                lastFace = openFace();
+                runs.add(new Run(runStartVertex, open, runImage, lastFace));
             }
             runImage = activeImage;
             runStartVertex = vertexCount();
+            runFace = NO_FACE;
+        }
+        if (activeFace != NO_FACE) {
+            runFace = activeFace;
         }
         // The one place the current translation is applied. Both the position and the screen coordinate the clip
         // is evaluated at move together, so a translated vertex is clipped where it lands.

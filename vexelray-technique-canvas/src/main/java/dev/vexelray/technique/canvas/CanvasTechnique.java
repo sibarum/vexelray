@@ -55,6 +55,8 @@ public final class CanvasTechnique implements RenderTechnique {
 
     private VulkanDevice device;
     private AtlasTexture atlas;
+    /** One atlas per face, indexed by face id; empty until {@link #atlas} or {@link #atlases} is called. */
+    private List<AtlasTexture> faces = List.of();
     private boolean ownsAtlas;
     private GraphicsPipeline pipeline;
     private VertexBuffer vertices;
@@ -98,7 +100,24 @@ public final class CanvasTechnique implements RenderTechnique {
             throw new IllegalStateException("the pipeline was already built against an atlas layout; set the "
                     + "atlas before realise");
         }
-        this.atlas = atlas;
+        return atlases(List.of(atlas));
+    }
+
+    /**
+     * Give this technique one glyph atlas per face, indexed by face id — {@code FontSet.faces()} order — so text in
+     * several faces draws in one frame. Each {@link Canvas.Run} names its face, and set 0 is rebound to that face's
+     * atlas only when a run changes it. As {@link #atlas}: before {@link #realize}, and not owned.
+     */
+    public CanvasTechnique atlases(List<AtlasTexture> byFace) {
+        if (pipeline != null) {
+            throw new IllegalStateException("the pipeline was already built against an atlas layout; set the "
+                    + "atlases before realise");
+        }
+        if (byFace.isEmpty()) {
+            throw new IllegalArgumentException("at least one atlas: face 0 is the one every run without text names");
+        }
+        this.faces = List.copyOf(byFace);
+        this.atlas = faces.get(0);
         this.ownsAtlas = false;
         return this;
     }
@@ -189,9 +208,15 @@ public final class CanvasTechnique implements RenderTechnique {
         // the layer that actually knows what a run is. A null image means "no image bound", and the placeholder
         // stands in so the descriptor is never unbound while a draw references it.
         long bound = 0;
+        long bound0 = atlas.descriptorSet();
         for (Canvas.Run run : frameRuns) {
             if (run.vertexCount() <= 0) {
                 continue;
+            }
+            long set0 = atlasFor(run.face()).descriptorSet();
+            if (set0 != bound0) {
+                bound0 = set0;
+                cmds.bindDescriptorSet(cmd, pipeline, CanvasShader.ATLAS_SET, set0);
             }
             long set = run.image() instanceof SampledImage image ? image.descriptorSet() : atlas.descriptorSet();
             if (set != bound) {
@@ -200,6 +225,23 @@ public final class CanvasTechnique implements RenderTechnique {
             }
             cmds.draw(cmd, run.vertexCount(), run.firstVertex());
         }
+    }
+
+    /**
+     * The atlas a run's glyphs index. Without atlases (the placeholder) every face is the placeholder, which draws
+     * text as nothing, as it always has. A face past the list is a font set and an atlas list that disagree — the
+     * glyphs' UVs are into an atlas this technique was never given — and drawing them against another face's atlas
+     * would show the wrong letters, so it is refused.
+     */
+    private AtlasTexture atlasFor(int face) {
+        if (faces.isEmpty()) {
+            return atlas;
+        }
+        if (face < 0 || face >= faces.size()) {
+            throw new IllegalStateException("a run names face " + face + " and this technique has atlases for "
+                    + faces.size() + " faces; pass atlases() one per face of the FontSet the text was laid out with");
+        }
+        return faces.get(face);
     }
 
     @Override

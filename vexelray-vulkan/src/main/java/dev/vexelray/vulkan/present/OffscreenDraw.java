@@ -236,10 +236,18 @@ public final class OffscreenDraw {
                 pOff.set(JAVA_LONG, 0, 0L);
                 invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
                 MemorySegment pSet1 = arena.allocate(JAVA_LONG);
+                MemorySegment pSet0 = arena.allocate(JAVA_LONG);
                 long bound = 0;
+                long bound0 = descriptorSet;
                 for (WindowedPresenter.Run r : runs) {
                     if (r.vertexCount() <= 0) {
                         continue;
+                    }
+                    if (r.descriptorSet0() != 0 && r.descriptorSet0() != bound0) {
+                        bound0 = r.descriptorSet0();
+                        pSet0.set(JAVA_LONG, 0, bound0);
+                        invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline.pipelineLayout(), 0, 1, pSet0, 0, MemorySegment.NULL);
                     }
                     if (r.descriptorSet1() != 0 && r.descriptorSet1() != bound) {
                         bound = r.descriptorSet1();
