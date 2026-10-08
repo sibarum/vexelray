@@ -157,6 +157,16 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             ADDRESS.withName("pCommandBuffers"), JAVA_INT.withName("signalSemaphoreCount"), MemoryLayout.paddingLayout(4),
             ADDRESS.withName("pSignalSemaphores")).withName("VkSubmitInfo");
 
+    /** Chained on a submit to say what value each of its timeline semaphores is waited for at. */
+    private static final GroupLayout TIMELINE_SUBMIT_INFO = MemoryLayout.structLayout(
+            JAVA_INT.withName("sType"), MemoryLayout.paddingLayout(4), ADDRESS.withName("pNext"),
+            JAVA_INT.withName("waitSemaphoreValueCount"), MemoryLayout.paddingLayout(4),
+            ADDRESS.withName("pWaitSemaphoreValues"), JAVA_INT.withName("signalSemaphoreValueCount"),
+            MemoryLayout.paddingLayout(4), ADDRESS.withName("pSignalSemaphoreValues"))
+            .withName("VkTimelineSemaphoreSubmitInfo");
+    private static final int STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO = 1000207003;
+    private static final int PIPELINE_STAGE_FRAGMENT_SHADER = 0x80;
+
     private final VulkanDevice device;
     private final int width;
     private final int height;
@@ -540,6 +550,24 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     }
 
     /**
+     * As {@link #renderInto(GraphicsPipeline, long, long, int, byte[], float, float, float, float)}, with the draw's
+     * fragment shading waiting, inside the GPU, until timeline semaphore {@code timeline} reaches {@code value}: what
+     * orders a read of a buffer another queue writes after that write, which the order of submission does not across
+     * queues. The device must have been made with timeline semaphores.
+     *
+     * <p>This still returns only once the draw is done, as every {@code renderInto} does, so a wait that has not been
+     * met holds the calling thread with it. A caller that must not wait passes a value already reached: the wait is
+     * then for what makes the other queue's writes visible, and costs nothing.
+     *
+     * @param timeline a {@code VkSemaphore} of timeline type, or 0 to wait for nothing
+     */
+    public void renderInto(GraphicsPipeline pipeline, long vertexBuffer, long descriptorSet, int vertexCount,
+                           byte[] push, float cr, float cg, float cb, float ca, long timeline, long value) {
+        renderInto((cmd, w, h) -> drawOne(cmd, pipeline, vertexBuffer, descriptorSet, vertexCount, push),
+                cr, cg, cb, ca, timeline, value);
+    }
+
+    /**
      * Whatever a caller wants recorded into this target, inside a render pass this class begins, ends and
      * submits — clearing to {@code (cr,cg,cb,ca)} first. When it returns the image is in
      * {@code SHADER_READ_ONLY} and can be sampled through {@link #descriptorSet()}, exactly as the pipeline
@@ -567,6 +595,11 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
      * about, and it is invisible to a recorder that draws nothing.
      */
     public void renderInto(Recorder recorder, float cr, float cg, float cb, float ca) {
+        renderInto(recorder, cr, cg, cb, ca, 0L, 0L);
+    }
+
+    /** As {@link #renderInto(Recorder, float, float, float, float)}, waiting for {@code timeline} as the overload above. */
+    public void renderInto(Recorder recorder, float cr, float cg, float cb, float ca, long timeline, long value) {
         MemorySegment dev = device.handle();
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment poolInfo = arena.allocate(COMMAND_POOL_CREATE_INFO);
@@ -636,6 +669,22 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             si(submit, SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
             si(submit, SUBMIT_INFO, "commandBufferCount", 1);
             sa(submit, SUBMIT_INFO, "pCommandBuffers", pCmdArray);
+            if (timeline != 0L) {
+                MemorySegment semaphores = arena.allocate(JAVA_LONG);
+                semaphores.set(JAVA_LONG, 0, timeline);
+                MemorySegment stages = arena.allocate(JAVA_INT);
+                stages.set(JAVA_INT, 0, PIPELINE_STAGE_FRAGMENT_SHADER);
+                MemorySegment values = arena.allocate(JAVA_LONG);
+                values.set(JAVA_LONG, 0, value);
+                MemorySegment chained = arena.allocate(TIMELINE_SUBMIT_INFO);
+                si(chained, TIMELINE_SUBMIT_INFO, "sType", STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO);
+                si(chained, TIMELINE_SUBMIT_INFO, "waitSemaphoreValueCount", 1);
+                sa(chained, TIMELINE_SUBMIT_INFO, "pWaitSemaphoreValues", values);
+                sa(submit, SUBMIT_INFO, "pNext", chained);
+                si(submit, SUBMIT_INFO, "waitSemaphoreCount", 1);
+                sa(submit, SUBMIT_INFO, "pWaitSemaphores", semaphores);
+                sa(submit, SUBMIT_INFO, "pWaitDstStageMask", stages);
+            }
             // Waited on with a fence rather than vkDeviceWaitIdle, which is what this used to do.
             //
             // The pool below cannot be destroyed until this submission has finished with it, so *a* wait is
