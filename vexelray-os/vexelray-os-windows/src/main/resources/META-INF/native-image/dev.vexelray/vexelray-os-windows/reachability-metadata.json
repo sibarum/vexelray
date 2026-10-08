@@ -1,0 +1,53 @@
+{
+  "reflection": [
+    { "type": "dev.vexelray.os.windows.WindowsPlatform" },
+    {
+      "type": "dev.vexelray.os.windows.Win32Window",
+      "methods": [
+        { "name": "wndProc", "parameterTypes": ["java.lang.foreign.MemorySegment", "int", "long", "long"] }
+      ]
+    }
+  ],
+  "resources": [
+    { "glob": "META-INF/services/dev.vexelray.os.NativePlatform" }
+  ],
+  "foreign": {
+    "upcalls": [
+      { "returnType": "jlong", "parameterTypes": ["void*", "jint", "jlong", "jlong"] }
+    ],
+    "directUpcalls": [
+      {
+        "class": "dev.vexelray.os.windows.Win32Window",
+        "method": "wndProc",
+        "returnType": "jlong",
+        "parameterTypes": ["void*", "jint", "jlong", "jlong"]
+      }
+    ],
+    "downcalls": [
+        { "returnType": "jint", "parameterTypes": ["void*", "void*"] },
+        { "returnType": "jint", "parameterTypes": [] },
+        { "returnType": "void*", "parameterTypes": ["jint"] },
+        { "returnType": "void*", "parameterTypes": ["void*", "void*", "jint", "void*", "void*", "jint"] },
+        { "returnType": "void*", "parameterTypes": ["jint", "jint", "jint", "jint", "void*"] },
+        { "returnType": "jint", "parameterTypes": ["void*"] },
+        { "returnType": "void*", "parameterTypes": ["void*"] },
+        { "returnType": "void*", "parameterTypes": [] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jint", "void*", "jint"] },
+        { "returnType": "jshort", "parameterTypes": ["void*"] },
+        { "returnType": "void*", "parameterTypes": ["void*", "void*"] },
+        { "returnType": "void*", "parameterTypes": ["jint", "void*", "void*", "jint", "jint", "jint", "jint", "jint", "void*", "void*", "void*", "void*"] },
+        { "returnType": "jlong", "parameterTypes": ["void*", "jint", "jlong", "jlong"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jint"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "void*", "jint", "jint", "jint", "jint", "jint"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "void*", "jint", "jint", "jint"] },
+        { "returnType": "jlong", "parameterTypes": ["void*"] },
+        { "returnType": "jint", "parameterTypes": ["jint"] },
+        { "returnType": "jlong", "parameterTypes": ["void*", "jlong", "jint", "void*"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jlong"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jint", "jlong", "jlong"] },
+        { "returnType": "jint", "parameterTypes": ["jint", "void*", "jint", "jint", "jint"] },
+        { "returnType": "void*", "parameterTypes": ["void*", "jint"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "void*", "void*", "void*"] }
+      ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "resources": [
+    { "glob": "META-INF/supirvast/shaders/canvas.vert.spv" },
+    { "glob": "META-INF/supirvast/shaders/canvas.frag.spv" }
+  ]
+}
