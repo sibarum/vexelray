@@ -121,6 +121,16 @@ public final class Win32Window implements NativeWindow {
     // makes a veto impossible: the host cannot tell "the user clicked X" from "this window no longer exists".
     private volatile boolean closeRequested;
     private volatile boolean destroyed;
+    // What the window last was, read while its handle still answered. Once it is destroyed every question is
+    // answered from these and every command does nothing: a destroyed window is an ordinary event -- the user
+    // clicked X -- and a caller that holds this object a frame longer than the window lived is not worth a crash.
+    // Written before `destroyed`, which is volatile, so a reader that sees the flag sees them.
+    private int lastX;
+    private int lastY;
+    private int lastOuterWidth;
+    private int lastOuterHeight;
+    private boolean lastMaximized;
+    private boolean lastMinimized;
     // Whether this window is one of the holders of the fine timer. See TimerResolution.
     private final java.util.concurrent.atomic.AtomicBoolean timerHeld = new java.util.concurrent.atomic.AtomicBoolean();
     // Desired client-area cursor; read by the (message-pump-thread) window procedure on WM_SETCURSOR.
@@ -258,7 +268,9 @@ public final class Win32Window implements NativeWindow {
                     return 0;
                 }
                 case User32.WM_DESTROY -> {
-                    window.destroyed = true;
+                    // Seen only when something else destroys it, its owner for one: close() takes the window out
+                    // of WINDOWS before DestroyWindow, and retires it itself.
+                    window.retire();
                     return 0;
                 }
                 case User32.WM_KEYDOWN -> {
@@ -420,31 +432,43 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public void minimize() {
+        if (destroyed) {
+            return;
+        }
         User32.showWindow(hwnd, User32.SW_MINIMIZE);
     }
 
     @Override
     public void maximize() {
+        if (destroyed) {
+            return;
+        }
         User32.showWindow(hwnd, User32.SW_MAXIMIZE);
     }
 
     @Override
     public void restore() {
+        if (destroyed) {
+            return;
+        }
         User32.showWindow(hwnd, User32.SW_RESTORE);
     }
 
     @Override
     public boolean isMaximized() {
-        return User32.isZoomed(hwnd);
+        return destroyed ? lastMaximized : User32.isZoomed(hwnd);
     }
 
     @Override
     public boolean isMinimized() {
-        return User32.isIconic(hwnd);
+        return destroyed ? lastMinimized : User32.isIconic(hwnd);
     }
 
     @Override
     public void requestClose() {
+        if (destroyed) {
+            return;   // already further along than a request could take it
+        }
         // Posted, not sent: the close travels the same queue the system close button uses, so it is observed by
         // the next pumpEvents() and the host tears the window down on its own terms, not underneath this call.
         User32.postMessageW(hwnd, User32.WM_CLOSE, 0L, 0L);
@@ -471,7 +495,7 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public void show() {
-        if (shown) {
+        if (shown || destroyed) {
             return;
         }
         shown = true;
@@ -480,7 +504,7 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public void hide() {
-        if (!shown) {
+        if (!shown || destroyed) {
             return;
         }
         shown = false;
@@ -489,11 +513,14 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public boolean isVisible() {
-        return shown && User32.isWindowVisible(hwnd);
+        return shown && !destroyed && User32.isWindowVisible(hwnd);
     }
 
     @Override
     public void focus() {
+        if (destroyed) {
+            return;
+        }
         // Restoring first, because a minimized window cannot be "focused" in any sense the user would accept:
         // the request means put this window in front of me, and a taskbar button is not in front of anything.
         if (User32.isIconic(hwnd)) {
@@ -517,6 +544,9 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public String compositorTiming() {
+        if (destroyed) {
+            return "unavailable: window destroyed";
+        }
         long[] t = new long[9];
         if (!Dwmapi.timingInfo(hwnd, t)) {
             return "unavailable: " + Dwmapi.timingFailure();
@@ -532,6 +562,9 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public void setEnabled(boolean enabled) {
+        if (destroyed) {
+            return;
+        }
         User32.enableWindow(hwnd, enabled);
     }
 
@@ -546,6 +579,10 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public boolean pumpEvents() {
+        if (destroyed) {
+            // The message buffer goes with close(), and the pump is per thread: any live window drains the queue.
+            return false;
+        }
         while (User32.peekMessageRemove(msgBuffer)) {
             User32.translateMessage(msgBuffer);
             User32.dispatchMessageW(msgBuffer);
@@ -599,6 +636,9 @@ public final class Win32Window implements NativeWindow {
     @Override
     public void setIcon(Icon icon) {
         this.icon = icon;
+        if (destroyed) {
+            return;
+        }
         applyIcon();
     }
 
@@ -676,6 +716,10 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public long createVulkanSurface(long vkInstance, MemorySegment vkGetInstanceProcAddr) {
+        if (destroyed) {
+            // The one call with nothing to fall back on: a surface for a window that is gone is a host bug.
+            throw new IllegalStateException("no surface for a destroyed window");
+        }
         MemorySegment instance = MemorySegment.ofAddress(vkInstance);
         MethodHandle getProcAddr = Ffi.downcall(vkGetInstanceProcAddr,
                 FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
@@ -740,22 +784,22 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public int screenX() {
-        return windowRect(User32::rectLeft);
+        return destroyed ? lastX : windowRect(User32::rectLeft);
     }
 
     @Override
     public int screenY() {
-        return windowRect(User32::rectTop);
+        return destroyed ? lastY : windowRect(User32::rectTop);
     }
 
     @Override
     public int outerWidth() {
-        return windowRect(User32::rectSpanX);
+        return destroyed ? lastOuterWidth : windowRect(User32::rectSpanX);
     }
 
     @Override
     public int outerHeight() {
-        return windowRect(User32::rectSpanY);
+        return destroyed ? lastOuterHeight : windowRect(User32::rectSpanY);
     }
 
     /** Read one value off the window's outer rect — same rect WindowConfig requests, so bounds round-trip. */
@@ -769,12 +813,38 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public void setPosition(int x, int y) {
+        if (destroyed) {
+            return;
+        }
         User32.moveWindow(hwnd, x, y);
     }
 
     @Override
     public void setBounds(int x, int y, int width, int height) {
+        if (destroyed) {
+            return;
+        }
         User32.setWindowBounds(hwnd, x, y, width, height);
+    }
+
+    /**
+     * Read what the window last was while its handle still answers, then mark it destroyed. Main thread: from
+     * {@link #close}, or from the window procedure on {@code WM_DESTROY}, both with the handle still valid.
+     */
+    private void retire() {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment rect = temp.allocate(User32.RECT);
+            User32.getWindowRect(hwnd, rect);
+            lastX = User32.rectLeft(rect);
+            lastY = User32.rectTop(rect);
+            lastOuterWidth = User32.rectSpanX(rect);
+            lastOuterHeight = User32.rectSpanY(rect);
+        } catch (NativeException e) {
+            // Zeros, rather than a close that fails: nothing reading them afterwards is worth a crash.
+        }
+        lastMaximized = User32.isZoomed(hwnd);
+        lastMinimized = User32.isIconic(hwnd);
+        destroyed = true;
     }
 
     @Override
@@ -785,8 +855,18 @@ public final class Win32Window implements NativeWindow {
     @Override
     public void close() {
         frameSink = null;   // nothing may pull a frame while the window is being destroyed
-        WINDOWS.remove(hwnd.address());
-        User32.destroyWindow(hwnd);
+        if (WINDOWS.remove(hwnd.address()) == null) {
+            return;   // closed already: a second close is a no-op, not DestroyWindow on a stale handle
+        }
+        // With the window out of WINDOWS the procedure cannot see its WM_DESTROY, so it retires here, while the
+        // handle can still be read and before anything else can ask.
+        if (!destroyed) {
+            retire();
+        }
+        // An owner's destruction may have taken the handle with it already; DestroyWindow would then fail.
+        if (User32.isWindow(hwnd)) {
+            User32.destroyWindow(hwnd);
+        }
         // After the window is gone, not before: the icons are still what it is drawn with until then.
         destroyIcons();
         arena.close();

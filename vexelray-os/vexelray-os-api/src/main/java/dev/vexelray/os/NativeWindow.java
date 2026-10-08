@@ -5,6 +5,11 @@ import java.lang.foreign.MemorySegment;
 /**
  * A live OS window. The engine drives its event pump and asks it to produce a Vulkan surface. All platform
  * specifics (the HWND, Display*, or CAMetalLayer behind it) are hidden; callers see only handles as opaque longs.
+ *
+ * <p><b>After the window is gone.</b> Once it has been destroyed -- by {@link #close}, or along with its owner --
+ * every query answers with what the window last was, every command does nothing, and {@link #close} again is a
+ * no-op. Only {@link #createVulkanSurface} refuses. A window closing is an ordinary event, the user clicking X,
+ * and whoever still holds this object a frame later should read a stale answer, not take the program down.
  */
 public interface NativeWindow extends AutoCloseable {
 

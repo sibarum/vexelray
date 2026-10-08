@@ -517,6 +517,8 @@ public final class User32 {
             FunctionDescriptor.of(JAVA_INT, ADDRESS));
     private static final MethodHandle IsIconic = Ffi.downcall(LIB, "IsIconic",
             FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle IsWindow = Ffi.downcall(LIB, "IsWindow",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
     private static final MethodHandle SetTimer = Ffi.downcall(LIB, "SetTimer",
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS));
     private static final MethodHandle KillTimer = Ffi.downcall(LIB, "KillTimer",
@@ -582,6 +584,15 @@ public final class User32 {
             return (int) IsZoomed.invokeExact(hwnd) != 0;
         } catch (Throwable t) {
             throw NativeException.rethrow("IsZoomed", t);
+        }
+    }
+
+    /** Whether the handle still names a window: false once it has been destroyed, by anyone. */
+    public static boolean isWindow(MemorySegment hwnd) {
+        try {
+            return (int) IsWindow.invokeExact(hwnd) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("IsWindow", t);
         }
     }
 
