@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "bytes": 15841664,
+  "families": [
+    {"name": "sans", "fontFamily": "Noto Sans", "faces": [
+      {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "source": "NotoSans-Regular.ttf", "metrics": "sans/regular.json", "pixels": "sans/regular.rgba", "width": 1364, "height": 1394, "glyphs": 3092, "bytes": 7605664}
+    ]},
+    {"name": "mono", "fontFamily": "Noto Sans Mono", "faces": [
+      {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "source": "NotoSansMono-Regular.ttf", "metrics": "mono/regular.json", "pixels": "mono/regular.rgba", "width": 1420, "height": 1450, "glyphs": 3488, "bytes": 8236000}
+    ]}
+  ]
+}

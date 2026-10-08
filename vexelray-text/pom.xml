@@ -121,6 +121,25 @@
                                     <pxRange>4</pxRange>
                                 </atlas>
                             </atlases>
+                            <!--
+                              The same two faces as font families (docs/plans/font-families.md in vexelray-gui):
+                              every glyph each font maps, one atlas per face, listed in atlas/fonts.json. A Bold or
+                              Italic TTF of either family dropped into fonts/ is picked up as another face with no
+                              change here. Beside the primary atlas until the runtime moves onto FontSet, then
+                              instead of it.
+                            -->
+                            <families>
+                                <family>
+                                    <name>sans</name>
+                                    <sources><source>${project.basedir}/fonts</source></sources>
+                                    <match>Noto Sans</match>
+                                </family>
+                                <family>
+                                    <name>mono</name>
+                                    <sources><source>${project.basedir}/fonts</source></sources>
+                                    <match>Noto Sans Mono</match>
+                                </family>
+                            </families>
                         </configuration>
                     </execution>
                 </executions>

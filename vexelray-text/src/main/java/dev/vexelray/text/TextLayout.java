@@ -230,6 +230,24 @@ public final class TextLayout {
      * lines (a wrapped text editor). Same wrapping rules; {@code maxWidth <= 0} disables wrapping.
      */
     public List<LineSpan> breakLineSpans(String text, float pixelSize, float maxWidth, WrapMode mode) {
+        return breakLineSpans(text, (index, cp) -> glyphs.advance(cp, pixelSize), maxWidth, mode);
+    }
+
+    /**
+     * The advance, in px, of the code point {@code codepoint} that starts at char index {@code index} of the text
+     * being broken. Breaking needs nothing about the text but this, which is what lets text whose characters are in
+     * different faces — a bold word in a regular line — break by the widths it will actually draw at.
+     */
+    @FunctionalInterface
+    public interface Advances {
+        float at(int index, int codepoint);
+    }
+
+    /**
+     * As {@link #breakLineSpans(String, float, float, WrapMode)}, with each code point's advance supplied rather
+     * than read from one face: the same rules over whatever widths the caller's text really has.
+     */
+    public static List<LineSpan> breakLineSpans(String text, Advances advances, float maxWidth, WrapMode mode) {
         WrapMode effective = (maxWidth <= 0f) ? WrapMode.NONE : mode;
         List<LineSpan> out = new ArrayList<>();
         int n = text.length();
@@ -270,10 +288,10 @@ public final class TextLayout {
                     chunkEnd++;
                 }
             }
-            float chunkWidth = measureRange(text, i, chunkEnd, pixelSize);
+            float chunkWidth = measureRange(text, i, chunkEnd, advances);
             if (charBreak && chunkWidth > maxWidth) {
-                chunkEnd = largestPrefixWithin(text, i, chunkEnd, pixelSize, maxWidth);
-                chunkWidth = measureRange(text, i, chunkEnd, pixelSize);
+                chunkEnd = largestPrefixWithin(text, i, chunkEnd, advances, maxWidth);
+                chunkWidth = measureRange(text, i, chunkEnd, advances);
             }
 
             boolean lineEmpty = lineWidth == 0f;
@@ -451,25 +469,33 @@ public final class TextLayout {
     }
 
     private float measureRange(String text, int from, int to, float pixelSize) {
+        return measureRange(text, from, to, (index, cp) -> glyphs.advance(cp, pixelSize));
+    }
+
+    private int largestPrefixWithin(String text, int from, int hi, float pixelSize, float maxWidth) {
+        return largestPrefixWithin(text, from, hi, (index, cp) -> glyphs.advance(cp, pixelSize), maxWidth);
+    }
+
+    private static float measureRange(String text, int from, int to, Advances advances) {
         float w = 0f;
         int j = from;
         while (j < to) {
             int cp = text.codePointAt(j);
+            w += advances.at(j, cp);
             j += Character.charCount(cp);
-            w += glyphs.advance(cp, pixelSize);
         }
         return w;
     }
 
     /** Largest end index in ({@code from}, {@code hi}] whose range width fits {@code maxWidth}; at least one codepoint. */
-    private int largestPrefixWithin(String text, int from, int hi, float pixelSize, float maxWidth) {
+    private static int largestPrefixWithin(String text, int from, int hi, Advances advances, float maxWidth) {
         int j = from;
         float w = 0f;
         int last = from;
         while (j < hi) {
             int cp = text.codePointAt(j);
             int next = j + Character.charCount(cp);
-            float nw = w + glyphs.advance(cp, pixelSize);
+            float nw = w + advances.at(j, cp);
             if (nw > maxWidth && j > from) {
                 return j;
             }

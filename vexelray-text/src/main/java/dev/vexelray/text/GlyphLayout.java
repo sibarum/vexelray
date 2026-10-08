@@ -9,13 +9,44 @@ import java.util.List;
  * convention (V flipped, since msdf-atlas-gen writes a bottom-origin atlas), and it computes the MSDF
  * {@code screenPxRange} for a given em pixel size. No kerning (msdf-atlas-gen emits none) and single-line only —
  * line breaking is later work.
+ *
+ * <p>Over a {@link FontSet}, a layout draws one face and falls back along its {@link FontSet#chain chain}: each code
+ * point comes from the first face that has it, at that face's advance, and its quad says which face that was.
+ * Measuring and drawing go through the same resolution, so a borrowed glyph occupies exactly the width it is
+ * measured at. The vertical metrics — ascent, descent, line height — are the asked-for face's alone; a borrowed
+ * glyph sits on its baseline.
  */
 public final class GlyphLayout {
 
+    /** No face has the code point, and it is one that draws nothing (whitespace, a control). */
+    private static final int NONE = -1;
+    /** No face has the code point, and it is printable: the asked-for face's missing-glyph box. */
+    private static final int NOTDEF = -2;
+
     private final AtlasData atlas;
+    private final AtlasData[] chain;
+    private final int[] ids;
 
     public GlyphLayout(AtlasData atlas) {
         this.atlas = atlas;
+        this.chain = new AtlasData[] {atlas};
+        this.ids = new int[] {0};
+    }
+
+    /** A layout of {@code chain.get(0)}, borrowing from the rest in order. See {@link FontSet#layout}. */
+    GlyphLayout(List<FontSet.Face> chain) {
+        this.atlas = chain.get(0).atlas();
+        this.chain = new AtlasData[chain.size()];
+        this.ids = new int[chain.size()];
+        for (int i = 0; i < chain.size(); i++) {
+            this.chain[i] = chain.get(i).atlas();
+            this.ids[i] = chain.get(i).id();
+        }
+    }
+
+    /** The {@link FontSet.Face#id() id} of the face this layout draws; 0 over a bare {@link AtlasData}. */
+    public int face() {
+        return ids[0];
     }
 
     /**
@@ -33,20 +64,23 @@ public final class GlyphLayout {
      */
     public List<GlyphQuad> layout(String text, float penX, float baselineY, float pixelSize, float extraWordSpacing) {
         List<GlyphQuad> quads = new ArrayList<>();
-        float w = atlas.info().width();
-        float h = atlas.info().height();
         float cx = penX;
         int i = 0;
         while (i < text.length()) {
             int cp = text.codePointAt(i);
             i += Character.charCount(cp);
-            GlyphData g = resolve(cp);
+            int from = source(cp);
+            GlyphData g = glyph(cp, from);
             if (g == null) {
                 continue;
             }
             Rect pb = g.planeBounds();
             Rect ab = g.atlasBounds();
             if (pb != null && ab != null) {
+                int k = from < 0 ? 0 : from;
+                AtlasInfo info = chain[k].info();
+                float w = info.width();
+                float h = info.height();
                 // Plane Y is Y-up from the baseline; screen Y is Y-down.
                 float left = cx + pb.left() * pixelSize;
                 float right = cx + pb.right() * pixelSize;
@@ -57,7 +91,8 @@ public final class GlyphLayout {
                 float u1 = ab.right() / w;
                 float v0 = (h - ab.top()) / h;      // glyph visual top
                 float v1 = (h - ab.bottom()) / h;   // glyph visual bottom
-                quads.add(new GlyphQuad(left, top, right - left, bottom - top, u0, v0, u1, v1));
+                quads.add(new GlyphQuad(left, top, right - left, bottom - top, u0, v0, u1, v1, ids[k],
+                        info.distanceRange() * (pixelSize / info.emSize())));
             }
             cx += g.advance() * pixelSize;
             if (extraWordSpacing != 0f && Character.isWhitespace(cp)) {
@@ -117,15 +152,30 @@ public final class GlyphLayout {
         return atlas.info().distanceRange() * (pixelSize / atlas.info().emSize());
     }
 
-    private GlyphData resolve(int codepoint) {
-        GlyphData g = atlas.glyph(codepoint);
-        if (g != null) {
-            return g;
+    /**
+     * The glyph this layout draws for {@code codepoint}, in em: from the first face in the chain that has it, else
+     * the missing-glyph box, else {@code null} for a code point that draws nothing (whitespace, a control) — exactly
+     * what {@link #advance} and {@link #layout} use, for a caller that needs the bounds as well as the advance.
+     */
+    public GlyphData resolve(int codepoint) {
+        return glyph(codepoint, source(codepoint));
+    }
+
+    /** Which face in the chain draws {@code codepoint}: its index, or {@link #NONE} or {@link #NOTDEF}. */
+    private int source(int codepoint) {
+        for (int k = 0; k < chain.length; k++) {
+            if (chain[k].glyph(codepoint) != null) {
+                return k;
+            }
         }
-        if (!isRenderableMiss(codepoint)) {
-            return null;
+        return isRenderableMiss(codepoint) ? NOTDEF : NONE;
+    }
+
+    private GlyphData glyph(int codepoint, int source) {
+        if (source >= 0) {
+            return chain[source].glyph(codepoint);
         }
-        return atlas.notdef();
+        return source == NOTDEF ? atlas.notdef() : null;
     }
 
     /** Whether an absent codepoint should show the missing-glyph box (printable) vs stay invisible (whitespace/control). */
