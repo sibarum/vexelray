@@ -19,7 +19,8 @@ import java.util.regex.Pattern;
  * U+FFFD (the slot {@code dev.vexelray.text.AtlasData.NOTDEF_CODEPOINT} reads at runtime). Idempotent: if the JSON
  * already carries U+FFFD the atlas is left untouched, so it is safe to run on every build.
  *
- * <p>Copied verbatim from Dasum (sibarum.dasum.gui.msdf.NotdefGlyph), repackaged.
+ * <p>Copied from Dasum (sibarum.dasum.gui.msdf.NotdefGlyph), repackaged. One addition: an atlas with no free cell
+ * for the box grows by a strip instead of failing, because a family face is sized to fit its glyphs exactly.
  */
 final class NotdefGlyph {
 
@@ -82,9 +83,15 @@ final class NotdefGlyph {
 
         Cell cell = findFreeCell(text, atlas, cellW, cellH);
         if (cell == null) {
-            throw new MojoExecutionException(
-                    "No free " + cellW + "x" + cellH + "px region in atlas " + png.getName()
-                            + " to place the missing-glyph box.");
+            // A tightly sized atlas (-pots over a whole font) can be full. Grow it by one strip rather than fail,
+            // on the side the y-origin does not count from, so no glyph already in it changes coordinates.
+            int strip = cellH + 2 * FREE_MARGIN;
+            img = grow(img, strip, atlas.yOriginBottom);
+            text = text.replaceFirst("\"height\":" + atlas.height + "\\b", "\"height\":" + (atlas.height + strip));
+            cell = new Cell(FREE_MARGIN, atlas.yOriginBottom ? FREE_MARGIN : atlas.height + FREE_MARGIN,
+                    cellW, cellH);
+            atlas = new Atlas(atlas.distanceRange, atlas.size, atlas.width, atlas.height + strip,
+                    atlas.yOriginBottom);
         }
 
         rasterizeBox(img, cell, atlas.distanceRange, atlas.size);
@@ -162,8 +169,29 @@ final class NotdefGlyph {
             "\"atlasBounds\":\\{\"left\":([-0-9.eE]+),\"bottom\":([-0-9.eE]+),"
                     + "\"right\":([-0-9.eE]+),\"top\":([-0-9.eE]+)\\}");
 
+    /**
+     * {@code img} with {@code strip} empty rows added: above it when the atlas counts y from the bottom, so the
+     * bottom-origin coordinates of every glyph in it are unchanged, and below it otherwise, for the same reason.
+     * Empty is black: as far outside every channel's distance as the field goes.
+     */
+    private static BufferedImage grow(BufferedImage img, int strip, boolean yOriginBottom) {
+        int type = img.getType() == BufferedImage.TYPE_CUSTOM ? BufferedImage.TYPE_INT_ARGB : img.getType();
+        BufferedImage out = new BufferedImage(img.getWidth(), img.getHeight() + strip, type);
+        java.awt.Graphics2D g = out.createGraphics();
+        try {
+            g.setColor(java.awt.Color.BLACK);
+            g.fillRect(0, 0, out.getWidth(), out.getHeight());
+            g.drawImage(img, 0, yOriginBottom ? strip : 0, null);
+        } finally {
+            g.dispose();
+        }
+        return out;
+    }
+
+    private static final int FREE_MARGIN = 2;
+
     private static Cell findFreeCell(String text, Atlas atlas, int cellW, int cellH) {
-        int margin = 2;
+        int margin = FREE_MARGIN;
         int needW = cellW + 2 * margin;
         int needH = cellH + 2 * margin;
         if (needW > atlas.width || needH > atlas.height) {

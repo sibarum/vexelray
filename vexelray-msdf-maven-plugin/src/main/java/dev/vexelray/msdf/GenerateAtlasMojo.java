@@ -14,8 +14,14 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Generates MSDF (multi-channel signed distance field) atlases from TTF/OTF fonts via a bundled
@@ -23,6 +29,10 @@ import java.util.List;
  * {@code dasum-msdf-maven-plugin}: no icon-font codegen. One primary font per atlas, plus optional
  * {@code <extraFonts>} packed into the same image via msdf-atlas-gen's {@code -and} inputs (the JSON output then
  * uses the multi-font {@code variants} shape, one variant per face in declaration order).
+ *
+ * <p>{@code <families>} is the high-level form ({@link FamilyConfig}): name a family and its font files, and every
+ * face it has is baked into its own atlas, with every glyph each face maps, plus a {@code fonts.json} manifest and
+ * a printed account of the texture memory they will take. See docs/plans/font-families.md in vexelray-gui.
  *
  * <p>Two modes via {@code msdf.mode}:
  * <ul>
@@ -43,8 +53,23 @@ public class GenerateAtlasMojo extends AbstractMojo {
     @Parameter(required = true)
     private File outputDir;
 
-    @Parameter(required = true)
+    /** Atlases from one font file and an explicit code-point list each. */
+    @Parameter
     private List<AtlasConfig> atlases;
+
+    /**
+     * Font families: one atlas per face, every glyph by default, faces found by reading the fonts. Written under
+     * {@code <outputDir>/<family>/<style>.*}, with {@code <outputDir>/fonts.json} listing them all.
+     */
+    @Parameter
+    private List<FamilyConfig> families;
+
+    /**
+     * Fail the build when the families' textures together exceed this many megabytes. Unset, the total is printed
+     * and nothing fails. Every face is loaded at startup, so this is the application's font VRAM, known here.
+     */
+    @Parameter(property = "msdf.fontBudgetMegabytes")
+    private Integer fontBudgetMegabytes;
 
     /** Working directory for the extracted binary and intermediate charset files. */
     @Parameter(defaultValue = "${project.build.directory}/vexelray-msdf")
@@ -63,8 +88,10 @@ public class GenerateAtlasMojo extends AbstractMojo {
 
     @Override
     public void execute() throws MojoExecutionException {
-        if (atlases == null || atlases.isEmpty()) {
-            getLog().warn("No <atlases> configured; nothing to do.");
+        boolean noAtlases = atlases == null || atlases.isEmpty();
+        boolean noFamilies = families == null || families.isEmpty();
+        if (noAtlases && noFamilies) {
+            getLog().warn("No <atlases> or <families> configured; nothing to do.");
             return;
         }
         boolean prebuilt = "prebuilt".equalsIgnoreCase(mode);
@@ -75,8 +102,212 @@ public class GenerateAtlasMojo extends AbstractMojo {
             throw new MojoExecutionException("Failed to create output dir: " + outputDir);
         }
         File binary = prebuilt ? null : extractBinary();
-        for (AtlasConfig cfg : atlases) {
+        for (AtlasConfig cfg : noAtlases ? List.<AtlasConfig>of() : atlases) {
             processAtlas(cfg, binary, prebuilt);
+        }
+        if (!noFamilies) {
+            processFamilies(binary, prebuilt);
+        }
+    }
+
+    // --- families --------------------------------------------------------------------------------------------
+
+    private void processFamilies(File binary, boolean prebuilt) throws MojoExecutionException {
+        List<FamilyPlan> plans = new ArrayList<>();
+        Set<String> names = new HashSet<>();
+        for (FamilyConfig cfg : families) {
+            FamilyPlan plan = FamilyPlan.of(cfg);
+            if (!names.add(plan.family.toLowerCase(Locale.ROOT))) {
+                throw new MojoExecutionException("Two families are both named '" + plan.family + "'.");
+            }
+            plans.add(plan);
+        }
+
+        List<FontManifest.Family> manifest = new ArrayList<>();
+        for (int i = 0; i < plans.size(); i++) {
+            FamilyPlan plan = plans.get(i);
+            FamilyConfig cfg = families.get(i);
+            File dir = new File(outputDir, plan.family);
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw new MojoExecutionException("Failed to create family output dir: " + dir);
+            }
+            List<FontManifest.Entry> entries = new ArrayList<>();
+            for (FamilyPlan.Face face : plan.faces) {
+                entries.add(processFace(plan, cfg, face, dir, binary, prebuilt));
+            }
+            reportStale(plan, dir);
+            manifest.add(new FontManifest.Family(plan.family, plan.fontFamily, entries));
+        }
+
+        File manifestFile = new File(outputDir, "fonts.json");
+        try {
+            Files.writeString(manifestFile.toPath(), FontManifest.json(manifest), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed writing font manifest " + manifestFile, e);
+        }
+        getLog().info("Font families (every face is loaded at startup):");
+        for (String line : FontManifest.summary(manifest)) {
+            getLog().info(line);
+        }
+        for (FontManifest.Family f : manifest) {
+            for (FontManifest.Entry e : f.faces()) {
+                if (e.width() > VULKAN_GUARANTEED_DIMENSION || e.height() > VULKAN_GUARANTEED_DIMENSION) {
+                    getLog().warn("Face " + f.name() + "/" + e.face().key() + " is " + e.width() + " x " + e.height()
+                            + ", past the " + VULKAN_GUARANTEED_DIMENSION + " px every Vulkan device must support."
+                            + " Narrow it with <charset>, or lower <fontSize>.");
+                }
+            }
+        }
+        long total = FontManifest.bytes(manifest);
+        if (fontBudgetMegabytes != null && total > fontBudgetMegabytes * 1024L * 1024L) {
+            throw new MojoExecutionException("Font textures total " + FontManifest.megabytes(total)
+                    + ", over the budget of " + fontBudgetMegabytes + " MB. Narrow a family's <styles> or"
+                    + " <charset>, or raise msdf.fontBudgetMegabytes.");
+        }
+    }
+
+    /** {@code maxImageDimension2D}'s required minimum in the Vulkan spec. */
+    private static final int VULKAN_GUARANTEED_DIMENSION = 4096;
+
+    private FontManifest.Entry processFace(FamilyPlan plan, FamilyConfig cfg, FamilyPlan.Face face, File dir,
+                                           File binary, boolean prebuilt) throws MojoExecutionException {
+        String label = plan.family + "/" + face.key();
+        File pngOut = new File(dir, face.key() + ".png");
+        File jsonOut = new File(dir, face.key() + ".json");
+        File rgbaOut = new File(dir, face.key() + ".rgba");
+        File stampOut = new File(dir, face.key() + ".stamp");
+
+        if (prebuilt) {
+            if (!pngOut.isFile() || !jsonOut.isFile()) {
+                throw new MojoExecutionException("Prebuilt face '" + label + "' missing at " + dir
+                        + ". Switch to the default primary mode to regenerate, or commit the atlas.");
+            }
+        } else {
+            String charset = FamilyPlan.charsetOf(face, cfg.charset);
+            List<String> generate = new ArrayList<>(face.fontArguments());
+            generate.addAll(List.of("-type", "msdf", "-format", "png",
+                    "-size", Integer.toString(cfg.fontSize), "-pxrange", Integer.toString(cfg.pxRange), "-square4"));
+            String stamp = stamp(face, generate, charset);
+            if (pngOut.isFile() && jsonOut.isFile() && stamp.equals(readStamp(stampOut))) {
+                getLog().info("Face '" + label + "' is up to date — skipping.");
+            } else {
+                File charsetFile = writeCharsetFile(plan.family + "-" + face.key(), charset);
+                List<String> cmd = new ArrayList<>();
+                cmd.add(binary.getAbsolutePath());
+                cmd.add(generate.get(0));
+                cmd.add(generate.get(1));
+                cmd.add("-charset");
+                cmd.add(charsetFile.getAbsolutePath());
+                cmd.addAll(generate.subList(2, generate.size()));
+                cmd.addAll(List.of("-imageout", pngOut.getAbsolutePath(), "-json", jsonOut.getAbsolutePath()));
+                // A stale stamp must not outlive a failed run, or the next build would skip a half-written face.
+                stampOut.delete();
+                run(cmd, label);
+                if (!pngOut.isFile() || !jsonOut.isFile()) {
+                    throw new MojoExecutionException("msdf-atlas-gen completed but face '" + label
+                            + "' outputs are missing: " + pngOut + " / " + jsonOut);
+                }
+                if (NotdefGlyph.ensure(pngOut, jsonOut)) {
+                    getLog().info("Face '" + label + "': baked missing-glyph box (U+FFFD).");
+                }
+                writeStamp(stampOut, stamp);
+            }
+            if (cfg.charset != null && !cfg.charset.isBlank()) {
+                reportFaceCoverage(label, cfg, jsonOut);
+            }
+        }
+        AtlasPixels.ensure(pngOut, rgbaOut);
+        return FontManifest.entry(face, plan.family + "/" + jsonOut.getName(), plan.family + "/" + rgbaOut.getName(),
+                jsonOut);
+    }
+
+    /**
+     * Files in a family's directory that no face of it produced — a style dropped from {@code <styles>}, a font
+     * removed from the sources. Said rather than deleted: the directory is usually under {@code src/main/resources},
+     * and what is in it is the author's to remove. They are not in the manifest, so nothing loads them; they only
+     * make the jar bigger.
+     */
+    private void reportStale(FamilyPlan plan, File dir) {
+        Set<String> keys = new HashSet<>();
+        for (FamilyPlan.Face face : plan.faces) {
+            keys.add(face.key());
+        }
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File f : files) {
+            String n = f.getName();
+            int dot = n.lastIndexOf('.');
+            String ext = dot < 0 ? "" : n.substring(dot + 1);
+            if (dot > 0 && List.of("png", "json", "rgba", "stamp").contains(ext) && !keys.contains(n.substring(0, dot))) {
+                getLog().warn("Family '" + plan.family + "': " + f + " belongs to no face it bakes now. It is not in"
+                        + " fonts.json and nothing loads it; delete it to keep it out of the jar.");
+            }
+        }
+    }
+
+    private void reportFaceCoverage(String label, FamilyConfig cfg, File jsonOut) throws MojoExecutionException {
+        String json;
+        try {
+            json = Files.readString(jsonOut.toPath(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            getLog().warn("Face '" + label + "': could not read " + jsonOut.getName() + " to check glyph coverage ("
+                    + e.getMessage() + ") — coverage is unverified.");
+            return;
+        }
+        CharsetCoverage.Coverage coverage = CharsetCoverage.measure(resolveCharsetContent(cfg.charset), json);
+        List<String> ranges = coverage.missingRanges();
+        if (ranges.isEmpty()) {
+            return;
+        }
+        getLog().warn("Face '" + label + "': " + coverage.missing().size() + " of " + coverage.requested().size()
+                + " requested codepoints are not in the font, and text using them will draw the missing-glyph box:");
+        for (String range : ranges) {
+            getLog().warn("    " + range);
+        }
+        if (failOnMissingGlyphs) {
+            throw new MojoExecutionException("Face '" + label + "' is missing requested glyphs and"
+                    + " failOnMissingGlyphs is set.");
+        }
+    }
+
+    /**
+     * What decides a face's output: its generator arguments, its charset, and the font's contents. A changed
+     * size, range, instance or charset regenerates it, where comparing file times would not.
+     *
+     * <p>Contents, not path or time: the outputs are committed, and a fresh clone has a different directory and
+     * every file dated by the checkout. Either in the stamp would regenerate every face on every new machine.
+     */
+    private static String stamp(FamilyPlan.Face face, List<String> generate, String charset)
+            throws MojoExecutionException {
+        String path = face.font().path.toAbsolutePath().toString();
+        String args = String.join("\u0000", generate).replace(path, face.font().path.getFileName().toString());
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            sha.update(Files.readAllBytes(face.font().path));
+            sha.update((args + "\u0000" + charset).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(sha.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required of every Java platform", e);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed reading " + face.font().path, e);
+        }
+    }
+
+    private static String readStamp(File f) {
+        try {
+            return f.isFile() ? Files.readString(f.toPath(), StandardCharsets.UTF_8).trim() : "";
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    private static void writeStamp(File f, String stamp) throws MojoExecutionException {
+        try {
+            Files.writeString(f.toPath(), stamp + "\n", StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed writing " + f, e);
         }
     }
 
@@ -249,7 +480,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
         return cfg.extraFonts == null ? List.of() : cfg.extraFonts;
     }
 
-    private static String resolveCharsetContent(String charset) {
+    static String resolveCharsetContent(String charset) {
         String preset = charset == null ? "ascii" : charset.trim();
         return switch (preset.toLowerCase()) {
             case "ascii" -> "[0x20, 0x7E]\n";
@@ -308,6 +539,10 @@ public class GenerateAtlasMojo extends AbstractMojo {
         cmd.add("-json");
         cmd.add(jsonOut.getAbsolutePath());
 
+        run(cmd, cfg.name);
+    }
+
+    private void run(List<String> cmd, String label) throws MojoExecutionException {
         getLog().info("msdf-atlas-gen: " + String.join(" ", cmd));
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
         try {
@@ -320,7 +555,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
             }
             int exit = p.waitFor();
             if (exit != 0) {
-                throw new MojoExecutionException("msdf-atlas-gen exited with code " + exit + " for atlas '" + cfg.name + "'.");
+                throw new MojoExecutionException("msdf-atlas-gen exited with code " + exit + " for '" + label + "'.");
             }
         } catch (IOException e) {
             throw new MojoExecutionException("Failed to invoke msdf-atlas-gen", e);
