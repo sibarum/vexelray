@@ -15,12 +15,12 @@ import java.util.ServiceLoader;
  * <p>The order a host follows: {@link #find} it, make the {@link VulkanDevice} with {@link #deviceExtensions()} and
  * (if {@link #timelineSemaphore()}) timeline semaphores, {@link #open} a {@link Backend} on that device, then per
  * window build a render pass of {@link Backend#colorFormat()} ending in {@link Backend#finalLayout()}, a pipeline on
- * it, and {@link Backend#create} the window's presenter. Anything failing on the way is the host's cue to fall
- * back to the swapchain path.
+ * it, and {@link Backend#create} the window's presenter. Whether anything failing on the way is fatal is the host's
+ * call: {@code GuiApp} refuses to start on Windows without DXGI, because the swapchain there is too fragile.
  */
 public interface PresenterProvider {
 
-    /** The name {@code -Dvexelray.present} selects this by, e.g. {@code "dxgi"}. */
+    /** The name a host finds this by, e.g. {@code "dxgi"}. */
     String name();
 
     /** Whether this can work on the running platform at all (the OS, not the GPU — {@link #open} finds that out). */

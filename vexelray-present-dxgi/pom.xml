@@ -17,8 +17,8 @@
         A PresenterProvider named "dxgi": windows present through a flip-model DXGI swapchain. Vulkan still draws
         everything, into an image shared with D3D12; a D3D12 queue copies it into the back buffer and presents. A
         window resize is IDXGISwapChain::ResizeBuffers instead of a new VkSwapchainKHR, which on some machines is
-        the difference between a smooth drag and a frozen desktop. Windows only at runtime; GuiApp selects it as
-        the default wherever it is on the class path; -Dvexelray.present=vulkan asks for the swapchain instead.
+        the difference between a smooth drag and a frozen desktop. Windows only at runtime, and required there:
+        vexelray-gui-core carries it, and GuiApp will not start on Windows without it.
     </description>
 
     <dependencies>

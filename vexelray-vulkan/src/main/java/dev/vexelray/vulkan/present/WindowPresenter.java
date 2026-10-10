@@ -6,9 +6,9 @@ import java.util.List;
  * What a window's owner needs of the thing that gets its frames onto the screen: the extent a frame is drawn at, a
  * frame, the draw bindings, and teardown.
  *
- * <p>{@link WindowedPresenter} is the Vulkan-swapchain one, and works everywhere. A platform module may offer
- * another through {@link PresenterProvider} — on Windows, one that presents through DXGI, so that a window resize is
- * the OS's own buffer resize instead of a new Vulkan swapchain.
+ * <p>{@link WindowedPresenter} is the Vulkan-swapchain one. A platform module may offer another through
+ * {@link PresenterProvider} — on Windows, the one that presents through DXGI, so that a window resize is the OS's
+ * own buffer resize instead of a new Vulkan swapchain.
  */
 public interface WindowPresenter extends AutoCloseable {
 
