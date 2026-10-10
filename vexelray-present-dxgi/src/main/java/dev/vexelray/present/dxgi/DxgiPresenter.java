@@ -5,7 +5,10 @@ import dev.supirvast.vulkan.VkStructs;
 import dev.supirvast.vulkan.VulkanDevice;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.vulkan.present.FrameUpdate;
+import dev.vexelray.vulkan.offscreen.OffscreenReadback;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
+import dev.vexelray.vulkan.present.RunRecorder;
+import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.WindowPresenter;
 import dev.vexelray.vulkan.present.WindowedPresenter;
 import sibarum.dxgi.DxgiContext;
@@ -65,8 +68,10 @@ final class DxgiPresenter implements WindowPresenter {
     private final GraphicsPipeline pipeline;
     private final Arena arena = Arena.ofShared();
 
-    private final MethodHandle waitFences, resetFences, submit, beginCmd, endCmd, beginRp, endRp, bindPipe, draw;
-    private final MethodHandle pushConstants, bindVertexBuffers, bindDescriptorSets, setViewport, setScissor;
+    private final MethodHandle waitFences, resetFences, submit, beginCmd, endCmd, beginRp, endRp, bindPipe;
+    private final MethodHandle pushConstants, bindVertexBuffers, setViewport, setScissor;
+    /** Records the runs: their sets and draws, by the same rules as every other path that draws them. */
+    private final RunRecorder runRecorder;
     private final MethodHandle createFramebuffer, destroyFramebuffer, destroyFence, destroyPool;
 
     private final long pool;
@@ -112,13 +117,11 @@ final class DxgiPresenter implements WindowPresenter {
         this.beginRp = device.command("vkCmdBeginRenderPass", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
         this.endRp = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
         this.bindPipe = device.command("vkCmdBindPipeline", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        this.draw = device.command("vkCmdDraw", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
+        this.runRecorder = new RunRecorder(device, arena);
         this.pushConstants = device.command("vkCmdPushConstants",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
         this.bindVertexBuffers = device.command("vkCmdBindVertexBuffers",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
-        this.bindDescriptorSets = device.command("vkCmdBindDescriptorSets",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
         this.setViewport = device.command("vkCmdSetViewport", SET_VS);
         this.setScissor = device.command("vkCmdSetScissor", SET_VS);
         this.createFramebuffer = device.command("vkCreateFramebuffer", C4);
@@ -283,12 +286,6 @@ final class DxgiPresenter implements WindowPresenter {
                 si(scissor, VkStructs.RECT_2D, "extent_height", h);
                 invokeVoid(setScissor, cmd, 0, 1, scissor);
             }
-            if (descriptorSet != 0) {
-                MemorySegment set = temp.allocate(JAVA_LONG);
-                set.set(JAVA_LONG, 0, descriptorSet);
-                invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                        0, 1, set, 0, MemorySegment.NULL);
-            }
             if (vertexBuffer != 0) {
                 MemorySegment buffers = temp.allocate(JAVA_LONG);
                 buffers.set(JAVA_LONG, 0, vertexBuffer);
@@ -299,25 +296,7 @@ final class DxgiPresenter implements WindowPresenter {
                 invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
                         pushConstantBytes, push);
             }
-            List<WindowedPresenter.Run> frameRuns = runs;
-            if (frameRuns.isEmpty()) {
-                invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
-            } else {
-                MemorySegment set1 = temp.allocate(JAVA_LONG);
-                long bound = 0;
-                for (WindowedPresenter.Run r : frameRuns) {
-                    if (r.vertexCount() <= 0) {
-                        continue;
-                    }
-                    if (r.descriptorSet1() != bound) {
-                        bound = r.descriptorSet1();
-                        set1.set(JAVA_LONG, 0, bound);
-                        invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                                1, 1, set1, 0, MemorySegment.NULL);
-                    }
-                    invokeVoid(draw, cmd, r.vertexCount(), 1, r.firstVertex(), 0);
-                }
-            }
+            runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, runs, vertexCount);
             invokeVoid(endRp, cmd);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         }
@@ -361,6 +340,35 @@ final class DxgiPresenter implements WindowPresenter {
             check(invoke(resetFences, dev, 1, pFence), "vkResetFences");
             check(invoke(submit, device.queue(), 1, info, inFlight), "vkQueueSubmit");
         }
+    }
+
+    /**
+     * The top-left {@link #width()}×{@link #height()} of the shared image: the corner {@link DxgiSwapchain#present}
+     * copies into the back buffer, so these are the pixels of the frame on the screen, not a second drawing of it.
+     * BGRA as drawn, returned as RGBA. Alpha is set opaque, because the swapchain ignores it ({@code ALPHA_MODE_IGNORE})
+     * and so does the screen.
+     */
+    @Override
+    public byte[] readFrame() {
+        if (closed || !shown) {
+            return null;
+        }
+        // The last submit has drawn the frame; the copy below waits for nothing else. D3D12 may still be copying the
+        // same corner out, and two reads of one image do not race. The next frame cannot start drawing over it,
+        // because it is drawn on this thread, after this returns.
+        check(invoke(waitFences, dev, 1, pInFlight, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+        int w = extentWidth;
+        int h = extentHeight;
+        byte[] pixels = OffscreenReadback.readImage(device, swapchain.image().image(),
+                VulkanRenderPass.IMAGE_LAYOUT_GENERAL, w, h,
+                Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        for (int i = 0; i < pixels.length; i += 4) {
+            byte b = pixels[i];
+            pixels[i] = pixels[i + 2];
+            pixels[i + 2] = b;
+            pixels[i + 3] = (byte) 0xFF;
+        }
+        return pixels;
     }
 
     /** The one framebuffer, over the shared image's view at its full capacity. The device must be idle on the old one. */

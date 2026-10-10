@@ -112,16 +112,13 @@ public final class OffscreenDraw {
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
         MethodHandle vkCmdBindVertexBuffers = device.command("vkCmdBindVertexBuffers",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
-        MethodHandle vkCmdBindDescriptorSets = device.command("vkCmdBindDescriptorSets",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
-        MethodHandle vkCmdDraw = device.command("vkCmdDraw",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
         MethodHandle vkCmdCopyImageToBuffer = device.command("vkCmdCopyImageToBuffer",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS));
         MethodHandle vkQueueSubmit = device.command("vkQueueSubmit",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
 
         try (Arena arena = Arena.ofConfined()) {
+            RunRecorder runRecorder = new RunRecorder(device, arena);
             MemorySegment imgInfo = arena.allocate(VkStructs.IMAGE_CREATE_INFO);
             si(imgInfo, VkStructs.IMAGE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_CREATE_INFO);
             si(imgInfo, VkStructs.IMAGE_CREATE_INFO, "imageType", Vk.IMAGE_TYPE_2D);
@@ -223,40 +220,13 @@ public final class OffscreenDraw {
 
             invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
             invokeVoid(vkCmdBindPipeline, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-            if (descriptorSet != 0) {
-                MemorySegment pSet = arena.allocate(JAVA_LONG);
-                pSet.set(JAVA_LONG, 0, descriptorSet);
-                invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                        0, 1, pSet, 0, MemorySegment.NULL);
-            }
             if (vertexBuffer != 0) {
                 MemorySegment pVb = arena.allocate(JAVA_LONG);
                 pVb.set(JAVA_LONG, 0, vertexBuffer);
                 MemorySegment pOff = arena.allocate(JAVA_LONG);
                 pOff.set(JAVA_LONG, 0, 0L);
                 invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
-                MemorySegment pSet1 = arena.allocate(JAVA_LONG);
-                MemorySegment pSet0 = arena.allocate(JAVA_LONG);
-                long bound = 0;
-                long bound0 = descriptorSet;
-                for (WindowedPresenter.Run r : runs) {
-                    if (r.vertexCount() <= 0) {
-                        continue;
-                    }
-                    if (r.descriptorSet0() != 0 && r.descriptorSet0() != bound0) {
-                        bound0 = r.descriptorSet0();
-                        pSet0.set(JAVA_LONG, 0, bound0);
-                        invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline.pipelineLayout(), 0, 1, pSet0, 0, MemorySegment.NULL);
-                    }
-                    if (r.descriptorSet1() != 0 && r.descriptorSet1() != bound) {
-                        bound = r.descriptorSet1();
-                        pSet1.set(JAVA_LONG, 0, bound);
-                        invokeVoid(vkCmdBindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline.pipelineLayout(), 1, 1, pSet1, 0, MemorySegment.NULL);
-                    }
-                    invokeVoid(vkCmdDraw, cmd, r.vertexCount(), 1, r.firstVertex(), 0);
-                }
+                runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, runs, 0);
             }
             invokeVoid(vkCmdEndRenderPass, cmd);
 

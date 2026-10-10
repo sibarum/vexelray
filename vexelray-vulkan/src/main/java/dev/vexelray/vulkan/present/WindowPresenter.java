@@ -37,6 +37,21 @@ public interface WindowPresenter extends AutoCloseable {
     default void throttleResize(boolean on) {
     }
 
+    /**
+     * The last frame this presenter put on the screen, read back from the image it was presented from: tightly packed
+     * R8G8B8A8, opaque, row-major, top-to-bottom, {@link #width()}×{@link #height()}. Null when there is no frame yet,
+     * or when this presenter cannot read its frames back; a caller then has to draw the picture some other way, and
+     * that picture shows nothing of how this presenter draws.
+     *
+     * <p>A screenshot should come from here. A frame drawn again for the camera goes through code the screen never
+     * sees, and agrees with the screen only for as long as the two are kept in step by hand.
+     *
+     * <p>On the thread that renders, between frames.
+     */
+    default byte[] readFrame() {
+        return null;
+    }
+
     @Override
     void close();
 }

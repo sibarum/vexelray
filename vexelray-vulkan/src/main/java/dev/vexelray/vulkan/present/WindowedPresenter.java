@@ -97,8 +97,10 @@ public final class WindowedPresenter implements WindowPresenter {
     private final Arena a = Arena.ofShared();
 
     private final MethodHandle waitFences, resetFences, acquire, present, submitCmd;
-    private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, draw, endRp, pushConstants;
-    private final MethodHandle bindVertexBuffers, bindDescriptorSets, setViewport, setScissor;
+    private final MethodHandle beginCmd, endCmd, beginRp, bindPipe, endRp, pushConstants;
+    private final MethodHandle bindVertexBuffers, setViewport, setScissor;
+    /** Records the runs: their sets and draws, by the same rules as every other path that draws them. */
+    private final RunRecorder runRecorder;
     private final MethodHandle destroySem, destroyFence, destroyPool;
     /** Kept because {@link #rebuild()} makes a fresh render-finished semaphore per swapchain image. */
     private final MethodHandle createSem;
@@ -384,14 +386,12 @@ public final class WindowedPresenter implements WindowPresenter {
         this.endCmd = device.command("vkEndCommandBuffer", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         this.beginRp = device.command("vkCmdBeginRenderPass", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
         this.bindPipe = device.command("vkCmdBindPipeline", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
-        this.draw = device.command("vkCmdDraw", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT));
+        this.runRecorder = new RunRecorder(device, a);
         this.endRp = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
         this.pushConstants = device.command("vkCmdPushConstants",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
         this.bindVertexBuffers = device.command("vkCmdBindVertexBuffers",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
-        this.bindDescriptorSets = device.command("vkCmdBindDescriptorSets",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
         this.setViewport = device.command("vkCmdSetViewport", SET_VS);
         this.setScissor = device.command("vkCmdSetScissor", SET_VS);
         this.destroySem = device.command("vkDestroySemaphore", DL);
@@ -667,7 +667,6 @@ public final class WindowedPresenter implements WindowPresenter {
         int extentW = swapchain.width();
         int extentH = swapchain.height();
         s.pVertexBuffers.set(JAVA_LONG, 0, vertexBuffer);
-        s.pDescriptorSet.set(JAVA_LONG, 0, descriptorSet);
 
         check(invoke(beginCmd, cmd, s.beginInfo), "vkBeginCommandBuffer");
         si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_width", extentW);
@@ -699,10 +698,6 @@ public final class WindowedPresenter implements WindowPresenter {
         if (pipeline.hasDynamicViewport()) {
             setFullViewport(s, cmd, extentW, extentH);
         }
-        if (descriptorSet != 0) {
-            invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                    0, 1, s.pDescriptorSet, 0, MemorySegment.NULL);
-        }
         if (vertexBuffer != 0) {
             invokeVoid(bindVertexBuffers, cmd, 0, 1, s.pVertexBuffers, s.pVertexOffsets);
         }
@@ -710,34 +705,7 @@ public final class WindowedPresenter implements WindowPresenter {
             invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
                     pushConstantBytes, s.pushSeg);
         }
-        List<Run> frameRuns = runs;
-        if (frameRuns.isEmpty()) {
-            invokeVoid(draw, cmd, vertexCount, 1, 0, 0);
-        } else {
-            // Rebind set 1 only when the run actually changes it. Runs are contiguous and in submission order, so
-            // drawing them back to back is the same picture the single draw would have made — the split is a
-            // binding concern, never a layering one.
-            long bound = 0;
-            long bound0 = descriptorSet;
-            for (Run r : frameRuns) {
-                if (r.vertexCount() <= 0) {
-                    continue;
-                }
-                if (r.descriptorSet0() != 0 && r.descriptorSet0() != bound0) {
-                    bound0 = r.descriptorSet0();
-                    s.pDescriptorSet.set(JAVA_LONG, 0, bound0);
-                    invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                            0, 1, s.pDescriptorSet, 0, MemorySegment.NULL);
-                }
-                if (r.descriptorSet1() != bound) {
-                    bound = r.descriptorSet1();
-                    s.pDescriptorSet1.set(JAVA_LONG, 0, bound);
-                    invokeVoid(bindDescriptorSets, cmd, Vk.PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout(),
-                            1, 1, s.pDescriptorSet1, 0, MemorySegment.NULL);
-                }
-                invokeVoid(draw, cmd, r.vertexCount(), 1, r.firstVertex(), 0);
-            }
-        }
+        runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, runs, vertexCount);
         invokeVoid(endRp, cmd);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         return submitAndPresent(s, inFlight[slot]);
@@ -841,8 +809,6 @@ public final class WindowedPresenter implements WindowPresenter {
         final MemorySegment presentInfo = a.allocate(PRESENT);
         final MemorySegment pVertexBuffers = a.allocate(JAVA_LONG);
         final MemorySegment pVertexOffsets = a.allocate(JAVA_LONG);
-        final MemorySegment pDescriptorSet = a.allocate(JAVA_LONG);
-        final MemorySegment pDescriptorSet1 = a.allocate(JAVA_LONG);
         final MemorySegment pViewport = a.allocate(VkStructs.VIEWPORT);
         final MemorySegment pScissor = a.allocate(VkStructs.RECT_2D);
         // A VkClearValue is a 16-byte union, and there must be one per attachment the pass clears. With depth

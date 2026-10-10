@@ -250,6 +250,129 @@ public final class OffscreenReadback {
         }
     }
 
+    /**
+     * Read the top-left {@code width}×{@code height} of an existing 4-byte-per-pixel colour image back to CPU memory,
+     * as its own bytes in its own channel order, row-major, top-to-bottom ({@code width*height*4} bytes).
+     *
+     * <p>The image stays in {@code layout}, which must allow transfer reads ({@code GENERAL} or
+     * {@code TRANSFER_SRC_OPTIMAL}), and must have been made with {@code TRANSFER_SRC} usage. The last writes to it
+     * were made at {@code srcStage} with {@code srcAccess}, and a barrier makes them visible to the copy. Those writes
+     * must already have been submitted: this submits on {@code device}'s queue and returns once the copy is done, so it
+     * runs on the thread that submits to that queue, between frames.
+     */
+    public static byte[] readImage(VulkanDevice device, long image, int layout, int width, int height,
+                                   int srcStage, int srcAccess) {
+        MemorySegment dev = device.handle();
+        long pixelBytes = (long) width * height * 4;
+        FunctionDescriptor c4 = FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS);
+        FunctionDescriptor destroy = FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS);
+        MethodHandle vkCreateBuffer = device.command("vkCreateBuffer", c4);
+        MethodHandle vkDestroyBuffer = device.command("vkDestroyBuffer", destroy);
+        MethodHandle vkGetBufferMemoryRequirements = device.command("vkGetBufferMemoryRequirements",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, ADDRESS));
+        MethodHandle vkAllocateMemory = device.command("vkAllocateMemory", c4);
+        MethodHandle vkFreeMemory = device.command("vkFreeMemory", destroy);
+        MethodHandle vkBindBufferMemory = device.command("vkBindBufferMemory",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG));
+        MethodHandle vkMapMemory = device.command("vkMapMemory",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, ADDRESS));
+        MethodHandle vkUnmapMemory = device.command("vkUnmapMemory", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG));
+        MethodHandle vkCreateCommandPool = device.command("vkCreateCommandPool", c4);
+        MethodHandle vkDestroyCommandPool = device.command("vkDestroyCommandPool", destroy);
+        MethodHandle vkAllocateCommandBuffers = device.command("vkAllocateCommandBuffers",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
+        MethodHandle vkBeginCommandBuffer = device.command("vkBeginCommandBuffer",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        MethodHandle vkEndCommandBuffer = device.command("vkEndCommandBuffer", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        MethodHandle vkCmdPipelineBarrier = device.command("vkCmdPipelineBarrier",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT,
+                        JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
+        MethodHandle vkCmdCopyImageToBuffer = device.command("vkCmdCopyImageToBuffer",
+                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS));
+        MethodHandle vkCreateFence = device.command("vkCreateFence", c4);
+        MethodHandle vkDestroyFence = device.command("vkDestroyFence", destroy);
+        MethodHandle vkQueueSubmit = device.command("vkQueueSubmit",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
+        MethodHandle vkWaitForFences = device.command("vkWaitForFences",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG));
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment bufferInfo = arena.allocate(VkStructs.BUFFER_CREATE_INFO);
+            si(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+            sl(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "size", pixelBytes);
+            si(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "usage", Vk.BUFFER_USAGE_TRANSFER_DST_BIT);
+            si(bufferInfo, VkStructs.BUFFER_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
+            MemorySegment pBuffer = arena.allocate(JAVA_LONG);
+            check(invoke(vkCreateBuffer, dev, bufferInfo, MemorySegment.NULL, pBuffer), "vkCreateBuffer");
+            long buffer = pBuffer.get(JAVA_LONG, 0);
+            MemorySegment bufferReq = arena.allocate(VkStructs.MEMORY_REQUIREMENTS);
+            invokeVoid(vkGetBufferMemoryRequirements, dev, buffer, bufferReq);
+            long bufferMemory = allocate(arena, vkAllocateMemory, dev, gl(bufferReq, VkStructs.MEMORY_REQUIREMENTS, "size"),
+                    device.findMemoryType(gi(bufferReq, VkStructs.MEMORY_REQUIREMENTS, "memoryTypeBits"),
+                            Vk.MEMORY_PROPERTY_HOST_VISIBLE_BIT | Vk.MEMORY_PROPERTY_HOST_COHERENT_BIT));
+            check(invoke(vkBindBufferMemory, dev, buffer, bufferMemory, 0L), "vkBindBufferMemory");
+
+            MemorySegment poolInfo = arena.allocate(VkStructs.COMMAND_POOL_CREATE_INFO);
+            si(poolInfo, VkStructs.COMMAND_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
+            si(poolInfo, VkStructs.COMMAND_POOL_CREATE_INFO, "queueFamilyIndex", device.queueFamilyIndex());
+            MemorySegment pPool = arena.allocate(JAVA_LONG);
+            check(invoke(vkCreateCommandPool, dev, poolInfo, MemorySegment.NULL, pPool), "vkCreateCommandPool");
+            long pool = pPool.get(JAVA_LONG, 0);
+            MemorySegment cbAlloc = arena.allocate(VkStructs.COMMAND_BUFFER_ALLOCATE_INFO);
+            si(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+            sl(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "commandPool", pool);
+            si(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "level", Vk.COMMAND_BUFFER_LEVEL_PRIMARY);
+            si(cbAlloc, VkStructs.COMMAND_BUFFER_ALLOCATE_INFO, "commandBufferCount", 1);
+            MemorySegment pCmd = arena.allocate(ADDRESS);
+            check(invoke(vkAllocateCommandBuffers, dev, cbAlloc, pCmd), "vkAllocateCommandBuffers");
+            MemorySegment cmd = pCmd.get(ADDRESS, 0);
+
+            MemorySegment beginInfo = arena.allocate(VkStructs.COMMAND_BUFFER_BEGIN_INFO);
+            si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+            si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            check(invoke(vkBeginCommandBuffer, cmd, beginInfo), "vkBeginCommandBuffer");
+            // The layout does not change: the barrier is for visibility, so the copy reads what was drawn.
+            MemorySegment visible = imageBarrier(arena, image, srcAccess, Vk.ACCESS_TRANSFER_READ_BIT, layout, layout);
+            invokeVoid(vkCmdPipelineBarrier, cmd, srcStage, Vk.PIPELINE_STAGE_TRANSFER_BIT,
+                    0, 0, MemorySegment.NULL, 0, MemorySegment.NULL, 1, visible);
+            MemorySegment region = arena.allocate(VkStructs.BUFFER_IMAGE_COPY);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "is_layerCount", 1);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "ext_width", width);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "ext_height", height);
+            si(region, VkStructs.BUFFER_IMAGE_COPY, "ext_depth", 1);
+            invokeVoid(vkCmdCopyImageToBuffer, cmd, image, layout, buffer, 1, region);
+            check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
+
+            MemorySegment fenceInfo = arena.allocate(VkStructs.CREATE_INFO);
+            si(fenceInfo, VkStructs.CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_FENCE_CREATE_INFO);
+            MemorySegment pFence = arena.allocate(JAVA_LONG);
+            check(invoke(vkCreateFence, dev, fenceInfo, MemorySegment.NULL, pFence), "vkCreateFence");
+            long fence = pFence.get(JAVA_LONG, 0);
+            MemorySegment pCmdArray = arena.allocate(ADDRESS, 1);
+            pCmdArray.setAtIndex(ADDRESS, 0, cmd);
+            MemorySegment submit = arena.allocate(VkStructs.SUBMIT_INFO);
+            si(submit, VkStructs.SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
+            si(submit, VkStructs.SUBMIT_INFO, "commandBufferCount", 1);
+            sa(submit, VkStructs.SUBMIT_INFO, "pCommandBuffers", pCmdArray);
+            check(invoke(vkQueueSubmit, device.queue(), 1, submit, fence), "vkQueueSubmit");
+            MemorySegment pFenceArray = arena.allocate(JAVA_LONG);
+            pFenceArray.set(JAVA_LONG, 0, fence);
+            check(invoke(vkWaitForFences, dev, 1, pFenceArray, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
+
+            MemorySegment ppData = arena.allocate(ADDRESS);
+            check(invoke(vkMapMemory, dev, bufferMemory, 0L, pixelBytes, 0, ppData), "vkMapMemory");
+            byte[] pixels = ppData.get(ADDRESS, 0).reinterpret(pixelBytes).toArray(JAVA_BYTE);
+            invokeVoid(vkUnmapMemory, dev, bufferMemory);
+
+            invokeVoid(vkDestroyFence, dev, fence, MemorySegment.NULL);
+            invokeVoid(vkDestroyCommandPool, dev, pool, MemorySegment.NULL);
+            invokeVoid(vkDestroyBuffer, dev, buffer, MemorySegment.NULL);
+            invokeVoid(vkFreeMemory, dev, bufferMemory, MemorySegment.NULL);
+            return pixels;
+        }
+    }
+
     private static long allocate(Arena arena, MethodHandle vkAllocateMemory, MemorySegment dev,
                                  long size, int memoryTypeIndex) {
         MemorySegment info = arena.allocate(VkStructs.MEMORY_ALLOCATE_INFO);
