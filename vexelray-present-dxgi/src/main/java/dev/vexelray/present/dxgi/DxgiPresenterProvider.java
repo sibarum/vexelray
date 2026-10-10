@@ -12,7 +12,7 @@ import sibarum.dxgi.DxgiContext;
 
 import java.util.List;
 
-/** {@code -Dvexelray.present=dxgi}: present through DXGI on Windows. See {@link DxgiPresenter}. */
+/** {@code dxgi}, the default {@code -Dvexelray.present}: present through DXGI on Windows. See {@link DxgiPresenter}. */
 public final class DxgiPresenterProvider implements PresenterProvider {
 
     @Override
