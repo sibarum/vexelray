@@ -96,18 +96,25 @@ in a process and a caller's later write to its own array cannot reach a window.
 ### Loading from files
 
 ```java
-Icon.fromFiles(Path.of("icon-16.png"), Path.of("icon-32.png"));   // one file per size
-Icon.fromBytes(bytes16, bytes32);                                 // the classpath-resource form
+Icon.fromIco(icoBytes);                                           // every size in one .ico -- the usual form
+Icon.fromPng(png16, png32);                                       // one PNG per size
+Icon.fromFiles(Path.of("icon-16.png"), Path.of("icon-32.png"));   // anything ImageIO reads, one file per size
+Icon.fromBytes(bytes16, bytes32);                                 // the same, from bytes
 ```
 
-Any format the JDK decodes will do; each file contributes its own natural size, so the set of sizes is whatever
-was drawn rather than anything VexelRay picks.
+**`fromIco` and `fromPng` are the ones to use**, and they are `java.base` only: `IconDecoder` reads an `.ico` (PNG
+entries, or 24- and 32-bit bitmap ones) and an 8-bit, non-interlaced PNG of any colour type itself. That is what a
+GraalVM native image wants — no AWT, so nothing of the toolkit is linked in or written beside the executable — and
+an `.ico` is also what a Windows executable links, so the running window and the file on disk can wear one file.
+It refuses, by name, the PNG variants no icon tool writes (16-bit, interlaced) and bitmap entries below 24 bits.
 
-These two methods are the **only** place in VexelRay's OS layer that touches `java.desktop` (they call
-`ImageIO`). They exist because the alternative is that every application hand-rolls a PNG decoder before it can
-put its own mark on its own window. They run once at start-up; nothing in the render path goes near them. If you
-would rather not have AWT in the process at all, build `Icon.Image` from pixels you decoded yourself — the rest
-of the API is unaffected.
+`fromFiles` and `fromBytes` hand anything to ImageIO, so they read more formats, and they are the **only** place in
+VexelRay's OS layer that touches `java.desktop`. Each file contributes its own natural size, so the set of sizes is
+whatever was drawn rather than anything VexelRay picks. All four run once at start-up; nothing in the render path
+goes near them.
+
+`vexelray-framework` uses `fromIco`: an application names its mark with `@VexelApp(icon = "...")`, and one that
+names none wears the framework's. See that repo's `docs/architecture.md`, *the application's mark*.
 
 ---
 
@@ -183,6 +190,7 @@ here needs the application's help to avoid it.
 | `NativePlatform.setApplicationIcon` | [`NativePlatform`](../vexelray-os/vexelray-os-api/src/main/java/dev/vexelray/os/NativePlatform.java) |
 | Win32 realisation | [`Win32Window`](../vexelray-os/vexelray-os-windows/src/main/java/dev/vexelray/os/windows/Win32Window.java) + `sys/User32`, `sys/Gdi32` |
 | Size selection & copying, tested | [`IconTest`](../vexelray-os/vexelray-os-api/src/test/java/dev/vexelray/os/IconTest.java) |
+| `.ico` / `.png` without AWT, tested against ImageIO | [`IconDecoder`](../vexelray-os/vexelray-os-api/src/main/java/dev/vexelray/os/IconDecoder.java), [`IconDecoderTest`](../vexelray-os/vexelray-os-api/src/test/java/dev/vexelray/os/IconDecoderTest.java) |
 | Live check | [`Win32IconSmoke`](../vexelray-os/vexelray-os-windows/src/test/java/dev/vexelray/os/windows/Win32IconSmoke.java) |
 
 `Win32IconSmoke` opens three windows — one inheriting, one overriding at creation, one changing while on screen

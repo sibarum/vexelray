@@ -117,8 +117,11 @@ public record Icon(List<Image> images) {
     //
     // Decoding is not windowing, and this is the only place in VexelRay's OS layer that reads an image file. It
     // is here because the alternative is that every application hand-rolls a PNG decoder before it can put its
-    // own mark on its own window — a poor trade against one call to a decoder the JDK already ships. It runs
-    // once at startup; nothing in the render path goes near it.
+    // own mark on its own window. It runs once at startup; nothing in the render path goes near it.
+    //
+    // Two decoders, for two kinds of binary. fromIco and fromPng read the formats themselves with java.base, so a
+    // native image carries no AWT for them; fromFiles and fromBytes hand anything to ImageIO, which reads more
+    // formats and costs java.desktop. An application that wants to be one native executable uses the first pair.
 
     /**
      * An icon from image files, one per size — typically {@code icon-16.png}, {@code icon-32.png},
@@ -158,6 +161,41 @@ public record Icon(List<Image> images) {
                 images.add(decodeImage(in, "image " + i));
             } catch (IOException e) {
                 throw new UncheckedIOException("cannot decode icon image " + i, e);
+            }
+        }
+        return new Icon(images);
+    }
+
+    /**
+     * Every size in a Windows {@code .ico} — the form a mark is usually drawn in, and the one an executable links,
+     * so the running window and the file on disk can wear the same bytes.
+     *
+     * <p>Decoded with {@code java.base} alone, unlike {@link #fromBytes}: this is the form for a binary built by
+     * GraalVM native-image, where ImageIO would bring AWT in with it. See {@code IconDecoder} for what it reads.
+     *
+     * @throws IllegalArgumentException if the bytes are not an {@code .ico} this can read, saying why
+     */
+    public static Icon fromIco(byte[] ico) {
+        Objects.requireNonNull(ico, "ico");
+        return new Icon(IconDecoder.ico(ico));
+    }
+
+    /**
+     * An icon from PNGs, one per size, decoded with {@code java.base} alone — {@link #fromIco}'s counterpart for a
+     * mark shipped as separate files. Eight bits a channel and not interlaced, which is what an icon tool writes.
+     *
+     * @throws IllegalArgumentException if an image is not a PNG this can read, saying which and why
+     */
+    public static Icon fromPng(byte[]... pngs) {
+        if (pngs.length == 0) {
+            throw new IllegalArgumentException("an icon needs at least one image");
+        }
+        List<Image> images = new ArrayList<>(pngs.length);
+        for (int i = 0; i < pngs.length; i++) {
+            try {
+                images.add(IconDecoder.png(pngs[i]));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("PNG " + i + ": " + e.getMessage(), e);
             }
         }
         return new Icon(images);
