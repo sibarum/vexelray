@@ -1,0 +1,28 @@
+{
+  "reflection": [
+    { "type": "dev.vexelray.present.dxgi.DxgiPresenterProvider", "methods": [ { "name": "<init>", "parameterTypes": [] } ] }
+  ],
+  "resources": [
+    { "glob": "META-INF/services/dev.vexelray.vulkan.present.PresenterProvider" }
+  ],
+  "foreign": {
+    "downcalls": [
+      { "returnType": "jint", "parameterTypes": ["void*", "void*", "void*", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jlong", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jint", "jint", "void*"] },
+      { "returnType": "jint", "parameterTypes": ["void*", "jint", "void*", "jint", "jlong"] },
+      { "returnType": "jint", "parameterTypes": ["void*", "jint", "void*"] },
+      { "returnType": "jint", "parameterTypes": ["void*", "jint", "void*", "jlong"] },
+      { "returnType": "jint", "parameterTypes": ["void*", "void*"] },
+      { "returnType": "jint", "parameterTypes": ["void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "void*", "jint"] },
+      { "returnType": "void", "parameterTypes": ["void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jint", "jlong"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jint", "jint", "jint", "jint"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jlong", "jint", "jint", "jint", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jint", "jint", "void*", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jint", "jlong", "jint", "jint", "void*", "jint", "void*"] },
+      { "returnType": "jint", "parameterTypes": ["void*", "void*", "void*"] }
+    ]
+  }
+}
