@@ -27,7 +27,16 @@ public final class Kernel32 {
     private static final MethodHandle GetCurrentProcess = Ffi.downcall(LIB, "GetCurrentProcess",
             FunctionDescriptor.of(ADDRESS));
 
-    private static final MethodHandle SetProcessInformation = Ffi.downcall(LIB, "SetProcessInformation",
+    private static final MethodHandle GetCommandLineW = Ffi.downcall(LIB, "GetCommandLineW",
+            FunctionDescriptor.of(ADDRESS));
+
+    private static final MethodHandle LocalFree = Ffi.downcall(LIB, "LocalFree",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+
+    private static final MethodHandle lstrlenW = Ffi.downcall(LIB, "lstrlenW",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+
+    private static final MethodHandle SetProcessInformation =Ffi.downcall(LIB, "SetProcessInformation",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT));
 
     /** {@code PROCESS_INFORMATION_CLASS.ProcessPowerThrottling}. */
@@ -74,6 +83,33 @@ public final class Kernel32 {
             return (MemorySegment) GetModuleHandleW.invokeExact(moduleName);
         } catch (Throwable t) {
             throw NativeException.rethrow("GetModuleHandleW", t);
+        }
+    }
+
+    /** The process's command line as one UTF-16 string, owned by the process: not to be freed or written. */
+    public static MemorySegment getCommandLineW() {
+        try {
+            return (MemorySegment) GetCommandLineW.invokeExact();
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetCommandLineW", t);
+        }
+    }
+
+    /** {@code LocalFree}: release memory a call handed over to be freed this way. */
+    public static void localFree(MemorySegment memory) {
+        try {
+            MemorySegment ignored = (MemorySegment) LocalFree.invokeExact(memory);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("LocalFree", t);
+        }
+    }
+
+    /** {@code lstrlenW}: the length in UTF-16 units of the null-terminated string at {@code string}. */
+    public static int lstrlenW(MemorySegment string) {
+        try {
+            return (int) lstrlenW.invokeExact(string);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("lstrlenW", t);
         }
     }
 

@@ -50,6 +50,15 @@ public final class WindowsPlatform implements NativePlatform {
     }
 
     /**
+     * In a native image, the arguments re-read from the UTF-16 command line ({@link CommandLine}): the image's own
+     * decoding goes through the ANSI code page and loses whatever is outside it. Under the JVM, as given.
+     */
+    @Override
+    public String[] arguments(String[] given) {
+        return CommandLine.arguments(given);
+    }
+
+    /**
      * {@code MonitorFromRect} + {@code GetMonitorInfoW}: the work area of the monitor nearest a one-pixel rect at
      * {@code (x, y)}. Going through a rect rather than {@code MonitorFromPoint} keeps the call in terms of a
      * pointer to a struct this binding already models, instead of passing one by value.

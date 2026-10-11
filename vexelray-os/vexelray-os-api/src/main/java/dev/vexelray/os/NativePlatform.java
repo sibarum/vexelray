@@ -72,6 +72,23 @@ public interface NativePlatform {
     }
 
     /**
+     * The arguments {@code main} was handed, as the operating system actually holds them.
+     *
+     * <p>Exists for one platform's sake: a GraalVM native image on Windows decodes its arguments through the ANSI
+     * code page, so a character outside it ({@code ’}, {@code 窯}) arrives as another character, and a path with
+     * one in it names another file, or none. The java launcher has no such problem, so this only ever shows in the
+     * native build, which is where an application is actually used. Windows reads the command line back in UTF-16;
+     * everywhere else, and under the JVM, the arguments come back as given.
+     *
+     * <p>{@code given} may already have had its blank arguments dropped, as the suite's applications do before
+     * starting; the re-read is matched against it with and without blanks, and when neither matches it in number it
+     * is not the same arguments, and {@code given} is returned.
+     */
+    default String[] arguments(String[] given) {
+        return given;
+    }
+
+    /**
      * The one OS platform on the classpath. Throws if none is present (no {@code vexelray-os-<platform>} module
      * was selected by the build) — a clear, early failure rather than a mysterious later one.
      */
