@@ -405,7 +405,8 @@ public final class PanelTechnique implements RenderTechnique {
         if (atlasSource != null) {
             List<AtlasTexture> made = Objects.requireNonNull(atlasSource.create(device),
                     "the atlas source returned null");
-            if (made.isEmpty() || made.contains(null)) {
+            // Not made.contains(null): an immutable List throws on it, and List.of is what atlas(AtlasSource) makes.
+            if (made.isEmpty() || made.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalStateException("the atlas source returned " + made
                         + "; it must return at least one atlas, and no nulls");
             }

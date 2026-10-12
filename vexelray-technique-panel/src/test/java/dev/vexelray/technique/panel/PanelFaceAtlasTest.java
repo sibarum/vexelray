@@ -69,6 +69,33 @@ class PanelFaceAtlasTest {
                 "with sans's atlas bound for face 1 the picture did not change, so this test cannot see a bind");
     }
 
+    /**
+     * {@link PanelTechnique#atlas(PanelTechnique.AtlasSource)} wraps its atlas in an immutable list, and realize must
+     * check that list for nulls without asking an immutable list whether it contains null, which throws.
+     */
+    @Test
+    void aSingleAtlasSourceRealizes() {
+        assumeTrue(hasRuntime(), "no available EngineProvider — this needs a Vulkan device");
+
+        Canvas canvas = new Canvas(SIZE, SIZE);
+        PanelTechnique panel = new PanelTechnique(canvas, Panel.at(0, 0, 4, 0.01), 1.4, ClipDepth.DEFAULT);
+        panel.camera(0, 0, 0, 0, 0);
+        FontSet.Face first = SET.faces().get(0);
+        AtlasPixels p = SET.pixels(first);
+        panel.atlas(device -> new AtlasTexture(device, p.width(), p.height(), p.rgba()));
+        TextLayout layout = new TextLayout(SET.layout(first));
+        panel.draw(c -> c.text(layout, "A", 40, 40, TextLayout.TextStyle.of(120f), Color.WHITE));
+
+        RenderPipeline pipeline = RenderPipeline.builder()
+                .target(Target.offscreen(SIZE, SIZE).color(AttachmentFormat.RGBA8_UNORM).build())
+                .technique(panel)
+                .build();
+        try (VexelEngine engine = VexelEngine.create(EngineConfig.of("PanelFaceAtlasTest"))) {
+            engine.run(pipeline, frame -> false);
+            assertTrue(inked(engine.lastFrameRgba()), "the glyph drew nothing through a single atlas source");
+        }
+    }
+
     /** One frame of {@code ARROW} in {@code layout}, with face {@code i}'s atlas built from {@code atlas(i)}. */
     private static byte[] capture(TextLayout layout, Function<Integer, AtlasPixels> atlas) {
         Canvas canvas = new Canvas(SIZE, SIZE);
