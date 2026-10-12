@@ -70,6 +70,23 @@ public final class Composition {
     /** A look's painters are capped, so a look is bounded work: more than this is a custom painter's job. */
     public static final int MAX_PAINTERS = 8;
 
+    /**
+     * Where the frame's element records start in {@link #TABLES}. Below it are the looks, the styles and the records
+     * shared by every element of a look, written when a theme is ({@link LookTable}); above it, the records of elements
+     * with values of their own, rewritten every frame by the canvas. A fixed line, so an element's offset can be
+     * written into its vertices as it is drawn, while a look first drawn in the same frame is still being added below.
+     */
+    public static final int RECORDS_BASE = 1 << 16;
+
+    /**
+     * Floats of element records one frame may write: a million, four megabytes, beside a vertex buffer of twenty. A
+     * host sizes {@link #TABLES} to {@link #TABLES_FLOATS}.
+     */
+    public static final int RECORDS_CAPACITY = 1 << 20;
+
+    /** The whole of {@link #TABLES}: the looks below {@link #RECORDS_BASE}, a frame's records above it. */
+    public static final int TABLES_FLOATS = RECORDS_BASE + RECORDS_CAPACITY;
+
     private final List<Shadelet.Source> sources;
     private final List<Shadelet.Modifier> modifiers;
     private final List<Shadelet.Painter> painters;
@@ -110,6 +127,11 @@ public final class Composition {
         all.addAll(painters);
         all.addAll(more);
         return of(all);
+    }
+
+    /** Every shadelet, sources then modifiers then painters, each role in the order given. */
+    public List<Shadelet> shadelets() {
+        return all();
     }
 
     /** What was compiled in: each shadelet's name, role, id and layout. */

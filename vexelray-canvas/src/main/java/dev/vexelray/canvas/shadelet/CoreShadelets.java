@@ -240,8 +240,12 @@ public final class CoreShadelets {
      */
     public static Expr boxSdf(Fragment fragment, Expr local) {
         Expr shape = fragment.shape();
-        Expr half = v2(x(shape), y(shape));
-        Expr r = mix(z(shape), w(shape), step(f(0.0), y(local)));
+        return boxSdf(local, v2(x(shape), y(shape)), z(shape), w(shape));
+    }
+
+    /** As {@link #boxSdf(Fragment, Expr)}, for a box given outright: half extents {@code half}, the two radii. */
+    public static Expr boxSdf(Expr local, Expr half, Expr rTop, Expr rBottom) {
+        Expr r = mix(rTop, rBottom, step(f(0.0), y(local)));
         Expr q = add(sub(abs(local), half), v2(r, r));
         Expr outside = length(max(q, v2(0.0, 0.0)));
         Expr inside = min(max(x(q), y(q)), f(0.0));

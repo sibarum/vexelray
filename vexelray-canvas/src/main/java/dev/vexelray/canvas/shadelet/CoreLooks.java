@@ -41,7 +41,15 @@ public final class CoreLooks {
      * lose it and every record after it would move.
      */
     public static LookTable table(Manifest manifest) {
-        LookTable table = new LookTable(manifest);
+        return checked(new LookTable(manifest));
+    }
+
+    /** As {@link #table(Manifest)}, for {@code composition}'s shader: the table also knows each look's reach. */
+    public static LookTable table(Composition composition) {
+        return checked(new LookTable(composition));
+    }
+
+    private static LookTable checked(LookTable table) {
         int[] records = seed(table);
         for (int k = 0; k < records.length; k++) {
             if (records[k] != RECORDS[k]) {

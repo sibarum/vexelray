@@ -5,6 +5,9 @@ import dev.vexelray.canvas.CanvasShader;
 import dev.vexelray.canvas.CanvasVertex;
 import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.canvas.shadelet.CoreLooks;
+import dev.vexelray.canvas.shadelet.CoreShadelets;
+import dev.vexelray.canvas.shadelet.LookTable;
+import dev.vexelray.diag.Diagnostics;
 import dev.vexelray.engine.FrameContext;
 import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
@@ -138,8 +141,15 @@ public final class PanelTechnique implements RenderTechnique {
     private AtlasesSource atlasSource;
     private GraphicsPipeline pipeline;
     private VertexBuffer vertices;
-    /** The shadelet tables the fragment stage reads at set 2: static, uploaded once at realise, owned. */
+    /**
+     * The shadelet tables the fragment stage reads at set 2, owned: the look table, uploaded again whenever it has
+     * grown, and above it the frame's element records, uploaded with the vertices.
+     */
     private StorageBuffer tables;
+    /** The looks this technique's shader draws: the core set's, since {@link PanelShader} is composed of it. */
+    private final LookTable looks = CoreLooks.table(CoreShadelets.composition());
+    /** The {@link LookTable#version} last uploaded, or -1 before the first. */
+    private int uploadedLooks = -1;
     private int vertexCount;
     private List<Canvas.Run> runs = List.of();
     private float[] pending;
@@ -169,6 +179,15 @@ public final class PanelTechnique implements RenderTechnique {
         }
         this.focalLength = focalLength;
         this.capacityFloats = capacityFloats;
+        canvas.looks(looks);
+    }
+
+    /**
+     * The table this technique's canvas names its looks in, given to the canvas at construction. The shader is the
+     * core set, so a look drawn here can use only core shadelets.
+     */
+    public LookTable looks() {
+        return looks;
     }
 
     /**
@@ -348,12 +367,35 @@ public final class PanelTechnique implements RenderTechnique {
         this.runs = canvas.runs();
         if (vertices != null) {
             vertices.update(data, data.length);
+            uploadTables();
         } else {
             // Drawn before realise. Kept rather than dropped, so an application that builds its first frame
-            // while assembling itself does not render one frame of nothing.
+            // while assembling itself does not render one frame of nothing. Its records stay in the canvas until
+            // the next begin, and realise uploads them from there.
             this.pending = data;
         }
         return this;
+    }
+
+    /**
+     * After the canvas is drawn, since drawing a look for the first time grows the table: the table if it moved, and
+     * the frame's records, which the vertices name. Records past the capacity are left out, said once.
+     */
+    private void uploadTables() {
+        if (looks.version() != uploadedLooks) {
+            float[] table = looks.floats();
+            tables.update(0, table, table.length);
+            uploadedLooks = looks.version();
+        }
+        int records = canvas.recordCount();
+        if (records > Composition.RECORDS_CAPACITY) {
+            Diagnostics.dropped("PanelTechnique.records", "element records past the first "
+                    + Composition.RECORDS_CAPACITY + " floats (this frame wrote " + records + ")",
+                    "the elements they belong to read whatever the buffer holds there; draw fewer elements with "
+                            + "per-instance values");
+            records = Composition.RECORDS_CAPACITY;
+        }
+        tables.update(Composition.RECORDS_BASE, canvas.records(), records);
     }
 
     @Override
@@ -381,10 +423,9 @@ public final class PanelTechnique implements RenderTechnique {
         }
         // Two set layouts for the same reason the screen-space canvas has two: set 0 is the glyph atlas and set 1
         // is whatever image a run binds, and the layout has to declare both even for a frame that draws no image.
-        // Set 2 is the shadelet tables: what each element's look reads, the same for the life of the pipeline.
-        float[] coreTables = CoreLooks.coreTables();
-        this.tables = new StorageBuffer(device, coreTables.length, Composition.TABLES_BINDING);
-        tables.update(coreTables, coreTables.length);
+        // Set 2 is the shadelet tables: what each element's look reads, and each element's own record.
+        this.tables = new StorageBuffer(device, Composition.TABLES_FLOATS, Composition.TABLES_BINDING);
+        uploadTables();
         long[] setLayouts = {atlas.descriptorSetLayout(), atlas.descriptorSetLayout(), tables.descriptorSetLayout()};
 
         // Both stages read the push constants -- the vertex stage to place the quad, the fragment stage to

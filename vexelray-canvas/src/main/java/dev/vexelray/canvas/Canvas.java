@@ -1,6 +1,10 @@
 package dev.vexelray.canvas;
 
+import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.canvas.shadelet.CoreLooks;
+import dev.vexelray.canvas.shadelet.Look;
+import dev.vexelray.canvas.shadelet.LookTable;
+import dev.vexelray.diag.Diagnostics;
 import dev.vexelray.target.ImageHandle;
 import dev.vexelray.text.GlyphQuad;
 import dev.vexelray.text.TextLayout;
@@ -63,6 +67,13 @@ public final class Canvas {
     // Zero for everything else, which an image reads as the sampler's own bilinear.
     private boolean stamping;
     private final float[] stamp = new float[4];
+    // Looks: the table elements drawn with a look name it in, the record the element being drawn names (or none,
+    // for a kind's own), and the frame's records of elements with per-instance values.
+    private static final int NO_ELEMENT = -1;
+    private LookTable lookTable;
+    private int element = NO_ELEMENT;
+    private float[] records = new float[256];
+    private int recordCount;
     /** Added to an image's filter mode in loc8.x when its texture is linear light (sRGB, decoded by the sampler). */
     public static final int LINEAR_FLAG = 100;
     // What an image quad is drawn as: a picture, or a distance field (see field()).
@@ -134,6 +145,7 @@ public final class Canvas {
     /** Reset the draw list for a new frame and clear any clip, translation or turn. */
     public Canvas begin() {
         count = 0;
+        recordCount = 0;
         clipStack.clear();
         clipCx = 0f;
         clipCy = 0f;
@@ -311,6 +323,102 @@ public final class Canvas {
     /** Filled axis-aligned rectangle. */
     public Canvas fillRect(float x, float y, float w, float h, Color color) {
         return fillRoundRect(x, y, w, h, 0f, color);
+    }
+
+
+    // --- looks: elements drawn by shadelets the application composed ---
+
+    /**
+     * The look table this canvas's elements name their looks in: the one whose shader draws it, shared by every
+     * canvas drawing with that shader. Needed only to draw with a {@link Look}; the canvas's own kinds name records
+     * every table has.
+     */
+    public Canvas looks(LookTable table) {
+        this.lookTable = table;
+        return this;
+    }
+
+    /**
+     * A rounded box drawn by {@code look}: its source is the box, at this size and corner radius, and its modifiers
+     * and painters are the look's. The quad grows by the look's reach, so a glow or an outline past the edge is not
+     * cut off at the box.
+     *
+     * @param color    the vertex colour, which the core painters read
+     * @param instance the look's per-instance values, in look order (source, modifiers, painters): as many as
+     *                 {@link LookTable#instanceFloats} says, none for a look with no per-instance fields
+     */
+    public Canvas box(float x, float y, float w, float h, float radius, Color color, Look look, float... instance) {
+        float halfW = w * 0.5f;
+        float halfH = h * 0.5f;
+        float r = clampRadius(radius, halfW, halfH);
+        element = elementFor(look, instance);
+        try {
+            shape(x + halfW, y + halfH, halfW, halfH, r, r, 0f, CanvasVertex.KIND_SHAPE, 0f, 0f,
+                    PAD + lookTable.reach(look, instance, halfW, halfH), color);
+        } finally {
+            element = NO_ELEMENT;
+        }
+        return this;
+    }
+
+    /**
+     * A distance field from one cell of a texture, drawn by {@code look} (whose source reads the field: the core
+     * {@code field}, or a morph between two cells of the same texture). As
+     * {@link #field(float, float, float, float, ImageHandle, float, float, float, float, int, int, float, FieldStyle,
+     * float)} in every other way; its effects are the look's, so it has none of a {@link FieldStyle}'s, and the margin
+     * is what room they have.
+     */
+    public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
+                        int side, int spread, float margin, Color tint, Look look, float... instance) {
+        element = elementFor(look, instance);
+        try {
+            return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, FieldStyle.plain(tint), 1f);
+        } finally {
+            element = NO_ELEMENT;
+        }
+    }
+
+    /** The frame's element records, to upload at {@link Composition#RECORDS_BASE}: the first {@link #recordCount}. */
+    public float[] records() {
+        return records;
+    }
+
+    /** Floats of {@link #records()} this frame wrote. */
+    public int recordCount() {
+        return recordCount;
+    }
+
+    private int elementFor(Look look, float[] instance) {
+        if (lookTable == null) {
+            throw new IllegalStateException("a canvas draws a look against a look table: set it with looks(table)");
+        }
+        int floats = lookTable.instanceFloats(look);
+        if (instance.length != floats) {
+            throw new IllegalArgumentException("this look's elements carry " + floats + " per-instance floats; "
+                    + instance.length + " were given");
+        }
+        if (floats == 0) {
+            return lookTable.record(look);
+        }
+        int need = recordCount + 1 + floats;
+        if (need > Composition.RECORDS_CAPACITY) {
+            // A record past the buffer's end would be read as whatever is there. Past the cap, an element is drawn
+            // as a plain fill in its colour: visibly not its look, and nothing undefined.
+            Diagnostics.dropped("canvas:records", "the looks of elements past " + Composition.RECORDS_CAPACITY
+                            + " floats of per-instance records in one frame",
+                    "a frame's records do not fit the tables buffer, so those elements are drawn as a plain fill; "
+                            + "draw fewer elements with per-instance values, or raise Composition.RECORDS_CAPACITY");
+            return CoreLooks.record(CanvasVertex.KIND_SHAPE);
+        }
+        int offset = Composition.RECORDS_BASE + recordCount;
+        if (need > records.length) {
+            records = java.util.Arrays.copyOf(records, Math.max(need, records.length * 2));
+        }
+        records[recordCount++] = lookTable.look(look);
+        for (float v : instance) {
+            records[recordCount++] = v;
+        }
+        return offset;
     }
 
     /** Filled rounded rectangle; {@code radius} clamped to half the smaller side. */
@@ -821,7 +929,7 @@ public final class Canvas {
         data[o + 24] = stamped ? stamp[1] : 0f;
         data[o + 25] = stamped ? stamp[2] : 0f;
         data[o + 26] = stamped ? stamp[3] : 0f;
-        data[o + 27] = CoreLooks.record(kind);
+        data[o + 27] = element == NO_ELEMENT ? CoreLooks.record(kind) : element;
         count = o + CanvasVertex.FLOATS_PER_VERTEX;
     }
 

@@ -151,6 +151,18 @@ public final class StorageBuffer implements AutoCloseable {
         MemorySegment.copy(data, 0, mapped, JAVA_FLOAT, 0, floats);
     }
 
+    /**
+     * Overwrite {@code floats} entries starting at entry {@code at}: for a buffer whose regions change at different
+     * rates, such as the canvas's shadelet tables (written when a theme is) and its element records (every frame).
+     */
+    public void update(int at, float[] data, int floats) {
+        if (at < 0 || floats < 0 || floats > data.length || (long) at + floats > capacityFloats) {
+            throw new IllegalArgumentException("storage write of " + floats + " floats at " + at
+                    + " exceeds capacity (" + capacityFloats + ")");
+        }
+        MemorySegment.copy(data, 0, mapped, JAVA_FLOAT, (long) at * Float.BYTES, floats);
+    }
+
     /** How many floats fit — what a caller checks against instead of discovering by exception. */
     public int capacityFloats() {
         return capacityFloats;

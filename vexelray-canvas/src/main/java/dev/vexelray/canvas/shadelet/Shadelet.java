@@ -33,10 +33,19 @@ public sealed interface Shadelet permits Shadelet.Source, Shadelet.Modifier, Sha
 
     /**
      * How far past an element's geometry this draws, in canvas units, for its shared parameters as the style table
-     * holds them. The canvas grows the element's quad by the largest reach in its look.
+     * holds them. The canvas grows the element's quad by its look's reach: the source's, plus each modifier's (which
+     * move the edge, and may move it in), plus the farthest painter's (which reach past the edge as moved).
      */
     default float reach(float[] shared) {
         return 0f;
+    }
+
+    /**
+     * As {@link #reach(float[])}, for a shadelet whose reach depends on what an element carries: its per-instance
+     * values, and its own geometry's half extents. A morph to a larger box reaches as far as the larger box.
+     */
+    default float reach(float[] shared, float[] instance, float halfW, float halfH) {
+        return reach(shared);
     }
 
     /** Produces the distance. */
