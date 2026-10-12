@@ -348,17 +348,28 @@ public final class Canvas {
      *                 {@link LookTable#instanceFloats} says, none for a look with no per-instance fields
      */
     public Canvas box(float x, float y, float w, float h, float radius, Color color, Look look, float... instance) {
+        return box(x, y, w, h, radius, radius, color, look, instance);
+    }
+
+    /** As {@link #box(float, float, float, float, float, Color, Look, float...)} with top and bottom corner radii. */
+    public Canvas box(float x, float y, float w, float h, float radiusTop, float radiusBottom, Color color, Look look,
+                      float... instance) {
         float halfW = w * 0.5f;
         float halfH = h * 0.5f;
-        float r = clampRadius(radius, halfW, halfH);
         element = elementFor(look, instance);
         try {
-            shape(x + halfW, y + halfH, halfW, halfH, r, r, 0f, CanvasVertex.KIND_SHAPE, 0f, 0f,
+            shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
+                    clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_SHAPE, 0f, 0f,
                     PAD + lookTable.reach(look, instance, halfW, halfH), color);
         } finally {
             element = NO_ELEMENT;
         }
         return this;
+    }
+
+    /** Whether this canvas has a look table, and so can draw a {@link Look}. */
+    public boolean drawsLooks() {
+        return lookTable != null;
     }
 
     /**

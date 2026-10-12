@@ -294,9 +294,141 @@ public final class CoreShadelets {
         }
     };
 
+    // --- a node's box: its border, its fill, its shadow, in one quad ---
+    //
+    // The renderer draws a node's box as one element whose look is these, front to back. Every value is per instance:
+    // a node's colours change with its state and its opacity, and a look per colour would be a look per frame. So the
+    // looks are few (which of the parts a node has), and what differs node to node is in its record.
+
+    /** {@link #NODE_STROKE}'s style: the ring's colour and width. */
+    public static final StyleLayout NODE_STROKE_STYLE = StyleLayout.of(
+            StyleLayout.perInstance("colour", 4), StyleLayout.perInstance("width", 1));
+
+    /** A ring {@code width} wide hugging the inside of the box's edge: a node's border, the stroke kind's arithmetic. */
+    public static final Shadelet.Painter NODE_STROKE = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "nodeStroke";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return NODE_STROKE_STYLE;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr halfW = mul(style.scalar("width"), f(0.5));
+            Expr ring = sub(abs(add(sdf(c), halfW)), halfW);
+            Expr aa = c.fragment().aa();
+            return assign(layer, coloured(style.vector("colour"),
+                    sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa, ring))));
+        }
+    };
+
+    /** {@link #NODE_FILL}'s style: the fill's colour. */
+    public static final StyleLayout NODE_FILL_STYLE = StyleLayout.of(StyleLayout.perInstance("colour", 4));
+
+    /** The box filled, one pixel soft: a node's background, the shape kind's arithmetic. */
+    public static final Shadelet.Painter NODE_FILL = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "nodeFill";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return NODE_FILL_STYLE;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr aa = c.fragment().aa();
+            return assign(layer, coloured(style.vector("colour"),
+                    sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa, sdf(c)))));
+        }
+    };
+
+    /** {@link #NODE_LIT}'s style: the fill's colour, the bevel's width, the vertical gradient's amplitude. */
+    public static final StyleLayout NODE_LIT_STYLE = StyleLayout.of(StyleLayout.perInstance("colour", 4),
+            StyleLayout.perInstance("bevel", 1), StyleLayout.perInstance("gradient", 1));
+
+    /** The box filled and lit: a node's background under a lit theme, the lit kind's arithmetic. */
+    public static final Shadelet.Painter NODE_LIT = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "nodeLit";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return NODE_LIT_STYLE;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Expr colour = style.vector("colour");
+            Expr sdf = sdf(c);
+            Expr bevel = max(style.scalar("bevel"), f(1.0));
+            Expr lightOff = f(1.5);
+            Expr shift = mul(lightOff, f(0.7071));
+            Expr sdf2 = neg(x(c.distanceAt(v2(neg(shift), neg(shift)))));
+            Expr light = div(sub(sdf2, sdf), lightOff);
+            Expr band = clamp(add(f(1.0), div(sdf, bevel)), f(0.0), f(1.0));
+            Expr grad = style.scalar("gradient");
+            Expr halfY = y(fr.shape());
+            Expr gy = clamp(div(add(y(fr.local()), halfY), mul(f(2.0), max(halfY, f(1.0)))), f(0.0), f(1.0));
+            Expr brightness = mul(add(f(1.0), mul(mul(light, band), f(0.45))),
+                    mix(add(f(1.0), grad), sub(f(1.0), grad), gy));
+            Expr rgb = xyz(colour);
+            Expr lit = clamp(v3(mul(x(rgb), brightness), mul(y(rgb), brightness), mul(z(rgb), brightness)),
+                    v3(f(0.0), f(0.0), f(0.0)), v3(f(1.0), f(1.0), f(1.0)));
+            Expr cov = sub(f(1.0), Expr.MathCall.smoothstep(neg(fr.aa()), fr.aa(), sdf));
+            return assign(layer, Layers.premultiplied(lit, mul(w(colour), cov)));
+        }
+    };
+
+    /** {@link #NODE_SHADOW}'s style: the shadow's colour, and the lift it shows. */
+    public static final StyleLayout NODE_SHADOW_STYLE = StyleLayout.of(
+            StyleLayout.perInstance("colour", 4), StyleLayout.perInstance("lift", 1));
+
+    /**
+     * The box's soft shadow, dropped half its {@code lift} and blurred over the whole of it, squared so it eases out: a
+     * node's elevation, the shadow kind's arithmetic, read from the distance half a lift above.
+     */
+    public static final Shadelet.Painter NODE_SHADOW = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "nodeShadow";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return NODE_SHADOW_STYLE;
+        }
+
+        /** The drop, the blur past it, and the pixel the shadow kind's quad was padded by. */
+        @Override
+        public float reach(float[] shared, float[] instance, float halfW, float halfH) {
+            float lift = Math.max(0f, instance[4]);
+            return 1.5f * lift + 1f;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr lift = style.scalar("lift");
+            Expr below = neg(x(c.distanceAt(v2(f(0.0), neg(mul(lift, f(0.5)))))));
+            Expr blur = max(lift, c.fragment().aa());
+            Expr s = sub(f(1.0), Expr.MathCall.smoothstep(neg(blur), blur, below));
+            return assign(layer, coloured(style.vector("colour"), mul(s, s)));
+        }
+    };
+
     /** The core set, in the order that fixes their ids: an application's composition starts with these. */
     public static final List<Shadelet> ALL = List.of(BOX, MSDF, FIELD,
-            FILL, GLYPH, SHADOW, STROKE, EMBOSS, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW);
+            FILL, GLYPH, SHADOW, STROKE, EMBOSS, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
+            NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW);
 
     /** The core composition. */
     public static Composition composition() {
@@ -327,6 +459,11 @@ public final class CoreShadelets {
     /** The distance at the fragment, positive outside, as the kinds' arithmetic is written. */
     private static Expr sdf(PaintContext c) {
         return neg(x(c.distance()));
+    }
+
+    /** {@code colour} (a {@code vec4}, straight alpha) at {@code coverage}, premultiplied. */
+    private static Expr coloured(Expr colour, Expr coverage) {
+        return Layers.premultiplied(xyz(colour), mul(w(colour), coverage));
     }
 
     /** The vertex colour at {@code coverage}, premultiplied. */
