@@ -49,6 +49,8 @@
         <!-- The @Style annotation processor: a style record becomes its StyleLayout and its table writers. Depends
              on nothing but the JDK; canvas is only on its test classpath, to run what it generates. -->
         <module>vexelray-shadelet-codegen</module>
+        <!-- Canvas effects as shadelets an application composes in: weight, outline, morphs. Opt-in. -->
+        <module>vexelray-shadelets</module>
         <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
              An aggregator grouping (vexelray-os-api + vexelray-os-{windows,linux,macos}). -->
         <module>vexelray-os</module>
@@ -188,6 +190,11 @@
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-shadelet-codegen</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-shadelets</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

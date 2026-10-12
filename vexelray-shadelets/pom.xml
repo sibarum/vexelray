@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-shadelets</artifactId>
+
+    <description>
+        Effects for the canvas, as shadelets an application composes into its canvas shader beside the core set:
+        weight, outline, and morphs between two boxes or two cells of one distance-field atlas. Opt-in, so an
+        application that draws none of them carries none of their code in its shader.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-canvas</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-ir</artifactId>
+        </dependency>
+        <!-- The GPU tests draw with a composed shader offscreen and read the pixels back. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Each effect's style is a @Style record; the processor writes its layout and table writers. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>dev.vexelray</groupId>
+                            <artifactId>vexelray-shadelet-codegen</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                        <path>
+                            <groupId>dev.vexelray</groupId>
+                            <artifactId>vexelray-canvas</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
