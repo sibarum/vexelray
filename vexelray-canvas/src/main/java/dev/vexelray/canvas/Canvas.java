@@ -370,9 +370,21 @@ public final class Canvas {
      */
     public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
                         int side, int spread, float margin, Color tint, Look look, float... instance) {
+        return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, FieldStyle.plain(tint), 1f, look,
+                instance);
+    }
+
+    /**
+     * As the look-taking field above, keeping a {@link FieldStyle}'s glow and shadow too: they ride in the vertex as
+     * they always have, for the core {@code fieldFill} painter, so a look that ends in it draws the field exactly as
+     * the style alone would, and its modifiers and other painters add to that.
+     */
+    public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
+                        int side, int spread, float margin, FieldStyle style, float alpha, Look look,
+                        float... instance) {
         element = elementFor(look, instance);
         try {
-            return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, FieldStyle.plain(tint), 1f);
+            return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, style, alpha);
         } finally {
             element = NO_ELEMENT;
         }
