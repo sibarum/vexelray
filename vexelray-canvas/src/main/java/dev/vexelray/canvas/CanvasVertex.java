@@ -75,7 +75,7 @@ public final class CanvasVertex {
      */
     public static final int KIND_FIELD = 6;
 
-    public static final int FLOATS_PER_VERTEX = 27;
+    public static final int FLOATS_PER_VERTEX = 28;
     public static final int STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
 
     public static final int OFF_POS = 0;
@@ -87,6 +87,8 @@ public final class CanvasVertex {
     public static final int OFF_CLIPBOX = 60;
     public static final int OFF_CLIPRS = 76;
     public static final int OFF_FILTER = 92;
+    /** The element's record in the shadelet tables, as a float: see {@link dev.vexelray.canvas.shadelet.Composition}. */
+    public static final int OFF_ELEMENT = 108;
 
     /** Shader attribute locations, shared by {@link CanvasShader} (author side) and the pipeline (bind side). */
     public static final int LOC_POS = 0;
@@ -98,6 +100,7 @@ public final class CanvasVertex {
     public static final int LOC_CLIPBOX = 6;
     public static final int LOC_CLIPRS = 7;
     public static final int LOC_FILTER = 8;
+    public static final int LOC_ELEMENT = 9;
 
     /** One vertex attribute: shader {@code location}, component count (1/2/4), and byte {@code offset}. */
     public record Attr(int location, int components, int offset) {
@@ -113,5 +116,6 @@ public final class CanvasVertex {
             new Attr(LOC_SHAPE, 4, OFF_SHAPE),
             new Attr(LOC_CLIPBOX, 4, OFF_CLIPBOX),
             new Attr(LOC_CLIPRS, 4, OFF_CLIPRS),
-            new Attr(LOC_FILTER, 4, OFF_FILTER));
+            new Attr(LOC_FILTER, 4, OFF_FILTER),
+            new Attr(LOC_ELEMENT, 1, OFF_ELEMENT));
 }

@@ -1,5 +1,6 @@
 package dev.vexelray.canvas;
 
+import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.target.ImageHandle;
 import dev.vexelray.text.GlyphQuad;
 import dev.vexelray.text.TextLayout;
@@ -820,6 +821,7 @@ public final class Canvas {
         data[o + 24] = stamped ? stamp[1] : 0f;
         data[o + 25] = stamped ? stamp[2] : 0f;
         data[o + 26] = stamped ? stamp[3] : 0f;
+        data[o + 27] = CoreLooks.record(kind);
         count = o + CanvasVertex.FLOATS_PER_VERTEX;
     }
 

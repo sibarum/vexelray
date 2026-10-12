@@ -42,6 +42,22 @@
             <groupId>dev.supirvast</groupId>
             <artifactId>vastir</artifactId>
         </dependency>
+        <!-- The terse vocabulary shadelets are written in. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-ir</artifactId>
+        </dependency>
+        <!-- How a look table says it dropped an effect the shader was not composed with. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-diagnostics</artifactId>
+        </dependency>
+        <!-- spirv-val, to hold a composed shader to the validator. -->
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

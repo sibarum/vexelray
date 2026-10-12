@@ -27,6 +27,9 @@ public interface WindowPresenter extends AutoCloseable {
     /** The vertex buffer and set-0 descriptor set every frame binds; see {@link WindowedPresenter#configureDraw}. */
     void configureDraw(long vertexBuffer, long descriptorSet, int vertexCount);
 
+    /** The set-2 descriptor set every frame binds, or 0 for none; see {@link WindowedPresenter#configureSet2}. */
+    void configureSet2(long descriptorSet);
+
     /** This frame's draws; see {@link WindowedPresenter#setRuns}. */
     void setRuns(List<WindowedPresenter.Run> runs);
 

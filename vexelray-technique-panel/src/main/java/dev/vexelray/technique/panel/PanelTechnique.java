@@ -3,6 +3,8 @@ package dev.vexelray.technique.panel;
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.CanvasShader;
 import dev.vexelray.canvas.CanvasVertex;
+import dev.vexelray.canvas.shadelet.Composition;
+import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.engine.FrameContext;
 import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
@@ -13,6 +15,7 @@ import dev.vexelray.vulkan.present.AtlasTexture;
 import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.present.SampledImage;
+import dev.vexelray.vulkan.present.StorageBuffer;
 import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.supirvast.vulkan.Vk;
 import dev.supirvast.vulkan.VulkanDevice;
@@ -135,6 +138,8 @@ public final class PanelTechnique implements RenderTechnique {
     private AtlasesSource atlasSource;
     private GraphicsPipeline pipeline;
     private VertexBuffer vertices;
+    /** The shadelet tables the fragment stage reads at set 2: static, uploaded once at realise, owned. */
+    private StorageBuffer tables;
     private int vertexCount;
     private List<Canvas.Run> runs = List.of();
     private float[] pending;
@@ -376,7 +381,11 @@ public final class PanelTechnique implements RenderTechnique {
         }
         // Two set layouts for the same reason the screen-space canvas has two: set 0 is the glyph atlas and set 1
         // is whatever image a run binds, and the layout has to declare both even for a frame that draws no image.
-        long[] setLayouts = {atlas.descriptorSetLayout(), atlas.descriptorSetLayout()};
+        // Set 2 is the shadelet tables: what each element's look reads, the same for the life of the pipeline.
+        float[] coreTables = CoreLooks.coreTables();
+        this.tables = new StorageBuffer(device, coreTables.length, Composition.TABLES_BINDING);
+        tables.update(coreTables, coreTables.length);
+        long[] setLayouts = {atlas.descriptorSetLayout(), atlas.descriptorSetLayout(), tables.descriptorSetLayout()};
 
         // Both stages read the push constants -- the vertex stage to place the quad, the fragment stage to
         // differentiate the projection for its anti-aliasing width.
@@ -443,6 +452,7 @@ public final class PanelTechnique implements RenderTechnique {
         cmds.push(cmd, pipeline, Vk.SHADER_STAGE_VERTEX_BIT | Vk.SHADER_STAGE_FRAGMENT_BIT, push,
                 PanelShader.PUSH_BYTES);
         cmds.bindDescriptorSet(cmd, pipeline, CanvasShader.ATLAS_SET, atlas.descriptorSet());
+        cmds.bindDescriptorSet(cmd, pipeline, Composition.TABLES_SET, tables.descriptorSet());
         cmds.bindVertexBuffer(cmd, vertices.handle());
 
         List<Canvas.Run> frameRuns = runs;
@@ -482,6 +492,10 @@ public final class PanelTechnique implements RenderTechnique {
         if (pipeline != null) {
             pipeline.close();
             pipeline = null;
+        }
+        if (tables != null) {
+            tables.close();
+            tables = null;
         }
         if (ownsAtlas && atlas != null) {
             for (AtlasTexture face : faces) {

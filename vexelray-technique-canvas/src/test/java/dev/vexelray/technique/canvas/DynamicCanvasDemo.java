@@ -2,7 +2,6 @@ package dev.vexelray.technique.canvas;
 
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.CanvasShader;
-import dev.vexelray.canvas.CanvasVertex;
 import dev.vexelray.canvas.Color;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
@@ -12,6 +11,7 @@ import dev.vexelray.text.AtlasData;
 import dev.vexelray.text.TextLayout;
 import dev.vexelray.vulkan.present.AtlasTexture;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
+import dev.vexelray.vulkan.present.StorageBuffer;
 import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
@@ -25,7 +25,6 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -76,9 +75,10 @@ public final class DynamicCanvasDemo {
                          Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR);
                  AtlasTexture atlasTex = new AtlasTexture(device, atlasSize[0], atlasSize[1], atlasRgba);
                  VertexBuffer vb = new VertexBuffer(device, CAPACITY_FLOATS);
+                 StorageBuffer tables = CanvasDemo.canvasTables(device);
                  GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(),
                          swapchain.width(), swapchain.height(), vs.spirv(), "main", fs.spirv(), "main",
-                         canvasConfig(atlasTex));
+                         CanvasDemo.canvasConfig(atlasTex, tables));
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
                          pipeline, window)) {
 
@@ -87,6 +87,7 @@ public final class DynamicCanvasDemo {
                 double[] state = {0.0, 60.0, 0.0};   // [elapsed seconds, smoothed fps, frame count]
 
                 presenter.configureDraw(vb.handle(), atlasTex.descriptorSet(), 0);
+                presenter.configureSet2(tables.descriptorSet());
                 presenter.run(maxFrames, 0, (dt, pc) -> {
                     state[0] += dt;
                     if (dt > 0) {
@@ -95,7 +96,9 @@ public final class DynamicCanvasDemo {
                     state[2] += 1;
                     buildFrame(canvas, tl, state[0], state[1], (long) state[2]);
                     vb.update(canvas.toVertexArray());
-                    presenter.setVertexCount(canvas.vertexCount());
+                    // One run, so set 1 has something bound: the atlas stands in for an image.
+                    presenter.setRuns(List.of(new WindowedPresenter.Run(atlasTex.descriptorSet(), 0,
+                            canvas.vertexCount())));
                 });
             }
             instance.destroySurface(surface);
@@ -185,10 +188,13 @@ public final class DynamicCanvasDemo {
                          Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                  AtlasTexture atlasTex = new AtlasTexture(device, atlasSize[0], atlasSize[1], atlasRgba);
                  VertexBuffer vb = new VertexBuffer(device, verts);
+                 StorageBuffer tables = CanvasDemo.canvasTables(device);
                  GraphicsPipeline pipeline = new GraphicsPipeline(device, rp.handle(), W, H,
-                         vs.spirv(), "main", fs.spirv(), "main", canvasConfig(atlasTex))) {
+                         vs.spirv(), "main", fs.spirv(), "main", CanvasDemo.canvasConfig(atlasTex, tables))) {
                 byte[] rgba = dev.vexelray.vulkan.present.OffscreenDraw.toRgba(device, rp.handle(), pipeline, W, H,
-                        vb.handle(), atlasTex.descriptorSet(), count, 0.05f, 0.06f, 0.08f, 1f);
+                        vb.handle(), atlasTex.descriptorSet(), tables.descriptorSet(),
+                        List.of(new WindowedPresenter.Run(atlasTex.descriptorSet(), 0, count)),
+                        0.05f, 0.06f, 0.08f, 1f);
                 BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_ARGB);
                 for (int y = 0; y < H; y++) {
                     for (int x = 0; x < W; x++) {
@@ -201,15 +207,6 @@ public final class DynamicCanvasDemo {
                 System.out.println("captured " + new java.io.File(path).getAbsolutePath());
             }
         }
-    }
-
-    private static GraphicsPipeline.Config canvasConfig(AtlasTexture atlasTex) {
-        List<GraphicsPipeline.VertexAttribute> attrs = new ArrayList<>();
-        for (CanvasVertex.Attr a : CanvasVertex.ATTRIBUTES) {
-            attrs.add(GraphicsPipeline.VertexAttribute.floats(a.location(), a.components(), a.offset()));
-        }
-        return new GraphicsPipeline.Config(CanvasVertex.STRIDE_BYTES, attrs,
-                new long[]{atlasTex.descriptorSetLayout()}, true, Vk.SHADER_STAGE_FRAGMENT_BIT, 0);
     }
 
     private static byte[] loadAtlasRgba(int[] sizeOut) throws IOException {

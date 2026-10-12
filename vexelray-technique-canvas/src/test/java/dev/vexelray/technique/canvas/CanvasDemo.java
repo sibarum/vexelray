@@ -4,6 +4,8 @@ import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.CanvasShader;
 import dev.vexelray.canvas.CanvasVertex;
 import dev.vexelray.canvas.Color;
+import dev.vexelray.canvas.shadelet.Composition;
+import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
@@ -13,6 +15,7 @@ import dev.vexelray.text.TextLayout;
 import dev.vexelray.vulkan.present.AtlasTexture;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.present.OffscreenDraw;
+import dev.vexelray.vulkan.present.StorageBuffer;
 import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
@@ -74,11 +77,14 @@ public final class CanvasDemo {
                      VulkanRenderPass renderPass = new VulkanRenderPass(device, Vk.FORMAT_R8G8B8A8_UNORM,
                              Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                      AtlasTexture atlasTex = new AtlasTexture(device, atlasSize[0], atlasSize[1], atlasRgba);
+                     StorageBuffer tables = canvasTables(device);
                      VertexBuffer vb = new VertexBuffer(device, vertices);
                      GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(), W, H,
-                             vs.spirv(), "main", fs.spirv(), "main", canvasConfig(atlasTex))) {
+                             vs.spirv(), "main", fs.spirv(), "main", canvasConfig(atlasTex, tables))) {
                     byte[] rgba = OffscreenDraw.toRgba(device, renderPass.handle(), pipeline, W, H, vb.handle(),
-                            atlasTex.descriptorSet(), vertexCount, 0.05f, 0.06f, 0.08f, 1f);
+                            atlasTex.descriptorSet(), tables.descriptorSet(),
+                            List.of(new WindowedPresenter.Run(atlasTex.descriptorSet(), 0, vertexCount)),
+                            0.05f, 0.06f, 0.08f, 1f);
                     ImageIO.write(toImage(rgba, W, H), "PNG", new File(path));
                     System.out.println("captured " + new File(path).getAbsolutePath());
                 }
@@ -101,12 +107,15 @@ public final class CanvasDemo {
                          Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR);
                  AtlasTexture atlasTex = new AtlasTexture(device, atlasSize[0], atlasSize[1], atlasRgba);
                  VertexBuffer vb = new VertexBuffer(device, vertices);
+                 StorageBuffer tables = canvasTables(device);
                  GraphicsPipeline pipeline = new GraphicsPipeline(device, renderPass.handle(),
                          swapchain.width(), swapchain.height(), vs.spirv(), "main", fs.spirv(), "main",
-                         canvasConfig(atlasTex));
+                         canvasConfig(atlasTex, tables));
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
                          pipeline, window)) {
                 presenter.configureDraw(vb.handle(), atlasTex.descriptorSet(), vertexCount);
+                presenter.configureSet2(tables.descriptorSet());
+                presenter.setRuns(List.of(new WindowedPresenter.Run(atlasTex.descriptorSet(), 0, vertexCount)));
                 presenter.run(maxFrames);
             }
             instance.destroySurface(surface);
@@ -164,14 +173,30 @@ public final class CanvasDemo {
                 TextLayout.TextStyle.of(18f), dim);
     }
 
-    /** The unified-canvas pipeline config: the fat vertex format, the atlas descriptor, alpha blend, no push constant. */
-    private static GraphicsPipeline.Config canvasConfig(AtlasTexture atlasTex) {
+    /**
+     * The shadelet tables the canvas fragment stage reads at set 2, uploaded once; the caller closes them. Shared by
+     * the demos in this package.
+     */
+    static StorageBuffer canvasTables(VulkanDevice device) {
+        float[] coreTables = CoreLooks.coreTables();
+        StorageBuffer tables = new StorageBuffer(device, coreTables.length, Composition.TABLES_BINDING);
+        tables.update(coreTables, coreTables.length);
+        return tables;
+    }
+
+    /**
+     * The unified-canvas pipeline config: the fat vertex format, alpha blend, no push constant, and its three sets —
+     * the atlas, an image (the atlas stands in: same one-sampler layout), and the shadelet tables. Shared by the demos
+     * in this package.
+     */
+    static GraphicsPipeline.Config canvasConfig(AtlasTexture atlasTex, StorageBuffer tables) {
         List<GraphicsPipeline.VertexAttribute> attrs = new ArrayList<>();
         for (CanvasVertex.Attr a : CanvasVertex.ATTRIBUTES) {
             attrs.add(GraphicsPipeline.VertexAttribute.floats(a.location(), a.components(), a.offset()));
         }
         return new GraphicsPipeline.Config(CanvasVertex.STRIDE_BYTES, attrs,
-                new long[]{atlasTex.descriptorSetLayout()}, true, Vk.SHADER_STAGE_FRAGMENT_BIT, 0);
+                new long[]{atlasTex.descriptorSetLayout(), atlasTex.descriptorSetLayout(),
+                        tables.descriptorSetLayout()}, true, Vk.SHADER_STAGE_FRAGMENT_BIT, 0);
     }
 
     private static byte[] loadAtlasRgba(int[] sizeOut) throws IOException {

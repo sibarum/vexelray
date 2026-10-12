@@ -13,6 +13,8 @@ import dev.supirvast.vastir.core.ShaderStage;
 import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.type.Type;
 import dev.vexelray.canvas.CanvasShader;
+import dev.vexelray.canvas.shadelet.Composition;
+import dev.vexelray.canvas.shadelet.CoreShadelets;
 import dev.vexelray.ir.Ir;
 import dev.vexelray.shader.ClipDepth;
 import dev.vexelray.shader.ComposedShader;
@@ -232,11 +234,14 @@ public final class PanelShader {
         body.add(new Statement.DeclareVar(jyy, Ir.mul(scale, Ir.sub(Ir.mul(vy, dz), Ir.mul(dy, z)))));
         body.add(new Statement.DeclareVar(aa, Ir.max(aaU, aaV)));
         // Pixels per canvas unit is the reciprocal of the same number, and only the glyph branch reads it.
-        body.add(CanvasShader.coverage(in, fragColor, new Expr.Read(aa),
-                Ir.div(Ir.f(1.0), new Expr.Read(aa))));
+        Composition.Composed composed = CanvasShader.coverage(CoreShadelets.composition(), in, fragColor,
+                new Expr.Read(aa), Ir.div(Ir.f(1.0), new Expr.Read(aa)));
+        body.addAll(composed.body());
         body.add(new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
-        return new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+        CoreModule module = new CoreModule();
+        composed.functions().forEach(module::addFunction);
+        return module.addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
     }
 }

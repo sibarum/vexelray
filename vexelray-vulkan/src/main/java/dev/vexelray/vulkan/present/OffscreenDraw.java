@@ -78,6 +78,18 @@ public final class OffscreenDraw {
     public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
                                 long vertexBuffer, long descriptorSet, List<WindowedPresenter.Run> runs,
                                 float cr, float cg, float cb, float ca) {
+        return toRgba(device, renderPass, pipeline, width, height, vertexBuffer, descriptorSet, 0L, runs,
+                cr, cg, cb, ca);
+    }
+
+    /**
+     * As the runs overload, additionally binding {@code descriptorSet2} at set 2 for the whole draw when non-zero —
+     * the headless twin of {@code WindowedPresenter.configureSet2}, for a pipeline whose layout declares a third set
+     * no run names, such as the Canvas pipeline's shadelet tables.
+     */
+    public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
+                                long vertexBuffer, long descriptorSet, long descriptorSet2,
+                                List<WindowedPresenter.Run> runs, float cr, float cg, float cb, float ca) {
         MemorySegment dev = device.handle();
         long pixelBytes = (long) width * height * 4;
 
@@ -226,7 +238,7 @@ public final class OffscreenDraw {
                 MemorySegment pOff = arena.allocate(JAVA_LONG);
                 pOff.set(JAVA_LONG, 0, 0L);
                 invokeVoid(vkCmdBindVertexBuffers, cmd, 0, 1, pVb, pOff);
-                runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, runs, 0);
+                runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, descriptorSet2, runs, 0);
             }
             invokeVoid(vkCmdEndRenderPass, cmd);
 

@@ -221,6 +221,7 @@ public final class WindowedPresenter implements WindowPresenter {
     private int vertexCount = 3;
     private long vertexBuffer = 0;      // 0 = no vertex buffer (fullscreen triangle from gl_VertexIndex)
     private long descriptorSet = 0;     // 0 = no descriptor set to bind
+    private long descriptorSet2 = 0;    // 0 = nothing bound at set 2; see configureSet2
     private volatile List<Run> runs = List.of();   // empty = one draw of the whole buffer, no set 1
 
     /**
@@ -256,6 +257,16 @@ public final class WindowedPresenter implements WindowPresenter {
         this.vertexBuffer = vertexBuffer;
         this.descriptorSet = descriptorSet;
         this.vertexCount = vertexCount;
+    }
+
+    /**
+     * Bind {@code descriptorSet} at set 2 at the start of every frame, before any run: a set the whole frame shares
+     * and no run names, such as the canvas's shadelet tables. 0, the default, binds nothing there. The set is the
+     * caller's and must outlive this presenter's last frame.
+     */
+    @Override
+    public void configureSet2(long descriptorSet) {
+        this.descriptorSet2 = descriptorSet;
     }
 
     /**
@@ -705,7 +716,7 @@ public final class WindowedPresenter implements WindowPresenter {
             invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
                     pushConstantBytes, s.pushSeg);
         }
-        runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, runs, vertexCount);
+        runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, descriptorSet2, runs, vertexCount);
         invokeVoid(endRp, cmd);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         return submitAndPresent(s, inFlight[slot]);

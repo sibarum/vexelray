@@ -13,8 +13,8 @@ import dev.supirvast.vastir.core.Texture;
 import dev.supirvast.vastir.type.Type;
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.CanvasShader;
-import dev.vexelray.canvas.CanvasVertex;
 import dev.vexelray.canvas.Color;
+import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.WindowConfig;
@@ -22,9 +22,11 @@ import dev.vexelray.shader.ComposedShader;
 import dev.vexelray.text.AtlasData;
 import dev.vexelray.text.TextLayout;
 import dev.vexelray.vulkan.present.AtlasTexture;
+import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.present.OffscreenDraw;
 import dev.vexelray.vulkan.present.SampledColorTarget;
+import dev.vexelray.vulkan.present.StorageBuffer;
 import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.VulkanSwapchain;
@@ -39,7 +41,6 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -115,8 +116,10 @@ public final class SampledSurfaceDemo {
                  AtlasTexture atlasTex = new AtlasTexture(device, atlasSize[0], atlasSize[1], atlasRgba);
                  SampledColorTarget target = new SampledColorTarget(device, PANEL_W, PANEL_H);
                  VertexBuffer canvasVb = new VertexBuffer(device, canvasVerts);
+                 StorageBuffer tables = CanvasDemo.canvasTables(device);
                  GraphicsPipeline canvasPipe = new GraphicsPipeline(device, target.renderPass(), PANEL_W, PANEL_H,
-                         canvasVs.spirv(), "main", canvasFs.spirv(), "main", canvasConfig(atlasTex));
+                         canvasVs.spirv(), "main", canvasFs.spirv(), "main",
+                         CanvasDemo.canvasConfig(atlasTex, tables));
                  VertexBuffer quadVb = new VertexBuffer(device, quad);
                  GraphicsPipeline quadPipe = new GraphicsPipeline(device, renderPass.handle(),
                          swapchain.width(), swapchain.height(), quadVs.spirv(), "main", quadFs.spirv(), "main",
@@ -124,8 +127,7 @@ public final class SampledSurfaceDemo {
                  WindowedPresenter presenter = new WindowedPresenter(device, swapchain, renderPass.handle(),
                          quadPipe, window)) {
                 // Pass 1 (once): draw the canvas into the sampled texture.
-                target.renderInto(canvasPipe, canvasVb.handle(), atlasTex.descriptorSet(), canvasCount,
-                        0.10f, 0.11f, 0.14f, 1f);
+                drawCanvas(target, canvasPipe, canvasVb.handle(), atlasTex, tables, canvasCount);
                 // Pass 2 (per frame): draw the tilted quad, sampling the texture.
                 presenter.configureDraw(quadVb.handle(), target.descriptorSet(), 6);
                 presenter.run(maxFrames);
@@ -142,15 +144,16 @@ public final class SampledSurfaceDemo {
         try (AtlasTexture atlasTex = new AtlasTexture(device, atlasSize[0], atlasSize[1], atlasRgba);
              SampledColorTarget target = new SampledColorTarget(device, PANEL_W, PANEL_H);
              VertexBuffer canvasVb = new VertexBuffer(device, canvasVerts);
+             StorageBuffer tables = CanvasDemo.canvasTables(device);
              GraphicsPipeline canvasPipe = new GraphicsPipeline(device, target.renderPass(), PANEL_W, PANEL_H,
-                     canvasVs.spirv(), "main", canvasFs.spirv(), "main", canvasConfig(atlasTex));
+                     canvasVs.spirv(), "main", canvasFs.spirv(), "main",
+                     CanvasDemo.canvasConfig(atlasTex, tables));
              VulkanRenderPass outPass = new VulkanRenderPass(device, Vk.FORMAT_R8G8B8A8_UNORM,
                      Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
              VertexBuffer quadVb = new VertexBuffer(device, quad);
              GraphicsPipeline quadPipe = new GraphicsPipeline(device, outPass.handle(), OUT_W, OUT_H,
                      quadVs.spirv(), "main", quadFs.spirv(), "main", quadConfig(target))) {
-            target.renderInto(canvasPipe, canvasVb.handle(), atlasTex.descriptorSet(), canvasCount,
-                    0.10f, 0.11f, 0.14f, 1f);
+            drawCanvas(target, canvasPipe, canvasVb.handle(), atlasTex, tables, canvasCount);
             return OffscreenDraw.toRgba(device, outPass.handle(), quadPipe, OUT_W, OUT_H, quadVb.handle(),
                     target.descriptorSet(), 6, 0.04f, 0.05f, 0.07f, 1f);
         }
@@ -194,13 +197,22 @@ public final class SampledSurfaceDemo {
 
     // --- pipeline configs ---
 
-    private static GraphicsPipeline.Config canvasConfig(AtlasTexture atlasTex) {
-        List<GraphicsPipeline.VertexAttribute> attrs = new ArrayList<>();
-        for (CanvasVertex.Attr a : CanvasVertex.ATTRIBUTES) {
-            attrs.add(GraphicsPipeline.VertexAttribute.floats(a.location(), a.components(), a.offset()));
+    /**
+     * Draw the canvas into {@code target} with all three of its sets bound: the atlas at set 0, the atlas again at
+     * set 1 standing in for an image, and the shadelet tables at set 2.
+     */
+    private static void drawCanvas(SampledColorTarget target, GraphicsPipeline pipe, long vertexBuffer,
+                                   AtlasTexture atlasTex, StorageBuffer tables, int vertexCount) {
+        try (DrawCommands cmds = new DrawCommands(target.device())) {
+            target.renderInto((cmd, w, h) -> {
+                cmds.bindPipeline(cmd, pipe);
+                cmds.bindDescriptorSet(cmd, pipe, CanvasShader.ATLAS_SET, atlasTex.descriptorSet());
+                cmds.bindDescriptorSet(cmd, pipe, CanvasShader.IMAGE_SET, atlasTex.descriptorSet());
+                cmds.bindDescriptorSet(cmd, pipe, Composition.TABLES_SET, tables.descriptorSet());
+                cmds.bindVertexBuffer(cmd, vertexBuffer);
+                cmds.draw(cmd, vertexCount);
+            }, 0.10f, 0.11f, 0.14f, 1f);
         }
-        return new GraphicsPipeline.Config(CanvasVertex.STRIDE_BYTES, attrs,
-                new long[]{atlasTex.descriptorSetLayout()}, true, Vk.SHADER_STAGE_FRAGMENT_BIT, 0);
     }
 
     private static GraphicsPipeline.Config quadConfig(SampledColorTarget target) {

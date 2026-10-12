@@ -27,6 +27,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * <p>The rules:
  * <ul>
  *   <li>{@code defaultSet0}, when not 0, is bound at set 0 before anything is drawn.</li>
+ *   <li>{@code set2}, when not 0, is bound at set 2 before anything is drawn, and stays: a set that does not change
+ *       from run to run, such as the canvas's shadelet tables.</li>
  *   <li>With no runs, the whole buffer is one draw of {@code vertexCount} vertices, if there are any.</li>
  *   <li>Each run with vertices binds its set 0 and set 1 where they differ from what is bound, and draws. A run whose
  *       set is 0 leaves that set as it is: binding a null set is never what a run means.</li>
@@ -34,7 +36,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * Runs are contiguous and in submission order, so drawing them back to back is the picture one draw would have made;
  * the split is a binding concern, never a layering one.
  *
- * <p>Not thread-safe: the two set slots are scratch for one recording at a time, which is how every caller records.
+ * <p>Not thread-safe: the set slots are scratch for one recording at a time, which is how every caller records.
  * {@code vkCmdBindDescriptorSets} reads them when it is recorded, so reusing them between calls is safe.
  */
 public final class RunRecorder {
@@ -49,6 +51,7 @@ public final class RunRecorder {
     private final MethodHandle draw;
     private final MemorySegment set0;
     private final MemorySegment set1;
+    private final MemorySegment set2;
 
     /** A recorder for {@code device}'s command buffers, with its scratch allocated in {@code arena}. */
     public RunRecorder(VulkanDevice device, Arena arena) {
@@ -61,6 +64,7 @@ public final class RunRecorder {
         this.draw = draw;
         this.set0 = arena.allocate(JAVA_LONG);
         this.set1 = arena.allocate(JAVA_LONG);
+        this.set2 = arena.allocate(JAVA_LONG);
     }
 
     /**
@@ -69,6 +73,18 @@ public final class RunRecorder {
      */
     public void record(MemorySegment cmd, long pipelineLayout, long defaultSet0, List<WindowedPresenter.Run> runs,
                        int vertexCount) {
+        record(cmd, pipelineLayout, defaultSet0, 0L, runs, vertexCount);
+    }
+
+    /**
+     * As {@link #record(MemorySegment, long, long, List, int)}, binding {@code set2} at set 2 first when it is not 0 —
+     * the set every run of the frame shares and none names, such as the canvas's shadelet tables.
+     */
+    public void record(MemorySegment cmd, long pipelineLayout, long defaultSet0, long set2,
+                       List<WindowedPresenter.Run> runs, int vertexCount) {
+        if (set2 != 0) {
+            bind(cmd, pipelineLayout, 2, this.set2, set2);
+        }
         long bound0 = 0;
         if (defaultSet0 != 0) {
             bind(cmd, pipelineLayout, 0, set0, defaultSet0);

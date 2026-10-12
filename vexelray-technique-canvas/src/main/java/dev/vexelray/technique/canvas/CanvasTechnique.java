@@ -3,6 +3,8 @@ package dev.vexelray.technique.canvas;
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.CanvasShader;
 import dev.vexelray.canvas.CanvasVertex;
+import dev.vexelray.canvas.shadelet.Composition;
+import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.engine.FrameContext;
 import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
@@ -11,6 +13,7 @@ import dev.vexelray.vulkan.present.AtlasTexture;
 import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
 import dev.vexelray.vulkan.present.SampledImage;
+import dev.vexelray.vulkan.present.StorageBuffer;
 import dev.vexelray.vulkan.present.VertexBuffer;
 import dev.supirvast.vulkan.Vk;
 import dev.supirvast.vulkan.VulkanDevice;
@@ -60,6 +63,8 @@ public final class CanvasTechnique implements RenderTechnique {
     private boolean ownsAtlas;
     private GraphicsPipeline pipeline;
     private VertexBuffer vertices;
+    /** The shadelet tables the fragment stage reads at set 2: static, uploaded once at realise, owned. */
+    private StorageBuffer tables;
     private int vertexCount;
     private List<Canvas.Run> runs = List.of();
 
@@ -167,7 +172,11 @@ public final class CanvasTechnique implements RenderTechnique {
         // Two set layouts, not one: set 0 is the glyph atlas and set 1 is whatever image a run binds. The
         // pipeline layout has to declare both even for a canvas that draws no images, or a frame that later
         // draws one cannot bind it without a different pipeline.
-        long[] setLayouts = {atlas.descriptorSetLayout(), atlas.descriptorSetLayout()};
+        // Set 2 is the shadelet tables: what each element's look reads, the same for the life of the pipeline.
+        float[] coreTables = CoreLooks.coreTables();
+        this.tables = new StorageBuffer(device, coreTables.length, Composition.TABLES_BINDING);
+        tables.update(coreTables, coreTables.length);
+        long[] setLayouts = {atlas.descriptorSetLayout(), atlas.descriptorSetLayout(), tables.descriptorSetLayout()};
 
         GraphicsPipeline.Config config = new GraphicsPipeline.Config(
                 CanvasVertex.STRIDE_BYTES, attrs, setLayouts, true, Vk.SHADER_STAGE_FRAGMENT_BIT, 0, true);
@@ -197,6 +206,7 @@ public final class CanvasTechnique implements RenderTechnique {
         // technique records, which is also why resizing the canvas above is all this needs to do about resize.
         cmds.bindPipeline(cmd, pipeline);
         cmds.bindDescriptorSet(cmd, pipeline, CanvasShader.ATLAS_SET, atlas.descriptorSet());
+        cmds.bindDescriptorSet(cmd, pipeline, Composition.TABLES_SET, tables.descriptorSet());
         cmds.bindVertexBuffer(cmd, vertices.handle());
 
         List<Canvas.Run> frameRuns = runs;
@@ -253,6 +263,10 @@ public final class CanvasTechnique implements RenderTechnique {
         if (pipeline != null) {
             pipeline.close();
             pipeline = null;
+        }
+        if (tables != null) {
+            tables.close();
+            tables = null;
         }
         if (ownsAtlas && atlas != null) {
             atlas.close();

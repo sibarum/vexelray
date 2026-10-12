@@ -39,6 +39,11 @@ class RunRecorderTest {
 
     private static List<String> record(long defaultSet0, List<WindowedPresenter.Run> runs, int vertexCount)
             throws ReflectiveOperationException {
+        return record(defaultSet0, 0L, runs, vertexCount);
+    }
+
+    private static List<String> record(long defaultSet0, long set2, List<WindowedPresenter.Run> runs,
+                                       int vertexCount) throws ReflectiveOperationException {
         Commands commands = new Commands();
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         MethodHandle bind = lookup.findVirtual(Commands.class, "bind", MethodType.methodType(void.class,
@@ -47,7 +52,8 @@ class RunRecorderTest {
         MethodHandle draw = lookup.findVirtual(Commands.class, "draw", MethodType.methodType(void.class,
                 MemorySegment.class, int.class, int.class, int.class, int.class)).bindTo(commands);
         try (Arena arena = Arena.ofConfined()) {
-            new RunRecorder(bind, draw, arena).record(MemorySegment.NULL, LAYOUT, defaultSet0, runs, vertexCount);
+            new RunRecorder(bind, draw, arena).record(MemorySegment.NULL, LAYOUT, defaultSet0, set2, runs,
+                    vertexCount);
         }
         return commands.log;
     }
@@ -87,6 +93,15 @@ class RunRecorderTest {
     void aZeroSetLeavesTheBoundOneInPlace() throws ReflectiveOperationException {
         List<String> log = record(100, List.of(run(0, 9, 0, 3), run(0, 0, 3, 3)), 0);
         assertEquals(List.of("set 0 = 100", "set 1 = 9", "draw 0+3", "draw 3+3"), log);
+    }
+
+    /** Set 2 is the frame's, not a run's: bound once before anything, and never again. */
+    @Test
+    void setTwoIsBoundOnceBeforeEverything() throws ReflectiveOperationException {
+        List<String> log = record(100, 50, List.of(run(100, 9, 0, 3), run(200, 8, 3, 3)), 0);
+        assertEquals(List.of("set 2 = 50", "set 0 = 100", "set 1 = 9", "draw 0+3", "set 0 = 200", "set 1 = 8",
+                "draw 3+3"), log);
+        assertEquals(List.of("set 2 = 50", "draw 0+30"), record(0, 50, List.of(), 30));
     }
 
     @Test

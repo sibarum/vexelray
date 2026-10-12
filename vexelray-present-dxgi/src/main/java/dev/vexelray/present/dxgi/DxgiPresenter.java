@@ -84,6 +84,7 @@ final class DxgiPresenter implements WindowPresenter {
 
     private long vertexBuffer;
     private long descriptorSet;
+    private long descriptorSet2;
     private int vertexCount;
     private volatile List<WindowedPresenter.Run> runs = List.of();
 
@@ -179,6 +180,11 @@ final class DxgiPresenter implements WindowPresenter {
         this.vertexBuffer = vertexBuffer;
         this.descriptorSet = descriptorSet;
         this.vertexCount = vertexCount;
+    }
+
+    @Override
+    public void configureSet2(long descriptorSet) {
+        this.descriptorSet2 = descriptorSet;
     }
 
     @Override
@@ -296,7 +302,7 @@ final class DxgiPresenter implements WindowPresenter {
                 invokeVoid(pushConstants, cmd, pipeline.pipelineLayout(), Vk.SHADER_STAGE_FRAGMENT_BIT, 0,
                         pushConstantBytes, push);
             }
-            runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, runs, vertexCount);
+            runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, descriptorSet2, runs, vertexCount);
             invokeVoid(endRp, cmd);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         }
