@@ -222,9 +222,81 @@ public final class CoreShadelets {
                 mul(mul(w(fr.color()), boxCov), aField)));
     });
 
+    /** {@link #GLOW}'s style: how far the halo reaches, in canvas units, as the falloff's length. */
+    public static final StyleLayout GLOW_STYLE = StyleLayout.of(StyleLayout.shared("radius", 1));
+
+    /**
+     * A halo of the vertex colour falling off past the edge, {@code radius} its falloff's length; behind what is in
+     * front of it, as a painter after the fill. Of any source: on a field it fades out before the field's own reach,
+     * where the quad ends, so the quad's edge never shows as a square. The field kind's glow, as a painter of its own.
+     */
+    public static final Shadelet.Painter GLOW = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "glow";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return GLOW_STYLE;
+        }
+
+        /** Where the falloff has dropped below one level of eight-bit alpha: {@code 0.6 e^(-x/r) < 1/255}. */
+        @Override
+        public float reach(float[] shared) {
+            return 5f * Math.max(0f, shared[0]);
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr glowR = style.scalar("radius");
+            Expr d = x(c.distance());
+            Expr reach = y(c.distance());
+            Expr fade = Expr.MathCall.smoothstep(neg(mul(f(0.95), reach)), neg(mul(f(0.35), reach)), d);
+            Expr glow = mul(mul(mul(f(0.6), Expr.MathCall.exp(div(neg(max(neg(d), f(0.0))),
+                    max(glowR, f(1e-3))))), step(f(1e-3), glowR)), fade);
+            return assign(layer, tinted(c.fragment(), glow));
+        }
+    };
+
+    /** {@link #DROP_SHADOW}'s style: how soft the shadow is, in canvas units, and so how far below it falls. */
+    public static final StyleLayout DROP_SHADOW_STYLE = StyleLayout.of(StyleLayout.shared("softness", 1));
+
+    /**
+     * A soft dark shadow of the shape, sampled {@code 0.6 * softness} further up so it falls below: the distance looked
+     * for elsewhere, which is what a painter that needs more than the distance here does. The field kind's shadow, as
+     * a painter of its own, and of any source.
+     */
+    public static final Shadelet.Painter DROP_SHADOW = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "dropShadow";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return DROP_SHADOW_STYLE;
+        }
+
+        /** Its offset below, plus its soft tail. */
+        @Override
+        public float reach(float[] shared) {
+            return 1.6f * Math.max(0f, shared[0]);
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr shadowPx = style.scalar("softness");
+            Expr shadowD = x(c.distanceAt(v2(f(0.0), neg(mul(f(0.6), shadowPx)))));
+            Expr shade = mul(mul(f(0.45), Expr.MathCall.smoothstep(neg(shadowPx), mul(f(0.25), shadowPx), shadowD)),
+                    step(f(1e-3), shadowPx));
+            return assign(layer, Layers.premultiplied(v3(f(0.0), f(0.0), f(0.0)), mul(w(c.fragment().color()), shade)));
+        }
+    };
+
     /** The core set, in the order that fixes their ids: an application's composition starts with these. */
     public static final List<Shadelet> ALL = List.of(BOX, MSDF, FIELD,
-            FILL, GLYPH, SHADOW, STROKE, EMBOSS, IMAGE_FILL, FIELD_FILL);
+            FILL, GLYPH, SHADOW, STROKE, EMBOSS, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW);
 
     /** The core composition. */
     public static Composition composition() {

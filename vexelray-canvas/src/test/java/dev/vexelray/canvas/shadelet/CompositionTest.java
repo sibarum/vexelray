@@ -161,11 +161,11 @@ class CompositionTest {
     @Test
     void anEffectTheShaderLacksIsDroppedAndSaidOnce() {
         LookTable table = CoreLooks.table(CoreShadelets.composition().manifest());
-        Look withGlow = Look.of(Look.Use.of("box"), Look.Use.of("glow", 4f), Look.Use.of("fill"));
-        table.look(withGlow);
-        table.look(Look.of(Look.Use.of("box"), Look.Use.of("glow", 8f), Look.Use.of("fill")));
+        Look withSparkle = Look.of(Look.Use.of("box"), Look.Use.of("sparkle", 4f), Look.Use.of("fill"));
+        table.look(withSparkle);
+        table.look(Look.of(Look.Use.of("box"), Look.Use.of("sparkle", 8f), Look.Use.of("fill")));
         List<String> said = Diagnostics.recorded();
-        assertEquals(1, said.stream().filter(s -> s.contains("glow")).count(), () -> said.toString());
+        assertEquals(1, said.stream().filter(s -> s.contains("sparkle")).count(), () -> said.toString());
     }
 
     @Test
