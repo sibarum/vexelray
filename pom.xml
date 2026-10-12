@@ -46,6 +46,9 @@
         <!-- 2D Canvas API: immediate-mode unified-batched geometry (shapes, text, sampled images) and its
              uber-shader as core IR. An image is the same rounded box, so a marched scene composites as one. -->
         <module>vexelray-canvas</module>
+        <!-- The @Style annotation processor: a style record becomes its StyleLayout and its table writers. Depends
+             on nothing but the JDK; canvas is only on its test classpath, to run what it generates. -->
+        <module>vexelray-shadelet-codegen</module>
         <!-- OS integration: the platform-agnostic native API + one Panama binding module per platform.
              An aggregator grouping (vexelray-os-api + vexelray-os-{windows,linux,macos}). -->
         <module>vexelray-os</module>
@@ -180,6 +183,11 @@
             <dependency>
                 <groupId>dev.vexelray</groupId>
                 <artifactId>vexelray-canvas</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray</groupId>
+                <artifactId>vexelray-shadelet-codegen</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

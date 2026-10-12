@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-shadelet-codegen</artifactId>
+
+    <description>
+        Compile-time annotation processor for shadelet styles: every @Style record gets a generated
+        &lt;Record&gt;Layout holding its StyleLayout and the writers that flatten a value of it into the style table
+        and an element's record. The generated code is plain field reads; nothing reflects at runtime.
+    </description>
+
+    <dependencies>
+        <!-- Only to compile and run what the processor generates in its tests. The processor itself names the
+             annotations and Color as strings, so a consumer's processor path never needs canvas for it to load. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-canvas</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- Don't run annotation processors while building the processor itself. -->
+                    <proc>none</proc>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
