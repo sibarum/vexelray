@@ -346,12 +346,39 @@ public final class CanvasShader {
                 mul(x(rgb), x(texel)), mul(y(rgb), y(texel)), mul(z(rgb), z(texel)),
                 mul(mul(alpha, shapeCov), w(texel))));
 
-        // Dispatch: kind < 0.5 shape, < 1.5 glyph, < 2.5 shadow, < 3.5 stroke, < 4.5 lit, else image.
+        // KIND_FIELD - a shape from a signed distance field: the field's value, made screen px from the edge by loc8.x,
+        // cut there one pixel soft; a glow of the tint falling off past it, over a shadow sampled further up the
+        // field, so it falls below. Composited front to back within the one fragment.
+        Expr fx = new Expr.InterfaceRead(in.filter());
+        Expr fieldD = mul(sub(x(new Expr.SampleTexture(image, uv)), f(0.5)), x(fx));
+        Expr fieldCov = Expr.MathCall.clamp(add(fieldD, f(0.5)), f(0.0), f(1.0));
+        Expr glowR = z(fx);
+        // The field holds distance only so far out (half of loc8.x px), and the quad ends there: the glow is made to
+        // reach nothing by then, or the quad's edge would show as a square.
+        Expr reach = mul(f(0.5), x(fx));
+        Expr fade = Expr.MathCall.smoothstep(neg(mul(f(0.95), reach)), neg(mul(f(0.35), reach)), fieldD);
+        Expr glow = mul(mul(mul(f(0.6), Expr.MathCall.exp(div(neg(Expr.MathCall.max(neg(fieldD), f(0.0))),
+                Expr.MathCall.max(glowR, f(1e-3))))), Expr.MathCall.step(f(1e-3), glowR)), fade);
+        Expr shadowPx = w(fx);
+        Expr shadowUv = new Expr.VectorConstruct(V2, List.of(x(uv),
+                sub(y(uv), mul(mul(f(0.6), shadowPx), y(fx)))));
+        Expr shadowD = mul(sub(x(new Expr.SampleTexture(image, shadowUv)), f(0.5)), x(fx));
+        Expr shade = mul(mul(f(0.45), Expr.MathCall.smoothstep(neg(shadowPx), mul(f(0.25), shadowPx), shadowD)),
+                Expr.MathCall.step(f(1e-3), shadowPx));
+        Expr aGlow = mul(glow, sub(f(1.0), fieldCov));
+        Expr aShade = mul(shade, Expr.MathCall.max(sub(sub(f(1.0), fieldCov), aGlow), f(0.0)));
+        Expr aField = add(add(fieldCov, aGlow), aShade);
+        Expr lit = div(add(fieldCov, aGlow), Expr.MathCall.max(aField, f(1e-6)));   // the tint's share; the rest is shadow
+        Expr fieldOut = new Expr.VectorConstruct(V4, List.of(
+                mul(x(rgb), lit), mul(y(rgb), lit), mul(z(rgb), lit), mul(mul(alpha, shapeCov), aField)));
+
+        // Dispatch: kind < 0.5 shape, < 1.5 glyph, < 2.5 shadow, < 3.5 stroke, < 4.5 lit, < 5.5 image, else field.
         Expr kind = new Expr.InterfaceRead(in.kind());
         Region imageRegion = Region.of(
                 new Statement.DeclareVar(texelVar, new Expr.SampleTexture(image, uv)),
                 filtered(image, uv, new Expr.InterfaceRead(in.filter()), texelVar),
                 new Statement.InterfaceWrite(fragColor, imageOut));
+        Region fieldRegion = Region.of(new Statement.InterfaceWrite(fragColor, fieldOut));
         Region litRegion = Region.of(new Statement.InterfaceWrite(fragColor, litOut));
         Region strokeRegion = Region.of(new Statement.InterfaceWrite(fragColor, strokeOut));
         Region shadowRegion = Region.of(new Statement.InterfaceWrite(fragColor, shadowOut));
@@ -361,7 +388,8 @@ public final class CanvasShader {
                 new Statement.If(lt(kind, 1.5), glyphRegion, Region.of(
                         new Statement.If(lt(kind, 2.5), shadowRegion, Region.of(
                                 new Statement.If(lt(kind, 3.5), strokeRegion, Region.of(
-                                        new Statement.If(lt(kind, 4.5), litRegion, imageRegion)))))))));
+                                        new Statement.If(lt(kind, 4.5), litRegion, Region.of(
+                                                new Statement.If(lt(kind, 5.5), imageRegion, fieldRegion)))))))))));
     }
 
     /**
@@ -378,25 +406,35 @@ public final class CanvasShader {
      * count fixed and is an approximation: a resample on the CPU is exact.
      */
     private static Statement filtered(Texture image, Expr uv, Expr filter, LocalVar texel) {
-        Expr mode = x(filter);
+        // A linear-light texture adds Canvas.LINEAR_FLAG to the mode: take it off, and encode the result at the end.
+        Expr linear = Expr.MathCall.step(f(Canvas.LINEAR_FLAG / 2.0), x(filter));
+        Expr mode = sub(x(filter), mul(linear, f(Canvas.LINEAR_FLAG)));
         Expr sizeW = y(filter);
         Expr sizeH = z(filter);
         Expr rate = w(filter);
         // Texel coordinates, with whole numbers at texel centres.
         Expr px = sub(mul(x(uv), sizeW), f(0.5));
         Expr py = sub(mul(y(uv), sizeH), f(0.5));
+        // Shrinking, the two filters that move the one read leave it to the mip chain, which averages what they
+        // would skip. Enlarging, they read level 0 by name: their coordinates jump at every texel's edge, and a
+        // level chosen from those jumps would be a blurred one, in lines.
+        Expr enlarging = lt(rate, 1.0);
 
         // Nearest: the centre of the texel the point falls in.
         Expr nearestUv = new Expr.VectorConstruct(V2, List.of(
                 div(add(Expr.MathCall.floor(add(px, f(0.5))), f(0.5)), sizeW),
                 div(add(Expr.MathCall.floor(add(py, f(0.5))), f(0.5)), sizeH)));
-        Region nearest = Region.of(new Statement.Assign(texel, new Expr.SampleTexture(image, nearestUv)));
+        Region nearest = Region.of(new Statement.If(enlarging,
+                Region.of(new Statement.Assign(texel, new Expr.SampleTexture(image, nearestUv, f(0.0)))),
+                Region.of()));
 
         // Sharp bilinear: within a texel, flat; across its edge, a blend one screen pixel wide.
         Expr pixelsPerTexel = Expr.MathCall.max(f(1.0), div(f(1.0), Expr.MathCall.max(rate, f(1e-6))));
         Expr sharpUv = new Expr.VectorConstruct(V2, List.of(
                 div(sharpAxis(px, pixelsPerTexel), sizeW), div(sharpAxis(py, pixelsPerTexel), sizeH)));
-        Region sharp = Region.of(new Statement.Assign(texel, new Expr.SampleTexture(image, sharpUv)));
+        Region sharp = Region.of(new Statement.If(enlarging,
+                Region.of(new Statement.Assign(texel, new Expr.SampleTexture(image, sharpUv, f(0.0)))),
+                Region.of()));
 
         // Mode is ordinal + 1, so a filter is "mode < ordinal + 1.5" once the ones before it have been passed. The
         // kernels' chain is built from the last back, each one's else the chain of those after it.
@@ -410,11 +448,24 @@ public final class CanvasShader {
             kernels = Region.of(new Statement.If(lt(mode, fl.ordinal() + 1.5),
                     kernelTaps(image, fl, px, py, sizeW, sizeH, rate, texel), kernels));
         }
-        return new Statement.If(lt(mode, 0.5), Region.of(), Region.of(
+        Statement scale = new Statement.If(lt(mode, 0.5), Region.of(), Region.of(
                 new Statement.If(lt(mode, ImageFilter.NEAREST.ordinal() + 1.5), nearest, Region.of(
                         new Statement.If(lt(mode, ImageFilter.SHARP_BILINEAR.ordinal() + 1.5), sharp, Region.of(
                                 new Statement.If(lt(mode, ImageFilter.BILINEAR.ordinal() + 1.5), Region.of(),
                                         kernels)))))));
+        // Linear light out, sRGB again: what the frame is blended in.
+        Expr t = new Expr.Read(texel);
+        Statement encode = new Statement.If(lt(linear, 0.5), Region.of(), Region.of(new Statement.Assign(texel,
+                new Expr.VectorConstruct(V4, List.of(srgb(x(t)), srgb(y(t)), srgb(z(t)), w(t))))));
+        return new Statement.If(lt(x(filter), 0.5), Region.of(), Region.of(scale, encode));
+    }
+
+    /** One channel of linear light, {@code 0..1}, as sRGB. */
+    private static Expr srgb(Expr linear) {
+        Expr c = Expr.MathCall.clamp(linear, f(0.0), f(1.0));
+        Expr low = mul(c, f(12.92));
+        Expr high = sub(mul(f(1.055), Expr.MathCall.pow(c, f(1 / 2.4))), f(0.055));
+        return Expr.MathCall.mix(low, high, Expr.MathCall.step(f(0.0031308), c));
     }
 
     /** One axis of sharp bilinear: texel coordinate {@code p} to the coordinate to read, before dividing by size. */
@@ -464,7 +515,7 @@ public final class CanvasShader {
         Expr wa = mul(weight, w(t));
         Region inner = Region.of(
                 new Statement.Assign(posX, add(new Expr.Read(baseX), mul(new Expr.Read(jx), d))),
-                new Statement.Assign(wt, mul(new Expr.Read(wy), filter.kernel(div(sub(new Expr.Read(posX), px), s)))),
+                new Statement.Assign(wt, mul(new Expr.Read(wy), filter.kernel(div(sub(new Expr.Read(posX), px), s), rate))),
                 new Statement.Assign(tap, new Expr.SampleTexture(image, tapUv)),
                 new Statement.Assign(accR, add(new Expr.Read(accR), mul(wa, x(t)))),
                 new Statement.Assign(accG, add(new Expr.Read(accG), mul(wa, y(t)))),
@@ -474,7 +525,7 @@ public final class CanvasShader {
                 new Statement.Assign(jx, add(new Expr.Read(jx), f(1.0))));
         Region outer = Region.of(
                 new Statement.Assign(posY, add(new Expr.Read(baseY), mul(new Expr.Read(jy), d))),
-                new Statement.Assign(wy, filter.kernel(div(sub(new Expr.Read(posY), py), s))),
+                new Statement.Assign(wy, filter.kernel(div(sub(new Expr.Read(posY), py), s), rate)),
                 new Statement.Assign(jx, f(0.0)),
                 new Statement.While(lt(new Expr.Read(jx), 2.0 * r), inner),
                 new Statement.Assign(jy, add(new Expr.Read(jy), f(1.0))));

@@ -162,6 +162,8 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
     }
 
     private final VulkanDevice device;
+    /** Whether the texels are sRGB, which the sampler decodes to linear light. */
+    private final boolean srgb;
     private final long image;
     private final long imageMemory;
     private final long imageView;
@@ -189,13 +191,29 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
     }
 
     public AtlasTexture(VulkanDevice device, int width, int height, byte[] rgba) {
+        this(device, width, height, new byte[][] {rgba}, false);
+    }
+
+    /**
+     * A texture with its mip chain, {@code levels[0]} the full {@code width x height} image and each next one half the
+     * last ({@link MipChain}), sampled trilinearly. With {@code srgb}, the texels are sRGB-encoded and the sampler
+     * decodes them, so every blend it does, across texels and between levels, is in linear light; a shader reading
+     * one gets linear light and encodes it again ({@link #linear()}).
+     */
+    public AtlasTexture(VulkanDevice device, int width, int height, byte[][] levels, boolean srgb) {
         Probe.opened(Lane.GPU, "AtlasTexture", this);
         this.device = device;
+        this.srgb = srgb;
         MemorySegment dev = device.handle();
-        long pixelBytes = (long) width * height * 4;
-        if (rgba.length < pixelBytes) {
-            throw new IllegalArgumentException("rgba too small: " + rgba.length + " < " + pixelBytes);
+        int mipLevels = levels.length;
+        if (mipLevels < 1 || levels[0].length < (long) width * height * 4) {
+            throw new IllegalArgumentException("rgba too small for " + width + "x" + height);
         }
+        long pixelBytes = 0;
+        for (int l = 0; l < mipLevels; l++) {
+            pixelBytes += (long) MipChain.size(width, l) * MipChain.size(height, l) * 4;
+        }
+        int format = srgb ? Vk.FORMAT_R8G8B8A8_SRGB : Vk.FORMAT_R8G8B8A8_UNORM;
 
         MethodHandle vkCreateBuffer = device.command("vkCreateBuffer", C4);
         MethodHandle vkDestroyBuffer = device.command("vkDestroyBuffer", D_LONG);
@@ -258,18 +276,25 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
             MemorySegment ppData = arena.allocate(ADDRESS);
             check(invoke(vkMapMemory, dev, stagingMemory, 0L, pixelBytes, 0, ppData), "vkMapMemory");
             MemorySegment mapped = ppData.get(ADDRESS, 0).reinterpret(pixelBytes);
-            MemorySegment.copy(rgba, 0, mapped, JAVA_BYTE, 0, (int) pixelBytes);
+            long[] offsets = new long[mipLevels];
+            long at = 0;
+            for (int l = 0; l < mipLevels; l++) {
+                int bytes = MipChain.size(width, l) * MipChain.size(height, l) * 4;
+                offsets[l] = at;
+                MemorySegment.copy(levels[l], 0, mapped, JAVA_BYTE, at, bytes);
+                at += bytes;
+            }
             invokeVoid(vkUnmapMemory, dev, stagingMemory);
 
             // --- device-local sampled image ---
             MemorySegment imgInfo = arena.allocate(IMAGE_CREATE_INFO);
             si(imgInfo, IMAGE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_CREATE_INFO);
             si(imgInfo, IMAGE_CREATE_INFO, "imageType", Vk.IMAGE_TYPE_2D);
-            si(imgInfo, IMAGE_CREATE_INFO, "format", Vk.FORMAT_R8G8B8A8_UNORM);
+            si(imgInfo, IMAGE_CREATE_INFO, "format", format);
             si(imgInfo, IMAGE_CREATE_INFO, "extent_width", width);
             si(imgInfo, IMAGE_CREATE_INFO, "extent_height", height);
             si(imgInfo, IMAGE_CREATE_INFO, "extent_depth", 1);
-            si(imgInfo, IMAGE_CREATE_INFO, "mipLevels", 1);
+            si(imgInfo, IMAGE_CREATE_INFO, "mipLevels", mipLevels);
             si(imgInfo, IMAGE_CREATE_INFO, "arrayLayers", 1);
             si(imgInfo, IMAGE_CREATE_INFO, "samples", Vk.SAMPLE_COUNT_1_BIT);
             si(imgInfo, IMAGE_CREATE_INFO, "tiling", Vk.IMAGE_TILING_OPTIMAL);
@@ -295,20 +320,27 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
             si(begin, COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(invoke(vkBeginCommandBuffer, cmd, begin), "vkBeginCommandBuffer");
 
-            barrier(arena, vkCmdPipelineBarrier, cmd, image,
+            barrier(arena, vkCmdPipelineBarrier, cmd, image, mipLevels,
                     Vk.IMAGE_LAYOUT_UNDEFINED, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     0, Vk.ACCESS_TRANSFER_WRITE_BIT,
                     Vk.PIPELINE_STAGE_TOP_OF_PIPE_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
 
-            MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
-            si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
-            si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
-            si(region, BUFFER_IMAGE_COPY, "ext_width", width);
-            si(region, BUFFER_IMAGE_COPY, "ext_height", height);
-            si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
-            invokeVoid(vkCmdCopyBufferToImage, cmd, staging, image, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, region);
+            // One copy region per level, each from its own place in the staging buffer.
+            MemorySegment regions = arena.allocate(BUFFER_IMAGE_COPY, mipLevels);
+            for (int l = 0; l < mipLevels; l++) {
+                MemorySegment region = regions.asSlice(l * BUFFER_IMAGE_COPY.byteSize(), BUFFER_IMAGE_COPY.byteSize());
+                sl(region, BUFFER_IMAGE_COPY, "bufferOffset", offsets[l]);
+                si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
+                si(region, BUFFER_IMAGE_COPY, "is_mipLevel", l);
+                si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
+                si(region, BUFFER_IMAGE_COPY, "ext_width", MipChain.size(width, l));
+                si(region, BUFFER_IMAGE_COPY, "ext_height", MipChain.size(height, l));
+                si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
+            }
+            invokeVoid(vkCmdCopyBufferToImage, cmd, staging, image, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels,
+                    regions);
 
-            barrier(arena, vkCmdPipelineBarrier, cmd, image,
+            barrier(arena, vkCmdPipelineBarrier, cmd, image, mipLevels,
                     Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     Vk.ACCESS_TRANSFER_WRITE_BIT, Vk.ACCESS_SHADER_READ_BIT,
                     Vk.PIPELINE_STAGE_TRANSFER_BIT, Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
@@ -325,9 +357,9 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
             sl(viewInfo, IMAGE_VIEW_CREATE_INFO, "image", image);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "viewType", Vk.IMAGE_VIEW_TYPE_2D);
-            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "format", Vk.FORMAT_R8G8B8A8_UNORM);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "format", format);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
-            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_levelCount", 1);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_levelCount", mipLevels);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_layerCount", 1);
             MemorySegment pView = arena.allocate(JAVA_LONG);
             check(invoke(vkCreateImageView, dev, viewInfo, MemorySegment.NULL, pView), "vkCreateImageView");
@@ -338,7 +370,11 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
             si(sampInfo, SAMPLER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
             si(sampInfo, SAMPLER_CREATE_INFO, "magFilter", Vk.FILTER_LINEAR);
             si(sampInfo, SAMPLER_CREATE_INFO, "minFilter", Vk.FILTER_LINEAR);
-            si(sampInfo, SAMPLER_CREATE_INFO, "mipmapMode", Vk.SAMPLER_MIPMAP_MODE_NEAREST);
+            // Trilinear with a chain: between levels as well as within one. One level reads level 0 only.
+            si(sampInfo, SAMPLER_CREATE_INFO, "mipmapMode",
+                    mipLevels > 1 ? Vk.SAMPLER_MIPMAP_MODE_LINEAR : Vk.SAMPLER_MIPMAP_MODE_NEAREST);
+            sampInfo.set(java.lang.foreign.ValueLayout.JAVA_FLOAT,
+                    SAMPLER_CREATE_INFO.byteOffset(MemoryLayout.PathElement.groupElement("maxLod")), (float) mipLevels);
             si(sampInfo, SAMPLER_CREATE_INFO, "addressModeU", Vk.SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
             si(sampInfo, SAMPLER_CREATE_INFO, "addressModeV", Vk.SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
             si(sampInfo, SAMPLER_CREATE_INFO, "addressModeW", Vk.SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -412,6 +448,11 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         return device;
     }
 
+    @Override
+    public boolean linear() {
+        return srgb;
+    }
+
     /** The {@code VkDescriptorSet} to bind before drawing (set 0). */
     public long descriptorSet() {
         return descriptorSet;
@@ -427,7 +468,7 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         return pMem.get(JAVA_LONG, 0);
     }
 
-    private void barrier(Arena arena, MethodHandle vkCmdPipelineBarrier, MemorySegment cmd, long image,
+    private void barrier(Arena arena, MethodHandle vkCmdPipelineBarrier, MemorySegment cmd, long image, int levels,
                          int oldLayout, int newLayout, int srcAccess, int dstAccess, int srcStage, int dstStage) {
         MemorySegment b = arena.allocate(IMAGE_MEMORY_BARRIER);
         si(b, IMAGE_MEMORY_BARRIER, "sType", Vk.STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
@@ -439,7 +480,7 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         si(b, IMAGE_MEMORY_BARRIER, "dstQueueFamilyIndex", Vk.QUEUE_FAMILY_IGNORED);
         sl(b, IMAGE_MEMORY_BARRIER, "image", image);
         si(b, IMAGE_MEMORY_BARRIER, "sr_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
-        si(b, IMAGE_MEMORY_BARRIER, "sr_levelCount", 1);
+        si(b, IMAGE_MEMORY_BARRIER, "sr_levelCount", levels);
         si(b, IMAGE_MEMORY_BARRIER, "sr_layerCount", 1);
         invokeVoid(vkCmdPipelineBarrier, cmd, srcStage, dstStage, 0, 0, MemorySegment.NULL, 0, MemorySegment.NULL,
                 1, b);

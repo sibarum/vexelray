@@ -44,4 +44,15 @@ public interface SampledImage extends ImageHandle {
      * looks like a screenshot. Asking the image is the only way to tell.
      */
     VulkanDevice device();
+
+    /**
+     * Whether a sample of this image is linear light: its texels are sRGB and the sampler decodes them, so its
+     * blends are true averages of light, and whoever draws it must encode the result to sRGB again. The second
+     * exception to the paragraph above, and for the same reason as {@link #device()}: what a sample means is not
+     * something the drawing layer can see in the set, and getting it wrong is a picture a shade too dark. False by
+     * default: a texture that does not say is read as stored.
+     */
+    default boolean linear() {
+        return false;
+    }
 }

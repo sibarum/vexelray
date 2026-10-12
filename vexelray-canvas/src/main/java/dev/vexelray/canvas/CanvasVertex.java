@@ -67,6 +67,14 @@ public final class CanvasVertex {
      */
     public static final int KIND_IMAGE = 5;
 
+    /**
+     * A shape from a signed distance field in the image sampler: coverage cut at the field's half, one screen pixel
+     * soft, in the vertex colour, with a glow and a shadow made from the distance past the edge. Its loc8 carries
+     * {@code (px per unit of the field's value, texture coordinate per px, glow px, shadow px)}. See
+     * {@link Canvas#field}.
+     */
+    public static final int KIND_FIELD = 6;
+
     public static final int FLOATS_PER_VERTEX = 27;
     public static final int STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
 

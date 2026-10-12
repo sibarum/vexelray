@@ -58,11 +58,14 @@ public final class Canvas {
     private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
     private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
-    // The filter of the image being pushed, as the loc8 attribute carries it; mode 0 (bilinear) for everything else.
-    private int filterMode;
-    private float filterW;
-    private float filterH;
-    private float filterRate;
+    // What the loc8 attribute carries for the image or field being pushed: an image's filter, a field's scale and effects.
+    // Zero for everything else, which an image reads as the sampler's own bilinear.
+    private boolean stamping;
+    private final float[] stamp = new float[4];
+    /** Added to an image's filter mode in loc8.x when its texture is linear light (sRGB, decoded by the sampler). */
+    public static final int LINEAR_FLAG = 100;
+    // What an image quad is drawn as: a picture, or a distance field (see field()).
+    private int imageKind = CanvasVertex.KIND_IMAGE;
     private int runFace = NO_FACE;       // the face whose atlas the open run's glyphs index, or NO_FACE before one
     private int activeFace = NO_FACE;    // the face of the glyph being pushed; NO_FACE for everything else
     private int lastFace;                // the face of the last run closed: what a run without glyphs inherits
@@ -525,18 +528,80 @@ public final class Canvas {
     public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, ImageHandle image,
                         float u0, float v0, float u1, float v1, float alpha, ImageFilter filter,
                         int textureWidth, int textureHeight) {
-        if (filter == null || filter == ImageFilter.BILINEAR || textureWidth <= 0 || textureHeight <= 0 || w <= 0f) {
+        return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1, alpha, filter, textureWidth,
+                textureHeight, false);
+    }
+
+    /**
+     * As the overload above, for a texture that may be {@code linear}: its sampler decodes sRGB texels to linear
+     * light, so every blend, the filter's own and the sampler's across texels and mip levels, is in light, and the
+     * shader encodes the result to sRGB again before it is blended onto the frame. A linear texture must say so,
+     * with any filter or none, or it is drawn a shade too dark.
+     */
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, ImageHandle image,
+                        float u0, float v0, float u1, float v1, float alpha, ImageFilter filter,
+                        int textureWidth, int textureHeight, boolean linear) {
+        boolean filtered = filter != null && filter != ImageFilter.BILINEAR && textureWidth > 0 && textureHeight > 0;
+        if ((!filtered && !linear) || w <= 0f) {
             return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1, alpha);
         }
-        filterMode = filter.ordinal() + 1;
-        filterW = textureWidth;
-        filterH = textureHeight;
+        stamping = true;
+        // The filter's mode (0 for the sampler's own read), and a hundred more for linear light.
+        stamp[0] = (filtered ? filter.ordinal() + 1 : 0) + (linear ? LINEAR_FLAG : 0);
+        stamp[1] = textureWidth;
+        stamp[2] = textureHeight;
         // Texels across one screen pixel: across the box, at the scale it is drawn at. A turn changes neither.
-        filterRate = Math.abs(u1 - u0) * textureWidth / (w * scale);
+        stamp[3] = Math.abs(u1 - u0) * textureWidth / (w * scale);
         try {
             return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1, alpha);
         } finally {
-            filterMode = 0;
+            stamping = false;
+        }
+    }
+
+    /**
+     * A shape drawn from a signed distance field: {@code field} is a texture {@code side} texels square holding
+     * {@code 0.5 + d / (2 * spread)}, {@code d} the distance to the edge in texels and positive inside, with the shape's
+     * square in the middle and {@code margin} of its size round it on each side. {@code (x, y, w, h)} is the shape's
+     * square; the quad reaches out over the margin, where a glow or a shadow is drawn.
+     *
+     * <p>Cut at the edge in the shader, one screen pixel soft whatever its size, so one small texture is a shape at any
+     * size, in any colour, turned and scaled too. {@code style} gives the colour and the effects, in px at the size it is
+     * drawn here (a scale pushed around it scales them with the shape).
+     */
+    public Canvas field(float x, float y, float w, float h, ImageHandle field, int side, int spread, float margin,
+                        FieldStyle style, float alpha) {
+        return field(x, y, w, h, field, 0f, 0f, 1f, 1f, side, spread, margin, style, alpha);
+    }
+
+    /**
+     * {@link #field(float, float, float, float, ImageHandle, int, int, float, FieldStyle, float)} from one cell of a
+     * texture: {@code (u0, v0)-(u1, v1)} is the cell, margin and all, and {@code side} its texels across. An atlas of
+     * fields (the icon set's) is one texture and one run, however many shapes it draws. Each cell's margin reads as
+     * far outside at its border, so the filtering at a cell's edge and a shadow sampled up into the cell above both
+     * read nothing from a neighbour.
+     */
+    public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
+                        int side, int spread, float margin, FieldStyle style, float alpha) {
+        if (w <= 0f || h <= 0f || side <= 0) {
+            return this;
+        }
+        float ew = w * (1f + 2f * margin);
+        float eh = h * (1f + 2f * margin);
+        // Screen px across one unit of the texel value, and texture coordinate across one screen px.
+        stamp[0] = 2f * Math.max(1, spread) * ew * scale / side;
+        stamp[1] = Math.abs(v1 - v0) / (eh * scale);
+        stamp[2] = style.glow() * scale;
+        stamp[3] = style.shadow() * scale;
+        stamping = true;
+        imageKind = CanvasVertex.KIND_FIELD;
+        Color tint = style.tint();
+        try {
+            return image(x - w * margin, y - h * margin, ew, eh, 0f, 0f, field, u0, v0, u1, v1,
+                    alpha >= 1f ? tint : Color.withAlpha(tint, tint.a() * alpha));
+        } finally {
+            stamping = false;
+            imageKind = CanvasVertex.KIND_IMAGE;
         }
     }
 
@@ -673,7 +738,7 @@ public final class Canvas {
 
     private void imageVert(float cx, float cy, float lx, float ly, float u, float v,
                            float halfW, float halfH, float rTop, float rBottom, Color c) {
-        push(cx + lx, cy + ly, c, u, v, CanvasVertex.KIND_IMAGE, lx, ly, halfW, halfH, rTop, rBottom);
+        push(cx + lx, cy + ly, c, u, v, imageKind, lx, ly, halfW, halfH, rTop, rBottom);
     }
 
     private void glyphVert(float sx, float sy, float u, float v, float screenPxRange, Color c) {
@@ -750,11 +815,11 @@ public final class Canvas {
         data[o + 20] = sy;
         data[o + 21] = clipR;
         data[o + 22] = AA;
-        boolean filtered = kind == CanvasVertex.KIND_IMAGE && filterMode != 0;
-        data[o + 23] = filtered ? filterMode : 0f;
-        data[o + 24] = filtered ? filterW : 0f;
-        data[o + 25] = filtered ? filterH : 0f;
-        data[o + 26] = filtered ? filterRate : 0f;
+        boolean stamped = stamping && (kind == CanvasVertex.KIND_IMAGE || kind == CanvasVertex.KIND_FIELD);
+        data[o + 23] = stamped ? stamp[0] : 0f;
+        data[o + 24] = stamped ? stamp[1] : 0f;
+        data[o + 25] = stamped ? stamp[2] : 0f;
+        data[o + 26] = stamped ? stamp[3] : 0f;
         count = o + CanvasVertex.FLOATS_PER_VERTEX;
     }
 

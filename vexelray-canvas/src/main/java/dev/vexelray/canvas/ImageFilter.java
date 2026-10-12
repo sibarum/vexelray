@@ -18,13 +18,16 @@ import dev.supirvast.vastir.type.Type;
  *   <li>{@link #SHARP_BILINEAR}: each source pixel a square, and each output pixel the share of each square it
  *       covers. Square pixels with antialiased edges, at any zoom; an even average when shrinking.</li>
  *   <li>{@link #BILINEAR}: a straight blend of the nearest pixels. Soft, cheap, what a GPU does by itself.</li>
- *   <li>{@link #GAUSSIAN}: a bell, half a source pixel wide. No ringing, no pixel grid and no aliasing; soft.</li>
- *   <li>{@link #B_SPLINE}: the cubic B-spline, a bell that ends. Like Gaussian, a touch softer, cheaper.</li>
+ *   <li>{@link #GAUSSIAN}: a bell, half a source pixel wide, read at points. No ringing; soft, with a trace of the
+ *       pixel grid left at the finest detail.</li>
+ *   <li>{@link #NORMAL}: the same bell over pixels that are squares, its area taken across each output pixel's whole
+ *       footprint rather than its height at the centre. The B-spline's spread exactly, at every scale.</li>
+ *   <li>{@link #B_SPLINE}: the cubic B-spline, a bell that ends. No ringing, and no trace of the pixel grid.</li>
  *   <li>{@link #MITCHELL}: Mitchell-Netravali (B = C = 1/3), the usual balance of sharp, ringing and smooth.</li>
  *   <li>{@link #LANCZOS}: Lanczos-3. Sharpest, with a ring at hard edges and the pixel grid showing through.</li>
  * </ul>
  *
- * <p>On the GPU the last four are a loop of taps in the shader ({@link #kernel}, {@link #taps}): exact when enlarging,
+ * <p>On the GPU the last five are a loop of taps in the shader ({@link #kernel}, {@link #taps}): exact when enlarging,
  * and when shrinking the taps spread out to the step and each reads a bilinear blend, which is an approximation; the
  * CPU's resample is exact at any scale.
  */
@@ -42,7 +45,7 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             return sub(one(), step(f(0.5), abs(t)));
         }
     },
@@ -60,7 +63,7 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             return Expr.MathCall.max(sub(one(), abs(t)), f(0.0));
         }
     },
@@ -77,7 +80,7 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             return Expr.MathCall.max(sub(one(), abs(t)), f(0.0));
         }
     },
@@ -95,8 +98,50 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             return mul(Expr.MathCall.exp(mul(f(-2.0), mul(t, t))), sub(one(), step(f(2.0), abs(t))));
+        }
+    },
+    NORMAL("Normal", 3) {
+        /**
+         * Each source pixel a square, blurred by a Gaussian, and the share of it over the output pixel's whole
+         * footprint: the bell's area across the pixel, edge to edge, not its height at the centre. Sigma is chosen
+         * so the whole has exactly the B-spline's spread at every scale: the square's twelfth, the footprint's
+         * twelfth, and the bell's sigma squared sum to a third of the scale squared.
+         */
+        @Override
+        public double weight(double t, double step) {
+            double sigma = normalSigma(step);
+            double h = Math.max(step, 1e-6) / 2;
+            double a = t - 0.5;
+            double b = t + 0.5;
+            if (h < 1e-4) {
+                return phiCdf(-a / sigma) - phiCdf(-b / sigma);
+            }
+            return sigma * (psi((h - a) / sigma) - psi((-h - a) / sigma) - psi((h - b) / sigma)
+                    + psi((-h - b) / sigma)) / (2 * h);
+        }
+
+        @Override
+        public double reach(double step) {
+            return 0.5 + Math.max(step, 0) / 2 + 4 * normalSigma(step);
+        }
+
+        @Override
+        Expr kernel(Expr t, Expr rate) {
+            // In the loop's units: source pixels enlarging; the rate's widths shrinking, where the taps spread.
+            Expr s = Expr.MathCall.max(rate, one());
+            Expr r2 = mul(rate, rate);
+            Expr sigmaPx = Expr.MathCall.sqrt(Expr.MathCall.max(
+                    sub(sub(div(mul(s, s), f(3.0)), f(1.0 / 12)), div(r2, f(12.0))), f(1e-4)));
+            Expr sigma = div(sigmaPx, s);
+            Expr h = Expr.MathCall.max(div(mul(f(0.5), rate), s), f(1e-4));
+            Expr half = div(f(0.5), s);
+            Expr a = sub(t, half);
+            Expr b = add(t, half);
+            Expr area = add(sub(sub(psi(div(sub(h, a), sigma)), psi(div(sub(neg(h), a), sigma))),
+                    psi(div(sub(h, b), sigma))), psi(div(sub(neg(h), b), sigma)));
+            return Expr.MathCall.max(div(mul(sigma, area), mul(f(2.0), h)), f(0.0));
         }
     },
     B_SPLINE("B-spline", 2) {
@@ -111,7 +156,7 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             return cubic(t, 1, 0);
         }
     },
@@ -127,7 +172,7 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             return cubic(t, 1.0 / 3, 1.0 / 3);
         }
     },
@@ -151,7 +196,7 @@ public enum ImageFilter {
         }
 
         @Override
-        Expr kernel(Expr t) {
+        Expr kernel(Expr t, Expr rate) {
             Expr a = abs(t);
             Expr pu = mul(f(Math.PI), a);
             Expr sinc = div(mul(f(3.0), mul(Expr.MathCall.sin(pu), Expr.MathCall.sin(div(pu, f(3.0))))),
@@ -186,9 +231,53 @@ public enum ImageFilter {
 
     /**
      * The weight in the shader at {@code t}, in units of the filter's scale (source pixels when enlarging): the same
-     * curve as {@link #weight}. Read by the shader for the filters it runs as a loop of taps.
+     * curve as {@link #weight}. Read by the shader for the filters it runs as a loop of taps. {@code rate} is the
+     * source pixels across one output pixel, which only a filter that integrates over the pixel needs.
      */
-    abstract Expr kernel(Expr t);
+    abstract Expr kernel(Expr t, Expr rate);
+
+    /** {@link #NORMAL}'s sigma at {@code step}: the B-spline's spread, less the source square's and the footprint's. */
+    static double normalSigma(double step) {
+        double s = Math.max(1, step);
+        return Math.sqrt(Math.max(1e-4, s * s / 3 - 1.0 / 12 - step * step / 12));
+    }
+
+    /** The standard normal's area to the left of {@code x}. */
+    static double phiCdf(double x) {
+        return 0.5 * (1 + erf(x / Math.sqrt(2)));
+    }
+
+    /** The area under {@link #phiCdf} to the left of {@code x}: {@code x Phi(x) + phi(x)}. */
+    static double psi(double x) {
+        return x * phiCdf(x) + Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+    }
+
+    /** The error function, by Abramowitz and Stegun 7.1.26: within 1.5e-7. */
+    static double erf(double x) {
+        double s = Math.signum(x);
+        double a = Math.abs(x);
+        double t = 1 / (1 + 0.3275911 * a);
+        double y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
+                + 0.254829592) * t * Math.exp(-a * a);
+        return s * y;
+    }
+
+    /** {@link #psi} in the shader, with the same error function. */
+    static Expr psi(Expr x) {
+        Expr a = abs(mul(x, f(Math.sqrt(0.5))));
+        Expr t = div(one(), add(one(), mul(f(0.3275911), a)));
+        Expr poly = add(mul(add(mul(add(mul(add(mul(f(1.061405429), t), f(-1.453152027)), t), f(1.421413741)), t),
+                f(-0.284496736)), t), f(0.254829592));
+        Expr erfAbs = sub(one(), mul(mul(poly, t), Expr.MathCall.exp(neg(mul(a, a)))));
+        Expr erf = mul(Expr.MathCall.sign(x), erfAbs);
+        Expr cdf = mul(f(0.5), add(one(), erf));
+        Expr pdf = mul(Expr.MathCall.exp(mul(f(-0.5), mul(x, x))), f(1 / Math.sqrt(2 * Math.PI)));
+        return add(mul(x, cdf), pdf);
+    }
+
+    private static Expr neg(Expr v) {
+        return sub(f(0.0), v);
+    }
 
     /** How many taps either side the shader's loop reads: the filter's radius at scale 1. 0 for the special paths. */
     int taps() {
