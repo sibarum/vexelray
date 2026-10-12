@@ -32,6 +32,7 @@ public final class Ir {
     public static final Type.Vector V2 = new Type.Vector(F32, 2);
     public static final Type.Vector V3 = new Type.Vector(F32, 3);
     public static final Type.Vector V4 = new Type.Vector(F32, 4);
+    public static final Type.Int I32 = Type.int32();
 
     /**
      * The distinguished sample point a field is a function of: the first parameter of {@code f(vec3 p)}.
@@ -77,6 +78,23 @@ public final class Ir {
 
     public static Expr v3(Expr x, Expr y, Expr z) {
         return new Expr.VectorConstruct(V3, List.of(x, y, z));
+    }
+
+    public static Expr v4(double x, double y, double z, double w) {
+        return new Expr.VectorConstruct(V4, List.of(f(x), f(y), f(z), f(w)));
+    }
+
+    public static Expr v4(Expr x, Expr y, Expr z, Expr w) {
+        return new Expr.VectorConstruct(V4, List.of(x, y, z, w));
+    }
+
+    public static Expr i(int v) {
+        return new Expr.ConstInt(I32, v);
+    }
+
+    /** {@code int(v)}: a float made an {@code i32}, truncating. */
+    public static Expr toInt(Expr v) {
+        return new Expr.Convert(v, I32);
     }
 
     /** The additive identity at {@code type} — a scalar {@code 0.0}, or a vector of them. */
@@ -144,6 +162,16 @@ public final class Ir {
         return mul(v, broadcast(s, v.type()));
     }
 
+    // --- comparison ---
+
+    public static Expr lt(Expr a, Expr b) {
+        return new Expr.Binary(BinaryOp.LESS_THAN, a, b);
+    }
+
+    public static Expr eq(Expr a, Expr b) {
+        return new Expr.Binary(BinaryOp.EQUAL, a, b);
+    }
+
     // --- component access ---
 
     public static Expr x(Expr v) {
@@ -156,6 +184,15 @@ public final class Ir {
 
     public static Expr z(Expr v) {
         return new Expr.VectorExtract(v, 2);
+    }
+
+    public static Expr w(Expr v) {
+        return new Expr.VectorExtract(v, 3);
+    }
+
+    /** The {@code xyz} slice of a {@code vec4}. */
+    public static Expr xyz(Expr v) {
+        return v3(x(v), y(v), z(v));
     }
 
     /** The {@code xz} slice of a {@code vec3} — the ground plane, and the domain of a heightfield. */
