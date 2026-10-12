@@ -7,6 +7,7 @@ import dev.supirvast.vastir.core.EntryPoint;
 import dev.supirvast.vastir.core.Expr;
 import dev.supirvast.vastir.core.Function;
 import dev.supirvast.vastir.core.InterfaceVar;
+import dev.supirvast.vastir.core.LocalVar;
 import dev.supirvast.vastir.core.Region;
 import dev.supirvast.vastir.core.ShaderStage;
 import dev.supirvast.vastir.core.Statement;
@@ -136,7 +137,8 @@ public final class CanvasShader {
      * shader that wants to put this vertex somewhere other than the screen reads that, and ignores {@link #pos}.
      */
     public record Attributes(InterfaceVar pos, InterfaceVar color, InterfaceVar uv, InterfaceVar kind,
-                             InterfaceVar local, InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs) {
+                             InterfaceVar local, InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs,
+                             InterfaceVar filter) {
 
         public static Attributes inputs() {
             return new Attributes(
@@ -147,7 +149,8 @@ public final class CanvasShader {
                     InterfaceVar.input("inLocal", CanvasVertex.LOC_LOCAL, V2),
                     InterfaceVar.input("inShape", CanvasVertex.LOC_SHAPE, V4),
                     InterfaceVar.input("inClipBox", CanvasVertex.LOC_CLIPBOX, V4),
-                    InterfaceVar.input("inClipRs", CanvasVertex.LOC_CLIPRS, V4));
+                    InterfaceVar.input("inClipRs", CanvasVertex.LOC_CLIPRS, V4),
+                    InterfaceVar.input("inFilter", CanvasVertex.LOC_FILTER, V4));
         }
 
         /** The canvas-space position of this vertex, in canvas units - see the record's note on {@code clipRs}. */
@@ -166,13 +169,14 @@ public final class CanvasShader {
                     new Statement.InterfaceWrite(out.local(), new Expr.InterfaceRead(local)),
                     new Statement.InterfaceWrite(out.shape(), new Expr.InterfaceRead(shape)),
                     new Statement.InterfaceWrite(out.clipBox(), new Expr.InterfaceRead(clipBox)),
-                    new Statement.InterfaceWrite(out.clipRs(), new Expr.InterfaceRead(clipRs)));
+                    new Statement.InterfaceWrite(out.clipRs(), new Expr.InterfaceRead(clipRs)),
+                    new Statement.InterfaceWrite(out.filter(), new Expr.InterfaceRead(filter)));
         }
     }
 
     /** The varyings between the two stages: every attribute but the position, which became {@code gl_Position}. */
     public record Varyings(InterfaceVar color, InterfaceVar uv, InterfaceVar kind, InterfaceVar local,
-                           InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs) {
+                           InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs, InterfaceVar filter) {
 
         /** The fragment stage's side. */
         public static Varyings inputs() {
@@ -183,7 +187,8 @@ public final class CanvasShader {
                     InterfaceVar.input("vLocal", CanvasVertex.LOC_LOCAL, V2),
                     InterfaceVar.input("vShape", CanvasVertex.LOC_SHAPE, V4),
                     InterfaceVar.input("vClipBox", CanvasVertex.LOC_CLIPBOX, V4),
-                    InterfaceVar.input("vClipRs", CanvasVertex.LOC_CLIPRS, V4));
+                    InterfaceVar.input("vClipRs", CanvasVertex.LOC_CLIPRS, V4),
+                    InterfaceVar.input("vFilter", CanvasVertex.LOC_FILTER, V4));
         }
 
         /** The vertex stage's side. */
@@ -195,7 +200,8 @@ public final class CanvasShader {
                     InterfaceVar.output("vLocal", CanvasVertex.LOC_LOCAL, V2),
                     InterfaceVar.output("vShape", CanvasVertex.LOC_SHAPE, V4),
                     InterfaceVar.output("vClipBox", CanvasVertex.LOC_CLIPBOX, V4),
-                    InterfaceVar.output("vClipRs", CanvasVertex.LOC_CLIPRS, V4));
+                    InterfaceVar.output("vClipRs", CanvasVertex.LOC_CLIPRS, V4),
+                    InterfaceVar.output("vFilter", CanvasVertex.LOC_FILTER, V4));
         }
     }
 
@@ -333,14 +339,19 @@ public final class CanvasShader {
         // the vertex colour. Straight-alpha texel: its alpha multiplies coverage, so a transparent PNG and a
         // rounded corner compose rather than fight. A white opaque tint is the identity, which is what a viewport
         // wants; anything else modulates, which is what an icon wants.
-        Expr texel = new Expr.SampleTexture(image, uv);
+        // The texel is the sampler's own bilinear unless the vertex names a filter (loc8): see filtered().
+        LocalVar texelVar = new LocalVar("imageTexel", V4);
+        Expr texel = new Expr.Read(texelVar);
         Expr imageOut = new Expr.VectorConstruct(V4, List.of(
                 mul(x(rgb), x(texel)), mul(y(rgb), y(texel)), mul(z(rgb), z(texel)),
                 mul(mul(alpha, shapeCov), w(texel))));
 
         // Dispatch: kind < 0.5 shape, < 1.5 glyph, < 2.5 shadow, < 3.5 stroke, < 4.5 lit, else image.
         Expr kind = new Expr.InterfaceRead(in.kind());
-        Region imageRegion = Region.of(new Statement.InterfaceWrite(fragColor, imageOut));
+        Region imageRegion = Region.of(
+                new Statement.DeclareVar(texelVar, new Expr.SampleTexture(image, uv)),
+                filtered(image, uv, new Expr.InterfaceRead(in.filter()), texelVar),
+                new Statement.InterfaceWrite(fragColor, imageOut));
         Region litRegion = Region.of(new Statement.InterfaceWrite(fragColor, litOut));
         Region strokeRegion = Region.of(new Statement.InterfaceWrite(fragColor, strokeOut));
         Region shadowRegion = Region.of(new Statement.InterfaceWrite(fragColor, shadowOut));
@@ -351,6 +362,150 @@ public final class CanvasShader {
                         new Statement.If(lt(kind, 2.5), shadowRegion, Region.of(
                                 new Statement.If(lt(kind, 3.5), strokeRegion, Region.of(
                                         new Statement.If(lt(kind, 4.5), litRegion, imageRegion)))))))));
+    }
+
+    /**
+     * Replace {@code texel}, the sampler's bilinear read at {@code uv}, with the image scaled by the filter the
+     * vertex names: {@code filter} is {@code (ImageFilter.ordinal() + 1, textureWidth, textureHeight,
+     * texelsPerPixel)}, and 0 in its first component leaves the bilinear read alone, which is what every image
+     * drawn without a filter carries.
+     *
+     * <p>{@link ImageFilter#NEAREST} and {@link ImageFilter#SHARP_BILINEAR} move the one read: to the nearest texel's
+     * centre, or, for sharp bilinear, to where a blend across a texel edge happens only within the screen pixel that
+     * edge falls in. The filters with a kernel read a square of texels and weigh each by
+     * {@link ImageFilter#kernel}, with premultiplied alpha. Enlarging, the taps are the texels themselves, so it is
+     * exact. Shrinking, they spread to the texels-per-pixel and each reads a bilinear blend, which keeps the tap
+     * count fixed and is an approximation: a resample on the CPU is exact.
+     */
+    private static Statement filtered(Texture image, Expr uv, Expr filter, LocalVar texel) {
+        Expr mode = x(filter);
+        Expr sizeW = y(filter);
+        Expr sizeH = z(filter);
+        Expr rate = w(filter);
+        // Texel coordinates, with whole numbers at texel centres.
+        Expr px = sub(mul(x(uv), sizeW), f(0.5));
+        Expr py = sub(mul(y(uv), sizeH), f(0.5));
+
+        // Nearest: the centre of the texel the point falls in.
+        Expr nearestUv = new Expr.VectorConstruct(V2, List.of(
+                div(add(Expr.MathCall.floor(add(px, f(0.5))), f(0.5)), sizeW),
+                div(add(Expr.MathCall.floor(add(py, f(0.5))), f(0.5)), sizeH)));
+        Region nearest = Region.of(new Statement.Assign(texel, new Expr.SampleTexture(image, nearestUv)));
+
+        // Sharp bilinear: within a texel, flat; across its edge, a blend one screen pixel wide.
+        Expr pixelsPerTexel = Expr.MathCall.max(f(1.0), div(f(1.0), Expr.MathCall.max(rate, f(1e-6))));
+        Expr sharpUv = new Expr.VectorConstruct(V2, List.of(
+                div(sharpAxis(px, pixelsPerTexel), sizeW), div(sharpAxis(py, pixelsPerTexel), sizeH)));
+        Region sharp = Region.of(new Statement.Assign(texel, new Expr.SampleTexture(image, sharpUv)));
+
+        // Mode is ordinal + 1, so a filter is "mode < ordinal + 1.5" once the ones before it have been passed. The
+        // kernels' chain is built from the last back, each one's else the chain of those after it.
+        ImageFilter[] filters = ImageFilter.values();
+        Region kernels = Region.of();
+        for (int i = filters.length - 1; i >= 0; i--) {
+            ImageFilter fl = filters[i];
+            if (fl.taps() < 2) {
+                break;   // bilinear and before: the special paths below, and the sampler's own
+            }
+            kernels = Region.of(new Statement.If(lt(mode, fl.ordinal() + 1.5),
+                    kernelTaps(image, fl, px, py, sizeW, sizeH, rate, texel), kernels));
+        }
+        return new Statement.If(lt(mode, 0.5), Region.of(), Region.of(
+                new Statement.If(lt(mode, ImageFilter.NEAREST.ordinal() + 1.5), nearest, Region.of(
+                        new Statement.If(lt(mode, ImageFilter.SHARP_BILINEAR.ordinal() + 1.5), sharp, Region.of(
+                                new Statement.If(lt(mode, ImageFilter.BILINEAR.ordinal() + 1.5), Region.of(),
+                                        kernels)))))));
+    }
+
+    /** One axis of sharp bilinear: texel coordinate {@code p} to the coordinate to read, before dividing by size. */
+    private static Expr sharpAxis(Expr p, Expr pixelsPerTexel) {
+        Expr i = Expr.MathCall.floor(p);
+        Expr fr = sub(p, i);
+        Expr g = Expr.MathCall.clamp(add(mul(sub(fr, f(0.5)), pixelsPerTexel), f(0.5)), f(0.0), f(1.0));
+        return add(add(i, g), f(0.5));
+    }
+
+    /**
+     * {@code filter}'s loop of taps: {@code 2 * taps} a side. Enlarging (fewer than one texel a pixel) they are the
+     * texels round the point, weighed by their distance; shrinking they spread {@code rate} texels apart about it.
+     */
+    private static Region kernelTaps(Texture image, ImageFilter filter, Expr px, Expr py, Expr sizeW, Expr sizeH,
+                                     Expr rate, LocalVar texel) {
+        String n = filter.name().toLowerCase(java.util.Locale.ROOT);
+        int r = filter.taps();
+        LocalVar scale = new LocalVar(n + "Scale", F32);
+        LocalVar spread = new LocalVar(n + "Spread", F32);
+        LocalVar baseX = new LocalVar(n + "BaseX", F32);
+        LocalVar baseY = new LocalVar(n + "BaseY", F32);
+        LocalVar jy = new LocalVar(n + "Jy", F32);
+        LocalVar jx = new LocalVar(n + "Jx", F32);
+        LocalVar posX = new LocalVar(n + "PosX", F32);
+        LocalVar posY = new LocalVar(n + "PosY", F32);
+        LocalVar wy = new LocalVar(n + "Wy", F32);
+        LocalVar wt = new LocalVar(n + "W", F32);
+        LocalVar tap = new LocalVar(n + "Tap", V4);
+        LocalVar accR = new LocalVar(n + "R", F32);
+        LocalVar accG = new LocalVar(n + "G", F32);
+        LocalVar accB = new LocalVar(n + "B", F32);
+        LocalVar accA = new LocalVar(n + "A", F32);
+        LocalVar sum = new LocalVar(n + "Sum", F32);
+
+        Expr s = new Expr.Read(scale);
+        Expr d = new Expr.Read(spread);
+        // Enlarging, spread 1 and the taps on texel centres; shrinking, spread s about the point itself.
+        Expr shrinking = Expr.MathCall.step(f(1.0001), s);
+        Expr bx = Expr.MathCall.mix(add(Expr.MathCall.floor(px), f(1 - r)), sub(px, mul(f(r - 0.5), s)), shrinking);
+        Expr by = Expr.MathCall.mix(add(Expr.MathCall.floor(py), f(1 - r)), sub(py, mul(f(r - 0.5), s)), shrinking);
+
+        Expr tapUv = new Expr.VectorConstruct(V2, List.of(
+                div(add(new Expr.Read(posX), f(0.5)), sizeW), div(add(new Expr.Read(posY), f(0.5)), sizeH)));
+        Expr t = new Expr.Read(tap);
+        Expr weight = new Expr.Read(wt);
+        Expr wa = mul(weight, w(t));
+        Region inner = Region.of(
+                new Statement.Assign(posX, add(new Expr.Read(baseX), mul(new Expr.Read(jx), d))),
+                new Statement.Assign(wt, mul(new Expr.Read(wy), filter.kernel(div(sub(new Expr.Read(posX), px), s)))),
+                new Statement.Assign(tap, new Expr.SampleTexture(image, tapUv)),
+                new Statement.Assign(accR, add(new Expr.Read(accR), mul(wa, x(t)))),
+                new Statement.Assign(accG, add(new Expr.Read(accG), mul(wa, y(t)))),
+                new Statement.Assign(accB, add(new Expr.Read(accB), mul(wa, z(t)))),
+                new Statement.Assign(accA, add(new Expr.Read(accA), wa)),
+                new Statement.Assign(sum, add(new Expr.Read(sum), weight)),
+                new Statement.Assign(jx, add(new Expr.Read(jx), f(1.0))));
+        Region outer = Region.of(
+                new Statement.Assign(posY, add(new Expr.Read(baseY), mul(new Expr.Read(jy), d))),
+                new Statement.Assign(wy, filter.kernel(div(sub(new Expr.Read(posY), py), s))),
+                new Statement.Assign(jx, f(0.0)),
+                new Statement.While(lt(new Expr.Read(jx), 2.0 * r), inner),
+                new Statement.Assign(jy, add(new Expr.Read(jy), f(1.0))));
+
+        // Out of premultiplied: colour over coverage, coverage over the weights. Lobes below zero can overshoot.
+        Expr a = new Expr.Read(accA);
+        Expr cover = Expr.MathCall.max(a, f(1e-6));
+        Expr result = new Expr.VectorConstruct(V4, List.of(
+                Expr.MathCall.clamp(div(new Expr.Read(accR), cover), f(0.0), f(1.0)),
+                Expr.MathCall.clamp(div(new Expr.Read(accG), cover), f(0.0), f(1.0)),
+                Expr.MathCall.clamp(div(new Expr.Read(accB), cover), f(0.0), f(1.0)),
+                Expr.MathCall.clamp(div(a, Expr.MathCall.max(new Expr.Read(sum), f(1e-6))), f(0.0), f(1.0))));
+        return Region.of(
+                new Statement.DeclareVar(scale, Expr.MathCall.max(f(1.0), rate)),
+                new Statement.DeclareVar(spread, Expr.MathCall.mix(f(1.0), s, shrinking)),
+                new Statement.DeclareVar(baseX, bx),
+                new Statement.DeclareVar(baseY, by),
+                new Statement.DeclareVar(posX, f(0.0)),
+                new Statement.DeclareVar(posY, f(0.0)),
+                new Statement.DeclareVar(wy, f(0.0)),
+                new Statement.DeclareVar(wt, f(0.0)),
+                new Statement.DeclareVar(tap, new Expr.VectorConstruct(V4, List.of(f(0.0), f(0.0), f(0.0), f(0.0)))),
+                new Statement.DeclareVar(accR, f(0.0)),
+                new Statement.DeclareVar(accG, f(0.0)),
+                new Statement.DeclareVar(accB, f(0.0)),
+                new Statement.DeclareVar(accA, f(0.0)),
+                new Statement.DeclareVar(sum, f(0.0)),
+                new Statement.DeclareVar(jx, f(0.0)),
+                new Statement.DeclareVar(jy, f(0.0)),
+                new Statement.While(lt(new Expr.Read(jy), 2.0 * r), outer),
+                new Statement.Assign(texel, result));
     }
 
     /**

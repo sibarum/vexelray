@@ -40,9 +40,17 @@ public final class Canvas {
     private float clipR;
     private final java.util.ArrayDeque<float[]> clipStack = new java.util.ArrayDeque<>();
 
-    // Current translation (px) added to every vertex, and the stack for push/pop. Default = none.
+    // Current transform applied to every vertex, x' = xx*x + xy*y + tx and y' = yx*x + yy*y + ty, and the stack
+    // pushTranslate, pushRotate and pushScale share. Offsets, turns and uniform scales only, so it is always a
+    // similarity: scale is its one factor, and every SDF evaluated in a shape's own frame stays exact once that frame
+    // is scaled by it too (see push). Default = identity.
+    private float xx = 1f;
+    private float xy;
+    private float yx;
+    private float yy = 1f;
     private float tx;
     private float ty;
+    private float scale = 1f;
     private final java.util.ArrayDeque<float[]> translateStack = new java.util.ArrayDeque<>();
 
     // --- image runs (see #runs) ---
@@ -50,6 +58,11 @@ public final class Canvas {
     private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
     private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
+    // The filter of the image being pushed, as the loc8 attribute carries it; mode 0 (bilinear) for everything else.
+    private int filterMode;
+    private float filterW;
+    private float filterH;
+    private float filterRate;
     private int runFace = NO_FACE;       // the face whose atlas the open run's glyphs index, or NO_FACE before one
     private int activeFace = NO_FACE;    // the face of the glyph being pushed; NO_FACE for everything else
     private int lastFace;                // the face of the last run closed: what a run without glyphs inherits
@@ -114,7 +127,7 @@ public final class Canvas {
         return this;
     }
 
-    /** Reset the draw list for a new frame and clear any clip or translation. */
+    /** Reset the draw list for a new frame and clear any clip, translation or turn. */
     public Canvas begin() {
         count = 0;
         clipStack.clear();
@@ -124,8 +137,13 @@ public final class Canvas {
         clipHh = NO_CLIP;
         clipR = 0f;
         translateStack.clear();
+        xx = 1f;
+        xy = 0f;
+        yx = 0f;
+        yy = 1f;
         tx = 0f;
         ty = 0f;
+        scale = 1f;
         runs.clear();
         runImage = null;
         runStartVertex = 0;
@@ -152,20 +170,99 @@ public final class Canvas {
      * again. Here it is one addition per vertex, and nothing above needs to know.
      */
     public Canvas pushTranslate(float dx, float dy) {
-        translateStack.push(new float[]{tx, ty});
-        tx += dx;
-        ty += dy;
+        save();
+        // In the current frame: under a rotation the offset runs along the turned axes, as a turned child's would.
+        tx += xx * dx + xy * dy;
+        ty += yx * dx + yy * dy;
         return this;
     }
 
-    /** Pop the most recent {@link #pushTranslate}. */
+    /** Pop the most recent {@link #pushTranslate}, {@link #pushRotate} or {@link #pushScale}: they share one stack. */
     public Canvas popTranslate() {
         if (!translateStack.isEmpty()) {
             float[] t = translateStack.pop();
-            tx = t[0];
-            ty = t[1];
+            xx = t[0];
+            xy = t[1];
+            yx = t[2];
+            yy = t[3];
+            tx = t[4];
+            ty = t[5];
+            scale = t[6];
         }
         return this;
+    }
+
+    /**
+     * Draw everything that follows {@code factor} times as large about {@code (px, py)}, a point in the coordinates
+     * draws are given in, cumulatively with every transform already pushed. Balance with {@link #popScale()}; it
+     * shares {@link #pushTranslate}'s stack.
+     *
+     * <p>Exact, not a magnified picture of the small one: each primitive's own frame is scaled with it — a shape's
+     * box-local pixels, half-extents, radii, blur and stroke width, a glyph's screen px range — so an edge is
+     * antialiased over one screen pixel at any size, and text stays sharp. A clip does not scale, as it does not
+     * turn: it is a box on the screen.
+     */
+    public Canvas pushScale(float factor, float px, float py) {
+        save();
+        float ox = px - factor * px;
+        float oy = py - factor * py;
+        tx += xx * ox + xy * oy;
+        ty += yx * ox + yy * oy;
+        xx *= factor;
+        xy *= factor;
+        yx *= factor;
+        yy *= factor;
+        scale *= factor;
+        return this;
+    }
+
+    /** Pop the most recent {@link #pushScale}, or whichever transform was pushed last: they share one stack. */
+    public Canvas popScale() {
+        return popTranslate();
+    }
+
+    /**
+     * Turn every subsequent draw {@code radians} clockwise (Y is down) about {@code (px, py)}, a point in the
+     * coordinates draws are given in, cumulatively with every translation and turn already pushed. Balance with
+     * {@link #popRotate()}; it shares {@link #pushTranslate}'s stack, so the two pop in the reverse of the order
+     * they were pushed.
+     *
+     * <p>Applied where a vertex is written, like a translation, and exact for the same reason: every primitive here
+     * is a quad whose coverage is evaluated in its own frame — a shape's SDF in box-local pixels, a glyph's in its
+     * atlas, an image's in its UV — so turning the four corners turns the shape, antialiasing and rounded corners
+     * included.
+     *
+     * <p><b>A clip does not turn.</b> {@link #pushClip} takes screen coordinates and means them, so it stays an
+     * upright box on the screen: a turned draw is clipped where it lands by the clips around it, and a clip pushed
+     * under a turn is upright too. Content that turns should not clip inside itself.
+     */
+    public Canvas pushRotate(float radians, float px, float py) {
+        save();
+        float cos = (float) Math.cos(radians);
+        float sin = (float) Math.sin(radians);
+        // The current transform, then T(p) R T(-p): R about p, in the frame draws are given in.
+        float ox = px - (cos * px - sin * py);
+        float oy = py - (sin * px + cos * py);
+        tx += xx * ox + xy * oy;
+        ty += yx * ox + yy * oy;
+        float nxx = xx * cos + xy * sin;
+        float nxy = xy * cos - xx * sin;
+        float nyx = yx * cos + yy * sin;
+        float nyy = yy * cos - yx * sin;
+        xx = nxx;
+        xy = nxy;
+        yx = nyx;
+        yy = nyy;
+        return this;
+    }
+
+    /** Pop the most recent {@link #pushRotate} or {@link #pushTranslate}: the two share one stack. */
+    public Canvas popRotate() {
+        return popTranslate();
+    }
+
+    private void save() {
+        translateStack.push(new float[]{xx, xy, yx, yy, tx, ty, scale});
     }
 
     /**
@@ -418,6 +515,31 @@ public final class Canvas {
         return this;
     }
 
+    /**
+     * One region of the texture across a rounded box at {@code alpha}, scaled by {@code filter} rather than the
+     * sampler's own bilinear: for a picture, where how it is scaled is a choice. The shader needs the texture's
+     * size in texels, {@code textureWidth x textureHeight}, to find its pixels, and works out from the box how many
+     * of them fall across a screen pixel, turns and scales included. {@link ImageFilter#BILINEAR} costs what the
+     * other overloads do; the filters that are a loop of taps cost a loop of taps.
+     */
+    public Canvas image(float x, float y, float w, float h, float radiusTop, float radiusBottom, ImageHandle image,
+                        float u0, float v0, float u1, float v1, float alpha, ImageFilter filter,
+                        int textureWidth, int textureHeight) {
+        if (filter == null || filter == ImageFilter.BILINEAR || textureWidth <= 0 || textureHeight <= 0 || w <= 0f) {
+            return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1, alpha);
+        }
+        filterMode = filter.ordinal() + 1;
+        filterW = textureWidth;
+        filterH = textureHeight;
+        // Texels across one screen pixel: across the box, at the scale it is drawn at. A turn changes neither.
+        filterRate = Math.abs(u1 - u0) * textureWidth / (w * scale);
+        try {
+            return image(x, y, w, h, radiusTop, radiusBottom, image, u0, v0, u1, v1, alpha);
+        } finally {
+            filterMode = 0;
+        }
+    }
+
     /** {@link #image(float, float, float, float, float, ImageHandle, float, float, float, float, Color)} showing the
      *  whole texture, square-cornered and untinted — what a viewport wants. */
     public Canvas image(float x, float y, float w, float h, ImageHandle image) {
@@ -582,10 +704,28 @@ public final class Canvas {
         if (activeFace != NO_FACE) {
             runFace = activeFace;
         }
-        // The one place the current translation is applied. Both the position and the screen coordinate the clip
-        // is evaluated at move together, so a translated vertex is clipped where it lands.
-        sx += tx;
-        sy += ty;
+        // The one place the current transform is applied. Both the position and the screen coordinate the clip
+        // is evaluated at move together, so a moved or turned vertex is clipped where it lands.
+        float ux = sx;
+        sx = xx * ux + xy * sy + tx;
+        sy = yx * ux + yy * sy + ty;
+        if (scale != 1f) {
+            // Scaled, the primitive's own frame is in screen px again only once its lengths are scaled with it.
+            if (kind == CanvasVertex.KIND_GLYPH) {
+                s0 *= scale;   // screenPxRange
+            } else {
+                localX *= scale;
+                localY *= scale;
+                s0 *= scale;
+                s1 *= scale;
+                s2 *= scale;
+                s3 *= scale;
+                if (kind == CanvasVertex.KIND_SHADOW || kind == CanvasVertex.KIND_STROKE
+                        || kind == CanvasVertex.KIND_LIT) {
+                    u *= scale;   // blur, stroke width, bevel: px
+                }
+            }
+        }
         int o = count;
         data[o] = ndcX(sx);
         data[o + 1] = ndcY(sy);
@@ -610,6 +750,11 @@ public final class Canvas {
         data[o + 20] = sy;
         data[o + 21] = clipR;
         data[o + 22] = AA;
+        boolean filtered = kind == CanvasVertex.KIND_IMAGE && filterMode != 0;
+        data[o + 23] = filtered ? filterMode : 0f;
+        data[o + 24] = filtered ? filterW : 0f;
+        data[o + 25] = filtered ? filterH : 0f;
+        data[o + 26] = filtered ? filterRate : 0f;
         count = o + CanvasVertex.FLOATS_PER_VERTEX;
     }
 

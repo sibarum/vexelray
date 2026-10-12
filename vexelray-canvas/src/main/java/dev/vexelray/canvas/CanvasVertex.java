@@ -18,6 +18,9 @@ import java.util.List;
  *                     glyphs: (screenPxRange, 0, 0, 0)
  *   loc6 clipBox vec4 clip rounded-rect in px: (centerX, centerY, halfW, halfH)
  *   loc7 clipRs  vec4 (screenX, screenY, clipCornerRadius, clipAa) px — the fragment's own screen pos + clip edge
+ *   loc8 filter  vec4 images: (filter, textureWidth, textureHeight, texelsPerPixel) — how the image is scaled,
+ *                     {@link ImageFilter#ordinal()} + 1, and 0 for the sampler's own bilinear, which is also what
+ *                     every other kind carries (all zero)
  * </pre>
  *
  * <p>The clip is applied as coverage, not a scissor or discard: the fragment evaluates the rounded-rect SDF of the
@@ -64,7 +67,7 @@ public final class CanvasVertex {
      */
     public static final int KIND_IMAGE = 5;
 
-    public static final int FLOATS_PER_VERTEX = 23;
+    public static final int FLOATS_PER_VERTEX = 27;
     public static final int STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
 
     public static final int OFF_POS = 0;
@@ -75,6 +78,7 @@ public final class CanvasVertex {
     public static final int OFF_SHAPE = 44;
     public static final int OFF_CLIPBOX = 60;
     public static final int OFF_CLIPRS = 76;
+    public static final int OFF_FILTER = 92;
 
     /** Shader attribute locations, shared by {@link CanvasShader} (author side) and the pipeline (bind side). */
     public static final int LOC_POS = 0;
@@ -85,6 +89,7 @@ public final class CanvasVertex {
     public static final int LOC_SHAPE = 5;
     public static final int LOC_CLIPBOX = 6;
     public static final int LOC_CLIPRS = 7;
+    public static final int LOC_FILTER = 8;
 
     /** One vertex attribute: shader {@code location}, component count (1/2/4), and byte {@code offset}. */
     public record Attr(int location, int components, int offset) {
@@ -99,5 +104,6 @@ public final class CanvasVertex {
             new Attr(LOC_LOCAL, 2, OFF_LOCAL),
             new Attr(LOC_SHAPE, 4, OFF_SHAPE),
             new Attr(LOC_CLIPBOX, 4, OFF_CLIPBOX),
-            new Attr(LOC_CLIPRS, 4, OFF_CLIPRS));
+            new Attr(LOC_CLIPRS, 4, OFF_CLIPRS),
+            new Attr(LOC_FILTER, 4, OFF_FILTER));
 }

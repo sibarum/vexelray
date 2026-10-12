@@ -57,8 +57,11 @@ import java.util.List;
  */
 public final class PanelShader {
 
-    /** The view-space position varying, at the first location past the {@code CanvasVertex} attributes. */
-    public static final int LOC_VIEW = 8;
+    /**
+     * The view-space position varying, at the first location past the {@code CanvasVertex} attributes: counted from
+     * them, so an attribute added there moves this rather than landing on it.
+     */
+    public static final int LOC_VIEW = dev.vexelray.canvas.CanvasVertex.ATTRIBUTES.size();
 
     /** Push-constant members, in order: origin, right, down, focal, aspect, halfHeightPx. */
     public static final int PUSH_FLOATS = 12;
