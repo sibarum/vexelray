@@ -7,7 +7,7 @@
     <parent>
         <groupId>dev.vexelray</groupId>
         <artifactId>vexelray</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.1.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -78,12 +78,12 @@
         <dependency>
             <groupId>sibarum.tactroller</groupId>
             <artifactId>tactroller-api</artifactId>
-            <version>1.0-SNAPSHOT</version>
+            <version>1.0</version>
         </dependency>
         <dependency>
             <groupId>sibarum.tactroller</groupId>
             <artifactId>tactroller-atchung</artifactId>
-            <version>1.0-SNAPSHOT</version>
+            <version>1.0</version>
         </dependency>
         <dependency>
             <groupId>sibarum.atchung</groupId>
@@ -133,7 +133,7 @@
                 <dependency>
                     <groupId>sibarum.tactroller</groupId>
                     <artifactId>tactroller-windows</artifactId>
-                    <version>1.0-SNAPSHOT</version>
+                    <version>1.0</version>
                     <scope>runtime</scope>
                 </dependency>
             </dependencies>
@@ -150,7 +150,7 @@
                 <dependency>
                     <groupId>sibarum.tactroller</groupId>
                     <artifactId>tactroller-linux</artifactId>
-                    <version>1.0-SNAPSHOT</version>
+                    <version>1.0</version>
                     <scope>runtime</scope>
                 </dependency>
             </dependencies>
@@ -167,7 +167,7 @@
                 <dependency>
                     <groupId>sibarum.tactroller</groupId>
                     <artifactId>tactroller-macos</artifactId>
-                    <version>1.0-SNAPSHOT</version>
+                    <version>1.0</version>
                     <scope>runtime</scope>
                 </dependency>
             </dependencies>
