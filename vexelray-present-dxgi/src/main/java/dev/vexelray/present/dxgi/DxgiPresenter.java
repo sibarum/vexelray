@@ -42,8 +42,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * {@link WindowedPresenter} would — into the image {@link DxgiSwapchain} shares with D3D12, and the D3D12 queue
  * copies the window-sized corner of it into the back buffer and presents.
  *
- * <p>A resize is {@link DxgiSwapchain#resize} — {@code ResizeBuffers} — and, only when the window outgrows the
- * shared image, a new image and the one framebuffer over it. No Vulkan swapchain exists, so nothing here can be
+ * <p>A resize is {@link DxgiSwapchain#resize}, which reallocates nothing until the window outgrows the back buffers,
+ * and, only when the window outgrows the shared image, a new image and the one framebuffer over it. No Vulkan swapchain exists, so nothing here can be
  * out of date, and every frame of a drag is drawn at the window's size.
  *
  * <p>Ordering, all on the shared timeline: the Vulkan submit waits for the last copy out of the image
@@ -161,7 +161,7 @@ final class DxgiPresenter implements WindowPresenter {
         this.pInFlight = arena.allocate(JAVA_LONG);
         pInFlight.set(JAVA_LONG, 0, inFlight);
         this.swapchain = DxgiSwapchain.create(context, MemorySegment.ofAddress(window.osHandle()),
-                extentWidth, extentHeight, true);
+                extentWidth, extentHeight);
         rebuildFramebuffer();
     }
 
