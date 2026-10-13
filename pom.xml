@@ -6,7 +6,7 @@
 
     <groupId>dev.vexelray</groupId>
     <artifactId>vexelray</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>VexelRay</name>
@@ -88,7 +88,7 @@
 
         <!-- SupirVast: shader IR, SPIR-V lowering, pipeline specs, Fullscreen primitive, model loaders.
              Installed to the local .m2 by `mvn install` in the sibling supirvast repo. -->
-        <supirvast.version>0.2.0</supirvast.version>
+        <supirvast.version>0.2.1-SNAPSHOT</supirvast.version>
         <!-- Pure-Java vector/matrix math for camera/MVP transforms (no natives). -->
         <joml.version>1.10.7</joml.version>
         <junit.version>5.11.4</junit.version>
@@ -106,7 +106,7 @@
             <dependency>
                 <groupId>sibarum.atchung</groupId>
                 <artifactId>atchung-probe</artifactId>
-                <version>1.0</version>
+                <version>1.1-SNAPSHOT</version>
             </dependency>
             <!-- The event bus. Managed here because vexelray-engine-api publishes onto it: the engine is a
                  publisher of frame, resize, device-lost and technique-lifecycle events, which is what gives
@@ -114,7 +114,7 @@
             <dependency>
                 <groupId>sibarum.atchung</groupId>
                 <artifactId>atchung-core</artifactId>
-                <version>1.0</version>
+                <version>1.1-SNAPSHOT</version>
             </dependency>
             <!-- Reactor-internal modules: children reference these without a version. -->
             <dependency>
