@@ -63,12 +63,12 @@ public final class Canvas {
     private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
     private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
-    // What the loc8 attribute carries for the image or field being pushed: an image's filter, a field's scale and effects.
-    // Zero for everything else, which an image reads as the sampler's own bilinear.
+    // What the filter attribute carries for the image or field being pushed: an image's filter, a field's scale. Zero
+    // for everything else, which an image reads as the sampler's own bilinear.
     private boolean stamping;
     private final float[] stamp = new float[4];
     // Looks: the table elements drawn with a look name it in, the record the element being drawn names (or none,
-    // for a kind's own), and the frame's records of elements with per-instance values.
+    // for a primitive's own), and the frame's records of elements with per-instance values.
     private static final int NO_ELEMENT = -1;
     private LookTable lookTable;
     private int element = NO_ELEMENT;
@@ -77,7 +77,7 @@ public final class Canvas {
     /** Added to an image's filter mode in loc8.x when its texture is linear light (sRGB, decoded by the sampler). */
     public static final int LINEAR_FLAG = 100;
     // What an image quad is drawn as: a picture, or a distance field (see field()).
-    private int imageKind = CanvasVertex.KIND_IMAGE;
+    private CoreLooks.Primitive imagePrimitive = CoreLooks.Primitive.IMAGE;
     private int runFace = NO_FACE;       // the face whose atlas the open run's glyphs index, or NO_FACE before one
     private int activeFace = NO_FACE;    // the face of the glyph being pushed; NO_FACE for everything else
     private int lastFace;                // the face of the last run closed: what a run without glyphs inherits
@@ -214,9 +214,10 @@ public final class Canvas {
      * shares {@link #pushTranslate}'s stack.
      *
      * <p>Exact, not a magnified picture of the small one: each primitive's own frame is scaled with it — a shape's
-     * box-local pixels, half-extents, radii, blur and stroke width, a glyph's screen px range — so an edge is
+     * box-local pixels, half-extents and radii, a field's range, a glyph's screen px range — so an edge is
      * antialiased over one screen pixel at any size, and text stays sharp. A clip does not scale, as it does not
-     * turn: it is a box on the screen.
+     * turn: it is a box on the screen. Nor, yet, do a look's lengths (a border's width, a glow's radius): they are in
+     * the tables, and stay what they were given as.
      */
     public Canvas pushScale(float factor, float px, float py) {
         save();
@@ -330,8 +331,8 @@ public final class Canvas {
 
     /**
      * The look table this canvas's elements name their looks in: the one whose shader draws it, shared by every
-     * canvas drawing with that shader. Needed only to draw with a {@link Look}; the canvas's own kinds name records
-     * every table has.
+     * canvas drawing with that shader. Needed only to draw with a {@link Look}; the canvas's own primitives name
+     * records every table has.
      */
     public Canvas looks(LookTable table) {
         this.lookTable = table;
@@ -359,43 +360,26 @@ public final class Canvas {
         element = elementFor(look, instance);
         try {
             shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
-                    clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_SHAPE, 0f, 0f,
-                    PAD + lookTable.reach(look, instance, halfW, halfH), color);
+                    clampRadius(radiusBottom, halfW, halfH), 0f, PAD + lookTable.reach(look, instance, halfW, halfH),
+                    color);
         } finally {
             element = NO_ELEMENT;
         }
         return this;
     }
 
-    /** Whether this canvas has a look table, and so can draw a {@link Look}. */
-    public boolean drawsLooks() {
-        return lookTable != null;
-    }
-
     /**
      * A distance field from one cell of a texture, drawn by {@code look} (whose source reads the field: the core
      * {@code field}, or a morph between two cells of the same texture). As
-     * {@link #field(float, float, float, float, ImageHandle, float, float, float, float, int, int, float, FieldStyle,
-     * float)} in every other way; its effects are the look's, so it has none of a {@link FieldStyle}'s, and the margin
-     * is what room they have.
+     * {@link #field(float, float, float, float, ImageHandle, float, float, float, float, int, int, float, Color)} in
+     * every other way; its effects (a glow, a shadow, an outline) are the look's, and the margin is what room they
+     * have.
      */
     public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
                         int side, int spread, float margin, Color tint, Look look, float... instance) {
-        return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, FieldStyle.plain(tint), 1f, look,
-                instance);
-    }
-
-    /**
-     * As the look-taking field above, keeping a {@link FieldStyle}'s glow and shadow too: they ride in the vertex as
-     * they always have, for the core {@code fieldFill} painter, so a look that ends in it draws the field exactly as
-     * the style alone would, and its modifiers and other painters add to that.
-     */
-    public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
-                        int side, int spread, float margin, FieldStyle style, float alpha, Look look,
-                        float... instance) {
         element = elementFor(look, instance);
         try {
-            return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, style, alpha);
+            return field(x, y, w, h, field, u0, v0, u1, v1, side, spread, margin, tint);
         } finally {
             element = NO_ELEMENT;
         }
@@ -431,7 +415,7 @@ public final class Canvas {
                             + " floats of per-instance records in one frame",
                     "a frame's records do not fit the tables buffer, so those elements are drawn as a plain fill; "
                             + "draw fewer elements with per-instance values, or raise Composition.RECORDS_CAPACITY");
-            return CoreLooks.record(CanvasVertex.KIND_SHAPE);
+            return CoreLooks.record(CoreLooks.Primitive.BOX);
         }
         int offset = Composition.RECORDS_BASE + recordCount;
         if (need > records.length) {
@@ -455,7 +439,7 @@ public final class Canvas {
         float halfW = w * 0.5f;
         float halfH = h * 0.5f;
         shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
-                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_SHAPE, 0f, 0f, PAD, color);
+                clampRadius(radiusBottom, halfW, halfH), 0f, PAD, color);
         return this;
     }
 
@@ -479,63 +463,6 @@ public final class Canvas {
         float cy = (y0 + y1) * 0.5f;
         float angle = (float) Math.atan2(dy, dx);
         shape(cx, cy, len * 0.5f, half, half, angle, color);
-        return this;
-    }
-
-    // --- effects (still the same SDF; a different transfer function over its distance) ------------------------
-
-    /**
-     * A soft shadow (or, tinted, an outer glow) for the rounded rect {@code (x,y,w,h,radius)}: coverage falls off
-     * over {@code blur} px either side of the edge. Draw it before the shape it sits under, offset as desired.
-     */
-    public Canvas shadowRoundRect(float x, float y, float w, float h, float radius, float blur, Color color) {
-        return shadowRoundRect(x, y, w, h, radius, radius, blur, color);
-    }
-
-    /** As {@link #shadowRoundRect} with independent top and bottom corner radii. */
-    public Canvas shadowRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
-                                  float blur, Color color) {
-        float halfW = w * 0.5f;
-        float halfH = h * 0.5f;
-        float b = Math.max(blur, AA);
-        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
-                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_SHADOW, b, 0f, b + 1f, color);
-        return this;
-    }
-
-    /** A crisp {@code width}-px outline hugging the inside edge of the rounded rect — no fill-then-inset. */
-    public Canvas strokeRoundRect(float x, float y, float w, float h, float radius, float width, Color color) {
-        return strokeRoundRect(x, y, w, h, radius, radius, width, color);
-    }
-
-    /** As {@link #strokeRoundRect} with independent top and bottom corner radii. */
-    public Canvas strokeRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
-                                  float width, Color color) {
-        float halfW = w * 0.5f;
-        float halfH = h * 0.5f;
-        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
-                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_STROKE, Math.max(width, 0f), 0f,
-                PAD, color);
-        return this;
-    }
-
-    /**
-     * A filled rounded rect lit from the top-left: an embossed edge highlight/shade confined to {@code bevel} px
-     * inside the edge, plus a vertical luminance gradient of amplitude {@code gradient} (0 = flat, ~0.06 subtle).
-     */
-    public Canvas litRoundRect(float x, float y, float w, float h, float radius, float bevel, float gradient,
-                               Color color) {
-        return litRoundRect(x, y, w, h, radius, radius, bevel, gradient, color);
-    }
-
-    /** As {@link #litRoundRect} with independent top and bottom corner radii. */
-    public Canvas litRoundRect(float x, float y, float w, float h, float radiusTop, float radiusBottom,
-                               float bevel, float gradient, Color color) {
-        float halfW = w * 0.5f;
-        float halfH = h * 0.5f;
-        shape(x + halfW, y + halfH, halfW, halfH, clampRadius(radiusTop, halfW, halfH),
-                clampRadius(radiusBottom, halfW, halfH), 0f, CanvasVertex.KIND_LIT, Math.max(bevel, 1f), gradient,
-                PAD, color);
         return this;
     }
 
@@ -695,26 +622,27 @@ public final class Canvas {
      * A shape drawn from a signed distance field: {@code field} is a texture {@code side} texels square holding
      * {@code 0.5 + d / (2 * spread)}, {@code d} the distance to the edge in texels and positive inside, with the shape's
      * square in the middle and {@code margin} of its size round it on each side. {@code (x, y, w, h)} is the shape's
-     * square; the quad reaches out over the margin, where a glow or a shadow is drawn.
+     * square; the quad reaches out over the margin, where a look's glow or shadow is drawn.
      *
      * <p>Cut at the edge in the shader, one screen pixel soft whatever its size, so one small texture is a shape at any
-     * size, in any colour, turned and scaled too. {@code style} gives the colour and the effects, in px at the size it is
-     * drawn here (a scale pushed around it scales them with the shape).
+     * size, in any colour, turned and scaled too. Drawn alone in {@code tint}; its effects are a look's (see
+     * {@link #field(float, float, float, float, ImageHandle, float, float, float, float, int, int, float, Color, Look,
+     * float...)}).
      */
     public Canvas field(float x, float y, float w, float h, ImageHandle field, int side, int spread, float margin,
-                        FieldStyle style, float alpha) {
-        return field(x, y, w, h, field, 0f, 0f, 1f, 1f, side, spread, margin, style, alpha);
+                        Color tint) {
+        return field(x, y, w, h, field, 0f, 0f, 1f, 1f, side, spread, margin, tint);
     }
 
     /**
-     * {@link #field(float, float, float, float, ImageHandle, int, int, float, FieldStyle, float)} from one cell of a
-     * texture: {@code (u0, v0)-(u1, v1)} is the cell, margin and all, and {@code side} its texels across. An atlas of
-     * fields (the icon set's) is one texture and one run, however many shapes it draws. Each cell's margin reads as
-     * far outside at its border, so the filtering at a cell's edge and a shadow sampled up into the cell above both
-     * read nothing from a neighbour.
+     * {@link #field(float, float, float, float, ImageHandle, int, int, float, Color)} from one cell of a texture:
+     * {@code (u0, v0)-(u1, v1)} is the cell, margin and all, and {@code side} its texels across. An atlas of fields
+     * (the icon set's) is one texture and one run, however many shapes it draws. Each cell's margin reads as far
+     * outside at its border, so the filtering at a cell's edge and a shadow sampled up into the cell above both read
+     * nothing from a neighbour.
      */
     public Canvas field(float x, float y, float w, float h, ImageHandle field, float u0, float v0, float u1, float v1,
-                        int side, int spread, float margin, FieldStyle style, float alpha) {
+                        int side, int spread, float margin, Color tint) {
         if (w <= 0f || h <= 0f || side <= 0) {
             return this;
         }
@@ -723,17 +651,15 @@ public final class Canvas {
         // Screen px across one unit of the texel value, and texture coordinate across one screen px.
         stamp[0] = 2f * Math.max(1, spread) * ew * scale / side;
         stamp[1] = Math.abs(v1 - v0) / (eh * scale);
-        stamp[2] = style.glow() * scale;
-        stamp[3] = style.shadow() * scale;
+        stamp[2] = 0f;
+        stamp[3] = 0f;
         stamping = true;
-        imageKind = CanvasVertex.KIND_FIELD;
-        Color tint = style.tint();
+        imagePrimitive = CoreLooks.Primitive.FIELD;
         try {
-            return image(x - w * margin, y - h * margin, ew, eh, 0f, 0f, field, u0, v0, u1, v1,
-                    alpha >= 1f ? tint : Color.withAlpha(tint, tint.a() * alpha));
+            return image(x - w * margin, y - h * margin, ew, eh, 0f, 0f, field, u0, v0, u1, v1, tint);
         } finally {
             stamping = false;
-            imageKind = CanvasVertex.KIND_IMAGE;
+            imagePrimitive = CoreLooks.Primitive.IMAGE;
         }
     }
 
@@ -809,38 +735,37 @@ public final class Canvas {
 
     // --- internals ------------------------------------------------------------------------------------------
 
-    /** Emit a shape quad centred at {@code (cx,cy)} px, rotated by {@code angle}, with the given SDF parameters. */
+    /** Emit a box quad centred at {@code (cx,cy)} px, rotated by {@code angle}, with the given SDF parameters. */
     private void shape(float cx, float cy, float halfW, float halfH, float radius, float angle, Color color) {
-        shape(cx, cy, halfW, halfH, radius, radius, angle, CanvasVertex.KIND_SHAPE, 0f, 0f, PAD, color);
+        shape(cx, cy, halfW, halfH, radius, radius, angle, PAD, color);
     }
 
     /**
-     * Emit a shape-family quad: {@code kind} picks the transfer function, {@code (u,v)} are its parameters (rides
-     * in the atlas-UV slot, which shapes never sample), {@code pad} is how far past the box the quad must extend
-     * so the effect's falloff isn't clipped (a shadow reaches {@code blur} px outside; a fill only {@code AA}).
-     * Corner radii are per vertical half: {@code rTop} above the centre line, {@code rBottom} below.
+     * Emit a box quad: {@code pad} is how far past the box the quad must extend so what its look draws there isn't
+     * clipped (a fill only {@code AA}; a look's shadow or glow its reach). Corner radii are per vertical half:
+     * {@code rTop} above the centre line, {@code rBottom} below. Drawn by the element's look, or as a plain fill.
      */
     private void shape(float cx, float cy, float halfW, float halfH, float rTop, float rBottom, float angle,
-                       int kind, float u, float v, float pad, Color color) {
+                       float pad, Color color) {
         float ex = halfW + pad;
         float ey = halfH + pad;
         float cos = (float) Math.cos(angle);
         float sin = (float) Math.sin(angle);
+        int record = element == NO_ELEMENT ? CoreLooks.record(CoreLooks.Primitive.BOX) : element;
         // Box-local corners (unrotated); the SDF is evaluated in this frame. Screen positions are rotated.
-        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
-        shapeVert(cx, cy, cos, sin, ex, -ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
-        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
-        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
-        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
-        shapeVert(cx, cy, cos, sin, -ex, ey, halfW, halfH, rTop, rBottom, kind, u, v, color);
+        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, rTop, rBottom, record, color);
+        shapeVert(cx, cy, cos, sin, ex, -ey, halfW, halfH, rTop, rBottom, record, color);
+        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, rTop, rBottom, record, color);
+        shapeVert(cx, cy, cos, sin, -ex, -ey, halfW, halfH, rTop, rBottom, record, color);
+        shapeVert(cx, cy, cos, sin, ex, ey, halfW, halfH, rTop, rBottom, record, color);
+        shapeVert(cx, cy, cos, sin, -ex, ey, halfW, halfH, rTop, rBottom, record, color);
     }
 
     private void shapeVert(float cx, float cy, float cos, float sin, float lx, float ly,
-                           float halfW, float halfH, float rTop, float rBottom, int kind, float u, float v,
-                           Color c) {
+                           float halfW, float halfH, float rTop, float rBottom, int record, Color c) {
         float sx = cx + lx * cos - ly * sin;
         float sy = cy + lx * sin + ly * cos;
-        push(sx, sy, c, u, v, kind, lx, ly, halfW, halfH, rTop, rBottom);
+        push(sx, sy, c, 0f, 0f, record, false, lx, ly, halfW, halfH, rTop, rBottom);
     }
 
     /**
@@ -870,16 +795,18 @@ public final class Canvas {
 
     private void imageVert(float cx, float cy, float lx, float ly, float u, float v,
                            float halfW, float halfH, float rTop, float rBottom, Color c) {
-        push(cx + lx, cy + ly, c, u, v, imageKind, lx, ly, halfW, halfH, rTop, rBottom);
+        int record = element == NO_ELEMENT ? CoreLooks.record(imagePrimitive) : element;
+        push(cx + lx, cy + ly, c, u, v, record, false, lx, ly, halfW, halfH, rTop, rBottom);
     }
 
     private void glyphVert(float sx, float sy, float u, float v, float screenPxRange, Color c) {
-        push(sx, sy, c, u, v, CanvasVertex.KIND_GLYPH, 0f, 0f, screenPxRange, 0f, 0f, 0f);
+        push(sx, sy, c, u, v, CoreLooks.record(CoreLooks.Primitive.TEXT), true, 0f, 0f, screenPxRange, 0f, 0f, 0f);
     }
 
     /** Append one vertex. {@code sx,sy} is the screen-pixel position (converted to NDC for {@code pos}, and kept
-     *  raw for the clip SDF); the current clip box is stamped in from {@link #pushClip}. */
-    private void push(float sx, float sy, Color c, float u, float v, int kind,
+     *  raw for the clip SDF); the current clip box is stamped in from {@link #pushClip}. {@code record} is the
+     *  element's record in the shadelet tables; {@code glyph} says the shape parameters are a glyph's, not a box's. */
+    private void push(float sx, float sy, Color c, float u, float v, int record, boolean glyph,
                       float localX, float localY, float s0, float s1, float s2, float s3) {
         ensure(CanvasVertex.FLOATS_PER_VERTEX);
         // The one place a run boundary can open. Every vertex belongs to the image that was active when it was
@@ -908,7 +835,7 @@ public final class Canvas {
         sy = yx * ux + yy * sy + ty;
         if (scale != 1f) {
             // Scaled, the primitive's own frame is in screen px again only once its lengths are scaled with it.
-            if (kind == CanvasVertex.KIND_GLYPH) {
+            if (glyph) {
                 s0 *= scale;   // screenPxRange
             } else {
                 localX *= scale;
@@ -917,10 +844,6 @@ public final class Canvas {
                 s1 *= scale;
                 s2 *= scale;
                 s3 *= scale;
-                if (kind == CanvasVertex.KIND_SHADOW || kind == CanvasVertex.KIND_STROKE
-                        || kind == CanvasVertex.KIND_LIT) {
-                    u *= scale;   // blur, stroke width, bevel: px
-                }
             }
         }
         int o = count;
@@ -932,27 +855,26 @@ public final class Canvas {
         data[o + 5] = c.a();
         data[o + 6] = u;
         data[o + 7] = v;
-        data[o + 8] = kind;
-        data[o + 9] = localX;
-        data[o + 10] = localY;
-        data[o + 11] = s0;
-        data[o + 12] = s1;
-        data[o + 13] = s2;
-        data[o + 14] = s3;
-        data[o + 15] = clipCx;
-        data[o + 16] = clipCy;
-        data[o + 17] = clipHw;
-        data[o + 18] = clipHh;
-        data[o + 19] = sx;
-        data[o + 20] = sy;
-        data[o + 21] = clipR;
-        data[o + 22] = AA;
-        boolean stamped = stamping && (kind == CanvasVertex.KIND_IMAGE || kind == CanvasVertex.KIND_FIELD);
-        data[o + 23] = stamped ? stamp[0] : 0f;
-        data[o + 24] = stamped ? stamp[1] : 0f;
-        data[o + 25] = stamped ? stamp[2] : 0f;
-        data[o + 26] = stamped ? stamp[3] : 0f;
-        data[o + 27] = element == NO_ELEMENT ? CoreLooks.record(kind) : element;
+        data[o + 8] = localX;
+        data[o + 9] = localY;
+        data[o + 10] = s0;
+        data[o + 11] = s1;
+        data[o + 12] = s2;
+        data[o + 13] = s3;
+        data[o + 14] = clipCx;
+        data[o + 15] = clipCy;
+        data[o + 16] = clipHw;
+        data[o + 17] = clipHh;
+        data[o + 18] = sx;
+        data[o + 19] = sy;
+        data[o + 20] = clipR;
+        data[o + 21] = AA;
+        // Only an image or a field stamps, and only while it is being emitted.
+        data[o + 22] = stamping ? stamp[0] : 0f;
+        data[o + 23] = stamping ? stamp[1] : 0f;
+        data[o + 24] = stamping ? stamp[2] : 0f;
+        data[o + 25] = stamping ? stamp[3] : 0f;
+        data[o + 26] = record;
         count = o + CanvasVertex.FLOATS_PER_VERTEX;
     }
 

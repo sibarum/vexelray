@@ -14,14 +14,16 @@ class CanvasTransformTest {
 
     private static final float EPS = 1e-3f;
     private static final int F = CanvasVertex.FLOATS_PER_VERTEX;
+    private static final int SCREEN = CanvasVertex.OFF_CLIPRS / Float.BYTES;
+    private static final int LOCAL = CanvasVertex.OFF_LOCAL / Float.BYTES;
 
     /** Each vertex's screen position, as the clip SDF reads it. */
     private static float[] screen(Canvas c) {
         float[] v = c.toVertexArray();
         float[] out = new float[2 * c.vertexCount()];
         for (int i = 0; i < c.vertexCount(); i++) {
-            out[2 * i] = v[i * F + 19];
-            out[2 * i + 1] = v[i * F + 20];
+            out[2 * i] = v[i * F + SCREEN];
+            out[2 * i + 1] = v[i * F + SCREEN + 1];
         }
         return out;
     }
@@ -31,8 +33,8 @@ class CanvasTransformTest {
         float[] v = c.toVertexArray();
         float[] out = new float[2 * c.vertexCount()];
         for (int i = 0; i < c.vertexCount(); i++) {
-            out[2 * i] = v[i * F + 9];
-            out[2 * i + 1] = v[i * F + 10];
+            out[2 * i] = v[i * F + LOCAL];
+            out[2 * i + 1] = v[i * F + LOCAL + 1];
         }
         return out;
     }

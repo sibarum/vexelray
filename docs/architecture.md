@@ -223,7 +223,7 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 
 Working end to end on Windows/RTX: window + swapchain, offscreen readback, runtime-composed SDF shaders, a live
 first-person raymarched scene with WASD, CPU/GPU render==sim collision, and SDF "sprites" (round-extruded 2D
-glyphs). The `Canvas` now also **samples**: `CanvasVertex.KIND_IMAGE` is the same analytic rounded box run
+glyphs). The `Canvas` now also **samples**: an image is the same analytic rounded box run
 through a texel read from a second descriptor set, and a frame divides into `Canvas.Run` spans that say where
 the binding layer rebinds it. A canvas that drew no images is still exactly one run and one draw. With
 `SampledColorTarget.renderInto` able to host a fullscreen march (optional vertex buffer, fragment push

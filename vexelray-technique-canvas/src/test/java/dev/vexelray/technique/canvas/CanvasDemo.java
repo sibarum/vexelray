@@ -175,7 +175,7 @@ public final class CanvasDemo {
 
     /**
      * The shadelet tables the canvas fragment stage reads at set 2, uploaded once; the caller closes them. Shared by
-     * the demos in this package, which draw only the canvas's own kinds and so write no records above the looks;
+     * the demos in this package, which draw only the canvas's own primitives and so write no records above the looks;
      * sized as every host's is all the same.
      */
     static StorageBuffer canvasTables(VulkanDevice device) {

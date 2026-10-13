@@ -2,6 +2,8 @@ package dev.vexelray.technique.panel;
 
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.Color;
+import dev.vexelray.canvas.shadelet.CoreShadelets;
+import dev.vexelray.canvas.shadelet.Look;
 import dev.vexelray.engine.RenderPipeline;
 import dev.vexelray.engine.VexelEngine;
 import dev.vexelray.runtime.EngineConfig;
@@ -99,7 +101,7 @@ public final class PanelDemo {
     /** One frame of content, rebuilt every frame because the canvas is immediate-mode. */
     private static void draw(Canvas c, TextLayout tl, double seconds) {
         c.fillRoundRect(0, 0, CANVAS_W, CANVAS_H, 28, PANEL_BG);
-        c.strokeRoundRect(0, 0, CANVAS_W, CANVAS_H, 28, 3, new Color(1, 1, 1, 0.18f));
+        outline(c, 0, 0, CANVAS_W, CANVAS_H, 28, 3, new Color(1, 1, 1, 0.18f));
 
         c.text(tl, "VEXELRAY", 48, 40, TextLayout.TextStyle.of(46f), INK);
         c.text(tl, "a canvas standing in the scene", 48, 100, TextLayout.TextStyle.of(24f), DIM);
@@ -118,11 +120,20 @@ public final class PanelDemo {
         c.fillCircle(560, 250, 70, new Color(1, 1, 1, 0.06f));
         double sweep = 0.5 + 0.5 * Math.sin(seconds * 1.1);
         c.fillRoundRect(48, 360, (float) (sweep * (CANVAS_W - 96)), 26, 13, GOOD);
-        c.strokeRoundRect(48, 360, CANVAS_W - 96, 26, 13, 2, new Color(1, 1, 1, 0.22f));
+        outline(c, 48, 360, CANVAS_W - 96, 26, 13, 2, new Color(1, 1, 1, 0.22f));
 
         c.text(tl, String.format("t = %5.1f s", seconds), 48, 420, TextLayout.TextStyle.of(22f), DIM);
         c.text(tl, "no texture, no resolution, no fixed pixel width", 48, 456,
                 TextLayout.TextStyle.of(22f), ACCENT);
+    }
+
+    /** An outline: the box, and a ring hugging the inside of its edge, its colour and width the element's own. */
+    private static final Look OUTLINE = Look.of(Look.Use.of(CoreShadelets.BOX.name()),
+            Look.Use.of(CoreShadelets.NODE_STROKE.name()));
+
+    /** A {@code width}-unit ring inside the edge of the rounded box {@code (x, y, w, h, r)}. */
+    private static void outline(Canvas c, float x, float y, float w, float h, float r, float width, Color color) {
+        c.box(x, y, w, h, r, color, OUTLINE, color.r(), color.g(), color.b(), color.a(), width);
     }
 
     private static void run(int frames) throws IOException {

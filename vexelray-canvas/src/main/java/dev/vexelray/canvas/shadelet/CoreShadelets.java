@@ -35,12 +35,10 @@ import static dev.vexelray.ir.Ir.z;
 
 /**
  * The core set: what every canvas shader is composed of, whatever an application adds. Three sources (the analytic
- * box, MSDF text, a distance field) and the painters that draw what the canvas drew before shadelets, one for each of
- * its kinds, with the same arithmetic.
- *
- * <p>They read their parameters from the vertex, as the kinds did ({@link Fragment#uv()} carries a shadow's blur, a
- * stroke's width, a bevel; {@link Fragment#filter()} an image's filter and a field's effects), so none has a style:
- * the core set draws a canvas exactly as before, and effects with styles are added on top of it.
+ * box, MSDF text, a distance field); the painters of the canvas's own primitives, which read what they need from the
+ * vertex ({@link Fragment#filter()} carries an image's filter and a field's scale) and so have no style; a glow and a
+ * drop shadow of any source; and the node painters a GUI draws a box's border, fill and shadow with, every value its
+ * element's own. Effects an application chooses are added on top of it.
  */
 public final class CoreShadelets {
 
@@ -109,56 +107,15 @@ public final class CoreShadelets {
         }
     };
 
-    // --- painters: the canvas's kinds ---
+    // --- painters: the canvas's own primitives ---
 
-    /** A flat fill in the vertex colour, one pixel soft: the shape kind. */
+    /** A flat fill in the vertex colour, one pixel soft: a box. */
     public static final Shadelet.Painter FILL = painter("fill", (c, layer) -> {
         Expr cov = sub(f(1.0), Expr.MathCall.smoothstep(neg(c.fragment().aa()), c.fragment().aa(), sdf(c)));
         return assign(layer, tinted(c.fragment(), cov));
     });
 
-    /** A soft falloff over {@code uv.x} px about the edge, squared so it eases out: the shadow kind. */
-    public static final Shadelet.Painter SHADOW = painter("shadow", (c, layer) -> {
-        Expr blur = max(x(c.fragment().uv()), c.fragment().aa());
-        Expr s = sub(f(1.0), Expr.MathCall.smoothstep(neg(blur), blur, sdf(c)));
-        return assign(layer, tinted(c.fragment(), mul(s, s)));
-    });
-
-    /** A ring {@code uv.x} wide inside the edge: the stroke kind. */
-    public static final Shadelet.Painter STROKE = painter("stroke", (c, layer) -> {
-        Expr halfW = mul(x(c.fragment().uv()), f(0.5));
-        Expr ring = sub(abs(add(sdf(c), halfW)), halfW);
-        Expr cov = sub(f(1.0), Expr.MathCall.smoothstep(neg(c.fragment().aa()), c.fragment().aa(), ring));
-        return assign(layer, tinted(c.fragment(), cov));
-    });
-
-    /**
-     * The fill, lit: the distance a step toward a fixed top-left light, against the distance here, is +1 on edges that
-     * face it and -1 on those that do not (a distance is 1-Lipschitz); confined to {@code uv.x} px inside the edge, with
-     * {@code uv.y} a vertical gradient. The lit kind.
-     */
-    public static final Shadelet.Painter EMBOSS = painter("emboss", (c, layer) -> {
-        Fragment fr = c.fragment();
-        Expr uv = fr.uv();
-        Expr sdf = sdf(c);
-        Expr bevel = max(x(uv), f(1.0));
-        Expr lightOff = f(1.5);
-        Expr shift = mul(lightOff, f(0.7071));
-        Expr sdf2 = neg(x(c.distanceAt(v2(neg(shift), neg(shift)))));
-        Expr light = div(sub(sdf2, sdf), lightOff);
-        Expr band = clamp(add(f(1.0), div(sdf, bevel)), f(0.0), f(1.0));
-        Expr grad = y(uv);
-        Expr halfY = y(fr.shape());
-        Expr gy = clamp(div(add(y(fr.local()), halfY), mul(f(2.0), max(halfY, f(1.0)))), f(0.0), f(1.0));
-        Expr brightness = mul(add(f(1.0), mul(mul(light, band), f(0.45))), mix(add(f(1.0), grad), sub(f(1.0), grad), gy));
-        Expr rgb = xyz(fr.color());
-        Expr lit = clamp(v3(mul(x(rgb), brightness), mul(y(rgb), brightness), mul(z(rgb), brightness)),
-                v3(f(0.0), f(0.0), f(0.0)), v3(f(1.0), f(1.0), f(1.0)));
-        Expr cov = sub(f(1.0), Expr.MathCall.smoothstep(neg(fr.aa()), fr.aa(), sdf));
-        return assign(layer, Layers.premultiplied(lit, mul(w(fr.color()), cov)));
-    });
-
-    /** Text: coverage linear across a pixel of the median's distance, rescaled to screen pixels. The glyph kind. */
+    /** Text: coverage linear across a pixel of the median's distance, rescaled to screen pixels. A glyph. */
     public static final Shadelet.Painter GLYPH = painter("glyph", (c, layer) -> {
         Expr px = mul(x(c.distance()), c.fragment().pixelsPerUnit());
         Expr cov = clamp(add(px, f(0.5)), f(0.0), f(1.0));
@@ -166,8 +123,8 @@ public final class CoreShadelets {
     });
 
     /**
-     * The box's coverage times a texel of the image, through the image's filter, tinted by the vertex colour: the
-     * image kind. Straight-alpha texel: its alpha multiplies coverage, so a transparent picture and a rounded corner
+     * The box's coverage times a texel of the image, through the image's filter, tinted by the vertex colour: an
+     * image. Straight-alpha texel: its alpha multiplies coverage, so a transparent picture and a rounded corner
      * compose rather than fight.
      */
     public static final Shadelet.Painter IMAGE_FILL = new Shadelet.Painter() {
@@ -192,34 +149,14 @@ public final class CoreShadelets {
     };
 
     /**
-     * A field's shape in the tint, cut one pixel soft; a glow of the tint falling off past the edge; a shadow sampled
-     * further up the field, so it falls below. Composited front to back within this one layer, and the whole cut by the
-     * quad's own box. The field kind, with {@code filter = (range, v per unit, glow, shadow)}.
+     * A field's shape in the tint, cut one pixel soft, and cut by the quad's own box. A field, with
+     * {@code filter = (range, v per unit, 0, 0)}; its glow and its shadow are {@link #GLOW} and {@link #DROP_SHADOW}.
      */
     public static final Shadelet.Painter FIELD_FILL = painter("fieldFill", (c, layer) -> {
         Fragment fr = c.fragment();
-        Expr fx = fr.filter();
-        Expr fieldD = x(c.distance());
-        Expr fieldCov = clamp(add(fieldD, f(0.5)), f(0.0), f(1.0));
-        Expr glowR = z(fx);
-        // The field holds distance only so far out, and the quad ends there: the glow reaches nothing by then, or the
-        // quad's edge would show as a square.
-        Expr reach = y(c.distance());
-        Expr fade = Expr.MathCall.smoothstep(neg(mul(f(0.95), reach)), neg(mul(f(0.35), reach)), fieldD);
-        Expr glow = mul(mul(mul(f(0.6), Expr.MathCall.exp(div(neg(max(neg(fieldD), f(0.0))),
-                max(glowR, f(1e-3))))), step(f(1e-3), glowR)), fade);
-        Expr shadowPx = w(fx);
-        Expr shadowD = x(c.distanceAt(v2(f(0.0), neg(mul(f(0.6), shadowPx)))));
-        Expr shade = mul(mul(f(0.45), Expr.MathCall.smoothstep(neg(shadowPx), mul(f(0.25), shadowPx), shadowD)),
-                step(f(1e-3), shadowPx));
-        Expr aGlow = mul(glow, sub(f(1.0), fieldCov));
-        Expr aShade = mul(shade, max(sub(sub(f(1.0), fieldCov), aGlow), f(0.0)));
-        Expr aField = add(add(fieldCov, aGlow), aShade);
-        Expr lit = div(add(fieldCov, aGlow), max(aField, f(1e-6)));   // the tint's share; the rest is shadow
+        Expr fieldCov = clamp(add(x(c.distance()), f(0.5)), f(0.0), f(1.0));
         Expr boxCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(fr.aa()), fr.aa(), boxSdf(fr, fr.local())));
-        Expr rgb = xyz(fr.color());
-        return assign(layer, Layers.premultiplied(v3(mul(x(rgb), lit), mul(y(rgb), lit), mul(z(rgb), lit)),
-                mul(mul(w(fr.color()), boxCov), aField)));
+        return assign(layer, Layers.premultiplied(xyz(fr.color()), mul(mul(w(fr.color()), boxCov), fieldCov)));
     });
 
     /** {@link #GLOW}'s style: how far the halo reaches, in canvas units, as the falloff's length. */
@@ -228,7 +165,7 @@ public final class CoreShadelets {
     /**
      * A halo of the vertex colour falling off past the edge, {@code radius} its falloff's length; behind what is in
      * front of it, as a painter after the fill. Of any source: on a field it fades out before the field's own reach,
-     * where the quad ends, so the quad's edge never shows as a square. The field kind's glow, as a painter of its own.
+     * where the quad ends, so the quad's edge never shows as a square.
      */
     public static final Shadelet.Painter GLOW = new Shadelet.Painter() {
         @Override
@@ -264,8 +201,7 @@ public final class CoreShadelets {
 
     /**
      * A soft dark shadow of the shape, sampled {@code 0.6 * softness} further up so it falls below: the distance looked
-     * for elsewhere, which is what a painter that needs more than the distance here does. The field kind's shadow, as
-     * a painter of its own, and of any source.
+     * for elsewhere, which is what a painter that needs more than the distance here does. Of any source.
      */
     public static final Shadelet.Painter DROP_SHADOW = new Shadelet.Painter() {
         @Override
@@ -304,7 +240,7 @@ public final class CoreShadelets {
     public static final StyleLayout NODE_STROKE_STYLE = StyleLayout.of(
             StyleLayout.perInstance("colour", 4), StyleLayout.perInstance("width", 1));
 
-    /** A ring {@code width} wide hugging the inside of the box's edge: a node's border, the stroke kind's arithmetic. */
+    /** A ring {@code width} wide hugging the inside of the box's edge: a node's border. */
     public static final Shadelet.Painter NODE_STROKE = new Shadelet.Painter() {
         @Override
         public String name() {
@@ -329,7 +265,7 @@ public final class CoreShadelets {
     /** {@link #NODE_FILL}'s style: the fill's colour. */
     public static final StyleLayout NODE_FILL_STYLE = StyleLayout.of(StyleLayout.perInstance("colour", 4));
 
-    /** The box filled, one pixel soft: a node's background, the shape kind's arithmetic. */
+    /** The box filled, one pixel soft: a node's background. */
     public static final Shadelet.Painter NODE_FILL = new Shadelet.Painter() {
         @Override
         public String name() {
@@ -353,7 +289,7 @@ public final class CoreShadelets {
     public static final StyleLayout NODE_LIT_STYLE = StyleLayout.of(StyleLayout.perInstance("colour", 4),
             StyleLayout.perInstance("bevel", 1), StyleLayout.perInstance("gradient", 1));
 
-    /** The box filled and lit: a node's background under a lit theme, the lit kind's arithmetic. */
+    /** The box filled and lit: a node's background under a lit theme. */
     public static final Shadelet.Painter NODE_LIT = new Shadelet.Painter() {
         @Override
         public String name() {
@@ -395,7 +331,7 @@ public final class CoreShadelets {
 
     /**
      * The box's soft shadow, dropped half its {@code lift} and blurred over the whole of it, squared so it eases out: a
-     * node's elevation, the shadow kind's arithmetic, read from the distance half a lift above.
+     * node's elevation, read from the distance half a lift above.
      */
     public static final Shadelet.Painter NODE_SHADOW = new Shadelet.Painter() {
         @Override
@@ -408,7 +344,7 @@ public final class CoreShadelets {
             return NODE_SHADOW_STYLE;
         }
 
-        /** The drop, the blur past it, and the pixel the shadow kind's quad was padded by. */
+        /** The drop, the blur past it, and a pixel more, as a quad is padded by. */
         @Override
         public float reach(float[] shared, float[] instance, float halfW, float halfH) {
             float lift = Math.max(0f, instance[4]);
@@ -427,7 +363,7 @@ public final class CoreShadelets {
 
     /** The core set, in the order that fixes their ids: an application's composition starts with these. */
     public static final List<Shadelet> ALL = List.of(BOX, MSDF, FIELD,
-            FILL, GLYPH, SHADOW, STROKE, EMBOSS, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
+            FILL, GLYPH, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
             NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW);
 
     /** The core composition. */
@@ -456,7 +392,7 @@ public final class CoreShadelets {
         return sub(add(outside, inside), r);
     }
 
-    /** The distance at the fragment, positive outside, as the kinds' arithmetic is written. */
+    /** The distance at the fragment, positive outside, as the box painters' arithmetic is written. */
     private static Expr sdf(PaintContext c) {
         return neg(x(c.distance()));
     }

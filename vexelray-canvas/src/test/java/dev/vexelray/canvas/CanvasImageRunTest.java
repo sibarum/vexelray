@@ -1,5 +1,6 @@
 package dev.vexelray.canvas;
 
+import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.target.ImageHandle;
 import org.junit.jupiter.api.Test;
 
@@ -136,14 +137,14 @@ class CanvasImageRunTest {
     }
 
     @Test
-    void imageVerticesCarryTheImageKind() {
+    void imageVerticesNameTheImageRecord() {
         Canvas canvas = new Canvas(200, 100).begin();
         canvas.image(0, 0, 10, 10, image());
 
         float[] v = canvas.toVertexArray();
         for (int i = 0; i < canvas.vertexCount(); i++) {
-            assertEquals(CanvasVertex.KIND_IMAGE,
-                    (int) v[i * CanvasVertex.FLOATS_PER_VERTEX + CanvasVertex.OFF_KIND / Float.BYTES]);
+            assertEquals(CoreLooks.record(CoreLooks.Primitive.IMAGE),
+                    (int) v[i * CanvasVertex.FLOATS_PER_VERTEX + CanvasVertex.OFF_ELEMENT / Float.BYTES]);
         }
     }
 

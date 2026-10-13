@@ -10,7 +10,7 @@ import dev.supirvast.vastir.core.Expr;
  * from its own varyings, so one shadelet runs in every host that places a canvas, on the screen or on a plane.
  *
  * @param color         the vertex colour, straight alpha
- * @param uv            the vertex UV: an atlas or image coordinate, or, for a box, its effect's parameters
+ * @param uv            the vertex UV: an atlas, image or field coordinate; unused for a box
  * @param local         the fragment in the element's own frame, in canvas units, centred on it
  * @param shape         the element's shape parameters: a box's {@code (halfW, halfH, rTop, rBottom)}
  * @param filter        the image filter, or a field's {@code (range, v per px, glow, shadow)}

@@ -1,5 +1,6 @@
 package dev.vexelray.canvas;
 
+import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.target.ImageHandle;
 import dev.vexelray.text.FontSet;
 import dev.vexelray.text.TextLayout;
@@ -22,8 +23,8 @@ class CanvasFaceRunTest {
     private static final TextLayout MONO = new TextLayout(SET.layout(SET.face("mono")));
     private static final TextLayout.TextStyle STYLE = TextLayout.TextStyle.of(20f);
 
-    /** Where a vertex keeps its kind and, for a glyph, its screenPxRange (CanvasVertex OFF_KIND, OFF_SHAPE). */
-    private static final int KIND = CanvasVertex.OFF_KIND / Float.BYTES;
+    /** Where a vertex keeps its element record and, for a glyph, its screenPxRange. */
+    private static final int ELEMENT = CanvasVertex.OFF_ELEMENT / Float.BYTES;
     private static final int RANGE = CanvasVertex.OFF_SHAPE / Float.BYTES;
 
     @Test
@@ -42,7 +43,7 @@ class CanvasFaceRunTest {
         float[] v = canvas.toVertexArray();
         int glyphs = 0;
         for (int o = 0; o < v.length; o += CanvasVertex.FLOATS_PER_VERTEX) {
-            if (v[o + KIND] == CanvasVertex.KIND_GLYPH) {
+            if (v[o + ELEMENT] == CoreLooks.record(CoreLooks.Primitive.TEXT)) {
                 assertEquals(SANS.screenPxRange(STYLE.pixelSize()), v[o + RANGE]);
                 glyphs++;
             }

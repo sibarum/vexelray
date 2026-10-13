@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * That the canvas uber-shader is well-typed {@code core} IR, by lowering it.
  *
  * <p>It is the largest hand-authored shader in the repository after Fathom's — shapes, MSDF text and sampled
- * images in one fragment, selected by a vertex kind — and until this test existed nothing in the build lowered
+ * images in one fragment, selected by each element's look — and until this test existed nothing in the build lowered
  * it. Both stages were composed only inside {@code main} methods: the window demos in this module, which a
  * developer runs and CI does not. So the one shader most likely to accumulate a type fault was the one shader
  * no automated thing ever looked at.

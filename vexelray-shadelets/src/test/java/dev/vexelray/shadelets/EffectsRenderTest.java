@@ -2,7 +2,6 @@ package dev.vexelray.shadelets;
 
 import dev.vexelray.canvas.Canvas;
 import dev.vexelray.canvas.Color;
-import dev.vexelray.canvas.FieldStyle;
 import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.canvas.shadelet.CoreShadelets;
@@ -199,9 +198,9 @@ class EffectsRenderTest {
         float margin = (float) SPREAD / INNER;
 
         byte[] cellA = gpu.draw(table, canvas(table).field(x, y, size, size, handle, 0f, 0f, 0.5f, 0.5f, SIDE,
-                SPREAD, margin, FieldStyle.plain(tint), 1f), atlas);
+                SPREAD, margin, tint), atlas);
         byte[] cellB = gpu.draw(table, canvas(table).field(x, y, size, size, handle, 0.5f, 0f, 1f, 0.5f, SIDE,
-                SPREAD, margin, FieldStyle.plain(tint), 1f), atlas);
+                SPREAD, margin, tint), atlas);
         byte[] at0 = gpu.draw(table, canvas(table).field(x, y, size, size, handle, 0f, 0f, 0.5f, 0.5f, SIDE,
                 SPREAD, margin, tint, fieldMorph, instance(new FieldMorphStyle(0.5f, 0f, 0f))), atlas);
         byte[] at1 = gpu.draw(table, canvas(table).field(x, y, size, size, handle, 0f, 0f, 0.5f, 0.5f, SIDE,

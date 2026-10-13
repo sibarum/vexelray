@@ -8,7 +8,6 @@ import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.lower.CoreToSpirv;
 import dev.supirvast.vastir.tools.NativeTools;
 import dev.vexelray.canvas.CanvasShader;
-import dev.vexelray.canvas.CanvasVertex;
 import dev.vexelray.diag.Diagnostics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -134,23 +133,23 @@ class CompositionTest {
     }
 
     @Test
-    void theKindsRecordsAreTheSameInEveryTable() {
+    void thePrimitivesRecordsAreTheSameInEveryTable() {
         Manifest withMore = CoreShadelets.composition().with(List.of(WEIGHT, OUTLINE)).manifest();
         LookTable table = CoreLooks.table(withMore);
         float[] t = table.floats();
-        for (int kind = 0; kind <= CanvasVertex.KIND_FIELD; kind++) {
-            int record = CoreLooks.record(kind);
+        for (CoreLooks.Primitive primitive : CoreLooks.Primitive.values()) {
+            int record = CoreLooks.record(primitive);
             int look = (int) t[record];
-            assertEquals(CoreLooks.forKind(kind).source().shadelet(),
-                    nameOf(withMore, Manifest.Role.SOURCE, (int) t[look]), "kind " + kind);
+            assertEquals(primitive.look().source().shadelet(),
+                    nameOf(withMore, Manifest.Role.SOURCE, (int) t[look]), primitive.name());
         }
     }
 
     @Test
     void aCompositionThatDoesNotStartWithTheCoreSetIsRefusedATable() {
-        Manifest reordered = Composition.of(List.of(CoreShadelets.FIELD, CoreShadelets.BOX, CoreShadelets.MSDF,
-                CoreShadelets.FILL, CoreShadelets.GLYPH, CoreShadelets.SHADOW, CoreShadelets.STROKE,
-                CoreShadelets.EMBOSS, CoreShadelets.IMAGE_FILL, CoreShadelets.FIELD_FILL)).manifest();
+        List<Shadelet> backwards = new java.util.ArrayList<>(CoreShadelets.ALL);
+        java.util.Collections.reverse(backwards);
+        Manifest reordered = Composition.of(backwards).manifest();
         // The same shadelets, in another order: the looks are as long, but name other ids. Records still line up,
         // so what is refused is a core set that is missing or different in size, not merely reordered.
         assertEquals(CoreLooks.table(reordered).floats().length, CoreLooks.coreTables().length);

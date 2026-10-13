@@ -46,18 +46,18 @@ import static dev.vexelray.ir.Ir.z;
  * The Canvas uber-shader, authored as SupirVast {@code core} IR. One vertex + fragment pair draws every primitive in
  * the {@link CanvasVertex} format. The fragment stage is a {@link Composition} of shadelets: each element names its
  * record in the shadelet tables ({@link CanvasVertex#LOC_ELEMENT}), the record names its look, and the look its
- * source of distance and its painters. The canvas's kinds are the {@link CoreShadelets core set}'s looks:
+ * source of distance and its painters. The canvas's own primitives draw with the {@link CoreShadelets core set}'s
+ * looks ({@link dev.vexelray.canvas.shadelet.CoreLooks.Primitive}):
  *
  * <ul>
- *   <li><b>shape</b>, <b>shadow</b>, <b>stroke</b>, <b>lit</b> — the analytic rounded box of {@code shape}
- *       {@code (halfW, halfH, rTop, rBottom)} at {@code local}, filled, softened, ringed or embossed, with the
- *       effect's parameters in {@code uv}.</li>
- *   <li><b>glyph</b> — MSDF: the median of the atlas texel, by a per-vertex {@code screenPxRange} ({@code shape.x}).
+ *   <li><b>box</b> — the analytic rounded box of {@code shape} {@code (halfW, halfH, rTop, rBottom)} at
+ *       {@code local}, filled. A border, a lit fill or a shadow is a look of node painters over the same box.</li>
+ *   <li><b>text</b> — MSDF: the median of the atlas texel, by a per-vertex {@code screenPxRange} ({@code shape.x}).
  *       Colour and range are per-vertex, so mixed text sizes and colours coexist in one draw.</li>
  *   <li><b>image</b> — the box's coverage multiplied by a texel from the image sampler, tinted by the vertex colour.
  *       This is how a marched viewport, a decoded PNG, or a picture enters the batch: as a rounded box that
  *       samples.</li>
- *   <li><b>field</b> — a distance field in the image sampler, filled with a glow and a shadow.</li>
+ *   <li><b>field</b> — a distance field in the image sampler, filled; a glow or a shadow is a look over it.</li>
  * </ul>
  *
  * Every element is then cut by its clip, a rounded box at the fragment's canvas position.
@@ -74,11 +74,11 @@ public final class CanvasShader {
     /**
      * The image sampler — a <b>second</b> descriptor set, not a second binding in the first.
      *
-     * <p>The atlas is bound once per window and never changes; an image changes per {@link CanvasVertex#KIND_IMAGE}
-     * run. Splitting them by set is what lets the atlas stay bound across every run while set 1 is rebound between
-     * them, instead of allocating a fresh two-binding set per image that re-points at the same atlas each time.
-     * A canvas with no images binds a 1x1 opaque-white placeholder here, so the layout is uniform and the pipeline
-     * never learns whether this frame had images in it.
+     * <p>The atlas is bound once per window and never changes; an image changes per run. Splitting them by set is
+     * what lets the atlas stay bound across every run while set 1 is rebound between them, instead of allocating a
+     * fresh two-binding set per image that re-points at the same atlas each time. A canvas with no images binds a
+     * 1x1 opaque-white placeholder here, so the layout is uniform and the pipeline never learns whether this frame had
+     * images in it.
      */
     public static final int IMAGE_SET = 1;
     public static final int IMAGE_BINDING = 0;
@@ -195,7 +195,7 @@ public final class CanvasShader {
      * {@code Canvas}, but {@code clipRs.xy} is the untouched canvas coordinate the clip SDF is evaluated at. A
      * shader that wants to put this vertex somewhere other than the screen reads that, and ignores {@link #pos}.
      */
-    public record Attributes(InterfaceVar pos, InterfaceVar color, InterfaceVar uv, InterfaceVar kind,
+    public record Attributes(InterfaceVar pos, InterfaceVar color, InterfaceVar uv,
                              InterfaceVar local, InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs,
                              InterfaceVar filter, InterfaceVar element) {
 
@@ -204,7 +204,6 @@ public final class CanvasShader {
                     InterfaceVar.input("inPos", CanvasVertex.LOC_POS, V2),
                     InterfaceVar.input("inColor", CanvasVertex.LOC_COLOR, V4),
                     InterfaceVar.input("inUv", CanvasVertex.LOC_UV, V2),
-                    InterfaceVar.input("inKind", CanvasVertex.LOC_KIND, F32),
                     InterfaceVar.input("inLocal", CanvasVertex.LOC_LOCAL, V2),
                     InterfaceVar.input("inShape", CanvasVertex.LOC_SHAPE, V4),
                     InterfaceVar.input("inClipBox", CanvasVertex.LOC_CLIPBOX, V4),
@@ -228,7 +227,6 @@ public final class CanvasShader {
             return List.of(
                     new Statement.InterfaceWrite(out.color(), new Expr.InterfaceRead(color)),
                     new Statement.InterfaceWrite(out.uv(), new Expr.InterfaceRead(uv)),
-                    new Statement.InterfaceWrite(out.kind(), new Expr.InterfaceRead(kind)),
                     new Statement.InterfaceWrite(out.local(), new Expr.InterfaceRead(local)),
                     new Statement.InterfaceWrite(out.shape(), new Expr.InterfaceRead(shape)),
                     new Statement.InterfaceWrite(out.clipBox(), new Expr.InterfaceRead(clipBox)),
@@ -239,7 +237,7 @@ public final class CanvasShader {
     }
 
     /** The varyings between the two stages: every attribute but the position, which became {@code gl_Position}. */
-    public record Varyings(InterfaceVar color, InterfaceVar uv, InterfaceVar kind, InterfaceVar local,
+    public record Varyings(InterfaceVar color, InterfaceVar uv, InterfaceVar local,
                            InterfaceVar shape, InterfaceVar clipBox, InterfaceVar clipRs, InterfaceVar filter,
                            InterfaceVar element) {
 
@@ -248,7 +246,6 @@ public final class CanvasShader {
             return new Varyings(
                     InterfaceVar.input("vColor", CanvasVertex.LOC_COLOR, V4),
                     InterfaceVar.input("vUv", CanvasVertex.LOC_UV, V2),
-                    InterfaceVar.input("vKind", CanvasVertex.LOC_KIND, F32),
                     InterfaceVar.input("vLocal", CanvasVertex.LOC_LOCAL, V2),
                     InterfaceVar.input("vShape", CanvasVertex.LOC_SHAPE, V4),
                     InterfaceVar.input("vClipBox", CanvasVertex.LOC_CLIPBOX, V4),
@@ -262,7 +259,6 @@ public final class CanvasShader {
             return new Varyings(
                     InterfaceVar.output("vColor", CanvasVertex.LOC_COLOR, V4),
                     InterfaceVar.output("vUv", CanvasVertex.LOC_UV, V2),
-                    InterfaceVar.output("vKind", CanvasVertex.LOC_KIND, F32),
                     InterfaceVar.output("vLocal", CanvasVertex.LOC_LOCAL, V2),
                     InterfaceVar.output("vShape", CanvasVertex.LOC_SHAPE, V4),
                     InterfaceVar.output("vClipBox", CanvasVertex.LOC_CLIPBOX, V4),

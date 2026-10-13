@@ -125,7 +125,7 @@ public final class Effects {
 
     /**
      * {@link FieldMorphStyle}: the element's own cell of a distance field and a second cell of the same texture,
-     * their distances mixed by {@code t}, trusted as far as the field is. The field kind's
+     * their distances mixed by {@code t}, trusted as far as the field is. A field's
      * {@code filter = (range, v per unit, ...)} applies to both, so the two cells are drawn at one size.
      */
     public static final Shadelet.Source FIELD_MORPH = new Shadelet.Source() {
