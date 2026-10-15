@@ -446,6 +446,8 @@ public final class TextLayout {
     /**
      * True if a visual break is permissible between {@code s[i-1]} and {@code s[i]}: whitespace boundaries
      * (primary), and letter↔punctuation / letter↔digit transitions (secondary, for long unbreakable runs).
+     * Never before closing punctuation or after opening punctuation, so a comma does not start a line and a
+     * bracket does not end one: {@code "first,"} and {@code "(note"} stay whole.
      */
     public static boolean canBreakBetween(String s, int i) {
         if (i <= 0 || i >= s.length()) {
@@ -455,6 +457,9 @@ public final class TextLayout {
         char cur = s.charAt(i);
         if (Character.isWhitespace(prev) || Character.isWhitespace(cur)) {
             return true;
+        }
+        if (isClosingPunct(cur) || isOpeningPunct(prev)) {
+            return false;
         }
         boolean prevLetter = Character.isLetter(prev);
         boolean curLetter = Character.isLetter(cur);
@@ -504,6 +509,16 @@ public final class TextLayout {
             last = j;
         }
         return last;
+    }
+
+    /** Punctuation that belongs to the end of what precedes it, so a line must not start with it. */
+    private static boolean isClosingPunct(char c) {
+        return ",.;:!?)]}%'\"’”…".indexOf(c) >= 0;
+    }
+
+    /** Punctuation that belongs to the start of what follows it, so a line must not end with it. */
+    private static boolean isOpeningPunct(char c) {
+        return "([{‘“".indexOf(c) >= 0;
     }
 
     private static boolean isSpaceOrTab(char c) {
