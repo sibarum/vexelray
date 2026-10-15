@@ -94,9 +94,7 @@ class CanvasFaceRunTest {
         canvas.text(MONO, "z", 40, 0, STYLE, Color.WHITE);
         canvas.text(SANS, "a b", 60, 0, STYLE, Color.WHITE);
 
-        int sans = SET.face("sans").id();
-        int mono = SET.face("mono").id();
-        assertEquals(List.of(sans, mono, sans), canvas.runs().stream().map(Canvas.Run::face).toList());
+        assertEquals(List.of(0, 1, 0), canvas.runs().stream().map(Canvas.Run::face).toList());
         int at = 0;
         for (Canvas.Run r : canvas.runs()) {
             assertEquals(at, r.firstVertex());

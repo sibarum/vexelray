@@ -1,16 +1,12 @@
 {
   "version": 1,
-  "bytes": 47606016,
+  "bytes": 15841664,
   "families": [
     {"name": "sans", "fontFamily": "Noto Sans", "faces": [
-      {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "source": "NotoSans-Regular.ttf", "metrics": "sans/regular.json", "pixels": "sans/regular.rgba", "width": 1364, "height": 1394, "glyphs": 3092, "bytes": 7605664},
-      {"style": "italic", "weight": 400, "stretch": 5, "slope": "italic", "source": "NotoSans-Italic.ttf", "metrics": "sans/italic.json", "pixels": "sans/italic.rgba", "width": 1352, "height": 1382, "glyphs": 2960, "bytes": 7473856},
-      {"style": "bold", "weight": 700, "stretch": 5, "slope": "normal", "source": "NotoSans-Bold.ttf", "metrics": "sans/bold.json", "pixels": "sans/bold.rgba", "width": 1388, "height": 1388, "glyphs": 2963, "bytes": 7706176},
-      {"style": "bold-italic", "weight": 700, "stretch": 5, "slope": "italic", "source": "NotoSans-BoldItalic.ttf", "metrics": "sans/bold-italic.json", "pixels": "sans/bold-italic.rgba", "width": 1408, "height": 1408, "glyphs": 2960, "bytes": 7929856}
+      {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "source": "NotoSans-Regular.ttf", "metrics": "sans/regular.json", "pixels": "sans/regular.rgba", "width": 1364, "height": 1394, "glyphs": 3092, "bytes": 7605664}
     ]},
     {"name": "mono", "fontFamily": "Noto Sans Mono", "faces": [
-      {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "source": "NotoSansMono-Regular.ttf", "metrics": "mono/regular.json", "pixels": "mono/regular.rgba", "width": 1420, "height": 1450, "glyphs": 3488, "bytes": 8236000},
-      {"style": "bold", "weight": 700, "stretch": 5, "slope": "normal", "source": "NotoSansMono-Bold.ttf", "metrics": "mono/bold.json", "pixels": "mono/bold.rgba", "width": 1456, "height": 1486, "glyphs": 3488, "bytes": 8654464}
+      {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "source": "NotoSansMono-Regular.ttf", "metrics": "mono/regular.json", "pixels": "mono/regular.rgba", "width": 1420, "height": 1450, "glyphs": 3488, "bytes": 8236000}
     ]}
   ]
 }

@@ -122,12 +122,11 @@
                                 </atlas>
                             </atlases>
                             <!--
-                              The two families, every style whose TTF is in fonts/ (docs/plans/font-families.md in
-                              vexelray-gui): Noto Sans Regular, Italic, Bold and Bold Italic, and Noto Sans Mono Regular
-                              and Bold, from the official notofonts releases (OFL). Every glyph each font maps, one atlas
-                              per face, listed in atlas/fonts.json; the build prints each face's cost and the total. A
-                              TTF of either family dropped into fonts/ is picked up as another face with no change here.
-                              Beside the primary atlas until the runtime moves onto FontSet, then instead of it.
+                              The same two faces as font families (docs/plans/font-families.md in vexelray-gui):
+                              every glyph each font maps, one atlas per face, listed in atlas/fonts.json. A Bold or
+                              Italic TTF of either family dropped into fonts/ is picked up as another face with no
+                              change here. Beside the primary atlas until the runtime moves onto FontSet, then
+                              instead of it.
                             -->
                             <families>
                                 <family>
