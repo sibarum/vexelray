@@ -488,6 +488,11 @@ public final class StreamTexture implements AutoCloseable {
         return slots.length;
     }
 
+    /** Slot {@code i}, whatever its state: for an owner that must know whether a tree still names any of them. */
+    public Slot slot(int i) {
+        return slots[i];
+    }
+
     /** The bytes each slot holds on each side of the copy: every level of one frame. */
     public long frameBytes() {
         return slotBytes;
