@@ -34,13 +34,19 @@ class FontSetTest {
 
     // --- the standard set against the atlas it replaces ----------------------------------------------------
 
+    /** Noto Sans in all four styles and Noto Sans Mono in two; a family's plain face is its regular. */
     @Test
     void theStandardSetIsTheTwoShippedFamilies() {
         FontSet set = FontSet.standard();
         assertEquals(List.of("sans", "mono"), set.families());
+        assertEquals(List.of("regular", "italic", "bold", "bold-italic"),
+                set.family("sans").stream().map(Face::style).toList());
+        assertEquals(List.of("regular", "bold"), set.family("mono").stream().map(Face::style).toList());
         assertEquals("regular", set.face("sans").style());
         assertEquals(0, set.face("sans").id());
-        assertEquals(1, set.face("mono").id());
+        assertEquals("bold-italic", set.face("sans", 700, Slope.ITALIC).style());
+        assertEquals("bold", set.face("mono", 700, Slope.NORMAL).style());
+        assertEquals("regular", set.face("mono").style());
     }
 
     /**
@@ -164,9 +170,15 @@ class FontSetTest {
     void theChainIsTheFamilyThenTheFallbacks() {
         FontSet set = FontSet.standard().withFallback("mono");
         Face sans = set.face("sans");
-        assertEquals(List.of(sans, set.face("mono")), set.chain(sans));
+        List<Face> chain = set.chain(sans);
+        assertEquals(set.family("sans").size() + set.family("mono").size(), chain.size());
+        assertEquals(List.of("sans", "sans", "sans", "sans", "mono", "mono"), chain.stream().map(Face::family).toList(),
+                "every face of the family, then the fallback's");
+        assertSame(sans, chain.get(0));
+        assertSame(set.face("mono"), chain.get(4), "the fallback's face nearest the asked style");
         assertSame(set.face("mono"), set.chain(set.face("mono")).get(0));
-        assertEquals(1, set.chain(set.face("mono")).size(), "a family is not its own fallback");
+        assertEquals(List.of("mono", "mono"), set.chain(set.face("mono")).stream().map(Face::family).toList(),
+                "a family is not its own fallback");
     }
 
     /** Family "ui": regular, italic, bold and bold-italic, where both italics lack 'x'. */
