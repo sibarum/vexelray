@@ -1,6 +1,7 @@
 package dev.vexelray.technique.sdf;
 
 import dev.vexelray.shader.ClipDepth;
+import dev.vexelray.shader.Lens;
 import dev.vexelray.shader.Shading;
 import dev.vexelray.surface.Surface;
 
@@ -70,6 +71,15 @@ public record SdfScene(Surface surface, Shading shading, MarchSettings march,
      */
     public ClipDepth clipDepth() {
         return new ClipDepth(nearPlane, march.farPlane());
+    }
+
+    /**
+     * <b>The lens this scene projects through</b> — {@link #focalLength} and {@link #clipDepth()} as one value,
+     * which is what a rasterising technique sharing this scene's target is constructed with. Derived the same
+     * way {@link #clipDepth()} is, so it cannot disagree with the march about either number.
+     */
+    public Lens lens() {
+        return new Lens(focalLength, clipDepth());
     }
 
     /** A scene with the defaults the demo uses: one key light, a neutral surface, a cool sky, a 1.4 lens. */

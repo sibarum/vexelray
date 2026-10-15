@@ -7,6 +7,7 @@ import dev.vexelray.engine.RenderPipeline;
 import dev.vexelray.engine.VexelEngine;
 import dev.vexelray.runtime.EngineConfig;
 import dev.vexelray.shader.ClipDepth;
+import dev.vexelray.shader.Lens;
 import dev.vexelray.target.AttachmentFormat;
 import dev.vexelray.target.Target;
 import org.junit.jupiter.api.Test;
@@ -131,7 +132,7 @@ class PanelScaleTest {
     private static byte[] capture(double z) {
         Canvas canvas = new Canvas(CANVAS, CANVAS);
         PanelTechnique panel = new PanelTechnique(canvas,
-                Panel.at(0, 0, z, UNITS_PER_PIXEL), FOCAL, ClipDepth.DEFAULT);
+                Panel.at(0, 0, z, UNITS_PER_PIXEL), new Lens(FOCAL, ClipDepth.DEFAULT));
         panel.camera(0, 0, 0, 0, 0);
         panel.draw(c -> c.strokeLine(0, CANVAS / 2f, CANVAS, CANVAS / 2f, THICKNESS, Color.WHITE));
 

@@ -65,7 +65,7 @@ class MeshOcclusionTest {
 
     /** The square centred in the sphere and pitched one radian: it spans view depths 4.3 to 7.7. */
     private static MeshTechnique square() {
-        MeshTechnique technique = new MeshTechnique(SCENE.focalLength(), SCENE.clipDepth(), Shadings.unlit());
+        MeshTechnique technique = new MeshTechnique(SCENE.lens(), Shadings.unlit());
         technique.add(SQUARE, new Placement(0, 0, 6, 0, 1.0, 0, 1));
         technique.camera(0, 0, 0, 0, 0);
         return technique;
@@ -121,7 +121,7 @@ class MeshOcclusionTest {
     void aBoxUnderAKeyLightShowsItsFacesApart() {
         assumeTrue(hasRuntime(), "no available EngineProvider — this needs a Vulkan device");
 
-        MeshTechnique box = new MeshTechnique(FOCAL, SCENE.clipDepth(), Shadings.defaultKeyLight());
+        MeshTechnique box = new MeshTechnique(SCENE.lens(), Shadings.defaultKeyLight());
         box.add(Mesh.box(1.5, 1.5, 1.5), new Placement(0, 0, 5, 0.6, -0.5, 0, 1)).tint(0.8, 0.8, 0.8);
         box.camera(0, 0, 0, 0, 0);
 

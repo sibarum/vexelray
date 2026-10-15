@@ -14,6 +14,7 @@ import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.shader.ClipDepth;
 import dev.vexelray.shader.ComposedShader;
+import dev.vexelray.shader.Lens;
 import dev.vexelray.vulkan.present.AtlasTexture;
 import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
@@ -39,7 +40,7 @@ import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
  * SdfRaymarchTechnique march = new SdfRaymarchTechnique(scene);
  * PanelTechnique panel = new PanelTechnique(new Canvas(800, 450),
  *         Panel.at(0, 1.5, 6, 0.002),          // 1.6m x 0.9m, six metres out
- *         scene.focalLength(), scene.clipDepth());
+ *         scene.lens());
  *
  * RenderPipeline pipeline = RenderPipeline.builder()
  *         .target(Target.windowed("Fathom", 1280, 720)
@@ -89,8 +90,8 @@ import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
  * both calls both. Per-frame data reaching a technique through the technique's own API is the engine's rule (D5)
  * and the alternative — a camera owned by the runtime — would make the runtime know what a camera is, which is
  * the thing it has stayed free of. What the two must share is the <em>convention</em>, and they do: same axes,
- * same order, plus a {@link ClipDepth} and a focal length handed in at construction so a panel cannot quietly
- * project differently from the scene it is standing in.
+ * same order, plus the scene's {@link Lens} — focal length and {@link ClipDepth} as one value — handed in at
+ * construction so a panel cannot quietly project differently from the scene it is standing in.
  *
  * <h2>Threading</h2>
  *
@@ -161,23 +162,20 @@ public final class PanelTechnique implements RenderTechnique {
     /**
      * @param canvas      the canvas to draw, whose width and height are the panel's extent in canvas units
      * @param panel       where that canvas hangs, and how big one of its units is
-     * @param focalLength the scene's focal length — must be the one the rest of the frame projects with
-     * @param clipDepth   the scene's depth convention — must be the one the rest of the frame writes
+     * @param lens   the scene's lens — {@code scene.lens()}, the one the rest of the frame projects and writes
+     *               depth with
      */
-    public PanelTechnique(Canvas canvas, Panel panel, double focalLength, ClipDepth clipDepth) {
-        this(canvas, panel, focalLength, clipDepth, DEFAULT_CAPACITY_FLOATS);
+    public PanelTechnique(Canvas canvas, Panel panel, Lens lens) {
+        this(canvas, panel, lens, DEFAULT_CAPACITY_FLOATS);
     }
 
     /** As above, with room for {@code capacityFloats} of vertex data. */
-    public PanelTechnique(Canvas canvas, Panel panel, double focalLength, ClipDepth clipDepth,
-                          int capacityFloats) {
+    public PanelTechnique(Canvas canvas, Panel panel, Lens lens, int capacityFloats) {
         this.canvas = Objects.requireNonNull(canvas, "canvas");
         this.panel = Objects.requireNonNull(panel, "panel");
-        this.clipDepth = Objects.requireNonNull(clipDepth, "clipDepth");
-        if (!(focalLength > 0) || !Double.isFinite(focalLength)) {
-            throw new IllegalArgumentException("focalLength must be finite and positive, got " + focalLength);
-        }
-        this.focalLength = focalLength;
+        Objects.requireNonNull(lens, "lens");
+        this.focalLength = lens.focalLength();
+        this.clipDepth = lens.clipDepth();
         this.capacityFloats = capacityFloats;
         canvas.looks(looks);
     }

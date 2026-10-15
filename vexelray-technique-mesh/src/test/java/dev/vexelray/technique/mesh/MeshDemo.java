@@ -53,7 +53,7 @@ public final class MeshDemo {
     }
 
     private static Scene meshes(SdfScene scene) {
-        MeshTechnique meshes = new MeshTechnique(scene.focalLength(), scene.clipDepth(), scene.shading());
+        MeshTechnique meshes = new MeshTechnique(scene.lens(), scene.shading());
 
         // A white box, coloured per instance: one mesh, uploaded once, tinted by a push constant.
         meshes.add(Mesh.box(1.2, 1.2, 1.2), new Placement(1.15, 0.6, 0.55, 0.4, 0, 0, 1)).tint(0.80, 0.55, 0.30);

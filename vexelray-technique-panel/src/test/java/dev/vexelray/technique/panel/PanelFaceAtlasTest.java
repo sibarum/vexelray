@@ -7,6 +7,7 @@ import dev.vexelray.engine.RenderPipeline;
 import dev.vexelray.engine.VexelEngine;
 import dev.vexelray.runtime.EngineConfig;
 import dev.vexelray.shader.ClipDepth;
+import dev.vexelray.shader.Lens;
 import dev.vexelray.target.AttachmentFormat;
 import dev.vexelray.target.Target;
 import dev.vexelray.text.AtlasPixels;
@@ -78,7 +79,7 @@ class PanelFaceAtlasTest {
         assumeTrue(hasRuntime(), "no available EngineProvider — this needs a Vulkan device");
 
         Canvas canvas = new Canvas(SIZE, SIZE);
-        PanelTechnique panel = new PanelTechnique(canvas, Panel.at(0, 0, 4, 0.01), 1.4, ClipDepth.DEFAULT);
+        PanelTechnique panel = new PanelTechnique(canvas, Panel.at(0, 0, 4, 0.01), new Lens(1.4, ClipDepth.DEFAULT));
         panel.camera(0, 0, 0, 0, 0);
         FontSet.Face first = SET.faces().get(0);
         AtlasPixels p = SET.pixels(first);
@@ -99,7 +100,7 @@ class PanelFaceAtlasTest {
     /** One frame of {@code ARROW} in {@code layout}, with face {@code i}'s atlas built from {@code atlas(i)}. */
     private static byte[] capture(TextLayout layout, Function<Integer, AtlasPixels> atlas) {
         Canvas canvas = new Canvas(SIZE, SIZE);
-        PanelTechnique panel = new PanelTechnique(canvas, Panel.at(0, 0, 4, 0.01), 1.4, ClipDepth.DEFAULT);
+        PanelTechnique panel = new PanelTechnique(canvas, Panel.at(0, 0, 4, 0.01), new Lens(1.4, ClipDepth.DEFAULT));
         panel.camera(0, 0, 0, 0, 0);
         panel.atlases(device -> {
             List<AtlasTexture> out = new ArrayList<>();

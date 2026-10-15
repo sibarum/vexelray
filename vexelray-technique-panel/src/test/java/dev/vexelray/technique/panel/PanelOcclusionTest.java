@@ -88,7 +88,7 @@ class PanelOcclusionTest {
     private static PanelTechnique panel() {
         Canvas canvas = new Canvas(256, 256);
         PanelTechnique technique = new PanelTechnique(canvas,
-                new Panel(0, 0, 6, 0, 1.0, 0, 4.0 / 256), FOCAL, SCENE.clipDepth());
+                new Panel(0, 0, 6, 0, 1.0, 0, 4.0 / 256), SCENE.lens());
         technique.occluding();
         technique.camera(0, 0, 0, 0, 0);
         technique.draw(c -> c.fillRect(0, 0, 256, 256, PANEL_FILL));
@@ -99,7 +99,7 @@ class PanelOcclusionTest {
     private static PanelTechnique testOnlyPanel() {
         Canvas canvas = new Canvas(256, 256);
         PanelTechnique technique = new PanelTechnique(canvas,
-                new Panel(0, 0, 6, 0, 1.0, 0, 4.0 / 256), FOCAL, SCENE.clipDepth());
+                new Panel(0, 0, 6, 0, 1.0, 0, 4.0 / 256), SCENE.lens());
         technique.camera(0, 0, 0, 0, 0);
         technique.draw(c -> c.fillRect(0, 0, 256, 256, PANEL_FILL));
         return technique;
@@ -190,7 +190,7 @@ class PanelOcclusionTest {
 
         Canvas canvas = new Canvas(256, 256);
         PanelTechnique glass = new PanelTechnique(canvas,
-                Panel.at(0, 0, 3, 4.0 / 256), FOCAL, SCENE.clipDepth());
+                Panel.at(0, 0, 3, 4.0 / 256), SCENE.lens());
         glass.camera(0, 0, 0, 0, 0);
         glass.draw(c -> c.fillRect(0, 0, 256, 256, new Color(1, 1, 1, 0.5f)));
 

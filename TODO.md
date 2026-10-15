@@ -261,13 +261,15 @@ file is about the engine and its API. Decisions are logged in
       renders a canvas and ends in `SHADER_READ_ONLY`; `SampledSurfaceDemo` samples one onto a tilted quad),
       and it would share `Panel` rather than reinventing placement. What it costs is the thing the vector path
       does not have: a resolution, chosen in advance.
-- [ ] **A panel is told the focal length and the `ClipDepth` by hand.** `PanelTechnique`'s constructor takes
+- [x] **A panel is told the focal length and the `ClipDepth` by hand.** `PanelTechnique`'s constructor takes
       both and its javadoc says they must be the scene's; nothing enforces it, and a panel projecting through a
       different lens from the frame it stands in looks like a placement bug. A `Lens` value carrying focal
       length and depth convention together — handed to the scene *and* to the panel — would make that agreement
       structural. Worth doing when a second technique needs the same two numbers, which is the point at which
       the pattern is real rather than anticipated. **It is now real:** `MeshTechnique` (D28) takes the same two
       by hand, and the same camera five numbers through the same per-technique `camera(...)` call.
+      **Done (D29):** `Lens` in `vexelray-shader`, `SdfScene.lens()` derived like `clipDepth()`, and both
+      techniques take a `Lens` in place of the two numbers. The camera pose stays per-technique, by D5.
 - [ ] **Meshes are not anti-aliased.** The march and the panel each solve their own edge; a triangle's edge is
       the rasteriser's and is a hard step. MSAA on the shared target is the conventional answer and touches the
       render pass every technique records into, so it is a decision about the target rather than about meshes.

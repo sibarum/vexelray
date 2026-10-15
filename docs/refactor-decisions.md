@@ -941,6 +941,28 @@ A mesh is drawn and not simulated. The march's field is evaluated on the CPU fro
 triangle soup has no such twin, so render==sim stops at the march, and a mesh that must be solid needs a field
 beside it. That boundary is the honest one for now and is recorded in TODO rather than papered over.
 
+## 25. A rasterising technique is handed the scene's lens, not two numbers (D29)
+
+`PanelTechnique` (D27) and `MeshTechnique` (D28) each took a focal length and a `ClipDepth` that had to be the
+scene's, with nothing but javadoc saying so. Getting either wrong looks like a placement bug in whichever technique
+is out of line: the wrong focal length draws at the right depth in the wrong place, the wrong convention draws in
+the right place and loses depth tests it should win. The TODO waited for a second technique before making this
+structural; D28 was it.
+
+**`Lens` is the two together,** a record in `vexelray-shader` beside `ClipDepth`: focal length and depth
+convention, validated once. **`SdfScene.lens()` derives it** the way `clipDepth()` does — from `focalLength` and
+`clipDepth()`, so its far plane is still the march's and cannot drift — rather than the scene storing a `Lens`,
+which would have made `nearPlane` and `focalLength` two places to keep in step instead of one.
+
+**The two-number constructors are gone, not kept beside the new ones.** Every caller was in this repo, and keeping
+them would have kept the hole the item was about: the point is that `new MeshTechnique(scene.lens(), …)` cannot
+pair one scene's focal length with another's far plane. A test that wants a lens without a scene writes
+`new Lens(1.4, ClipDepth.DEFAULT)`.
+
+**The camera pose stays where D5 put it.** Eye, yaw and pitch change every frame and still reach each technique
+through its own `camera(...)` call; a lens is what is fixed when the shaders are built. A shared camera object
+would make the runtime know what a camera is, which is a larger decision than this one.
+
 ## Open questions (to revisit as phases land)
 
 - ~~**Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need

@@ -1,6 +1,7 @@
 package dev.vexelray.technique.sdf;
 
 import dev.vexelray.shader.ClipDepth;
+import dev.vexelray.shader.Lens;
 import dev.vexelray.shader.Shadings;
 import dev.vexelray.surface.Surface;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,28 @@ class ClipDepthTest {
     void theDefaultsAgreeAcrossTheTwoModules() {
         assertEquals(ClipDepth.DEFAULT, SdfScene.of(new Surface.Sphere(0, 0, 5, 1)).clipDepth());
         assertEquals(ClipDepth.DEFAULT.far(), MarchSettings.DEFAULT.farPlane());
+    }
+
+    /**
+     * A scene's lens is its focal length and its clip depth, and follows a change of march like
+     * {@link SdfScene#clipDepth()} does — the lens is what a rasterising technique is built from, so a far
+     * plane that drifted here would drift in every technique sharing the target.
+     */
+    @Test
+    void theLensIsTheScenesFocalLengthAndClipDepth() {
+        SdfScene scene = scene(MarchSettings.DEFAULT, 0.05);
+        assertEquals(new Lens(1.4, scene.clipDepth()), scene.lens());
+
+        MarchSettings shortRange = new MarchSettings(64, 0.4, 30.0, 0.008, 0.001, 0.03, 0.006);
+        assertEquals(30.0, scene.withMarch(shortRange).lens().clipDepth().far());
+    }
+
+    @Test
+    void aLensRefusesADegenerateFocalLength() {
+        assertThrows(IllegalArgumentException.class, () -> new Lens(0, ClipDepth.DEFAULT));
+        assertThrows(IllegalArgumentException.class, () -> new Lens(-1.4, ClipDepth.DEFAULT));
+        assertThrows(IllegalArgumentException.class, () -> new Lens(Double.NaN, ClipDepth.DEFAULT));
+        assertThrows(NullPointerException.class, () -> new Lens(1.4, null));
     }
 
     @Test

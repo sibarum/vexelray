@@ -6,6 +6,7 @@ import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.shader.ClipDepth;
 import dev.vexelray.shader.ComposedShader;
+import dev.vexelray.shader.Lens;
 import dev.vexelray.shader.Shading;
 import dev.vexelray.vulkan.present.DrawCommands;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
@@ -29,7 +30,7 @@ import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
  *
  * <pre>{@code
  * SdfRaymarchTechnique march = new SdfRaymarchTechnique(scene);
- * MeshTechnique meshes = new MeshTechnique(scene.focalLength(), scene.clipDepth(), scene.shading());
+ * MeshTechnique meshes = new MeshTechnique(scene.lens(), scene.shading());
  * MeshTechnique.Instance crate = meshes.add(Mesh.box(1, 1, 1), Placement.at(2, 0.5, 6));
  *
  * RenderPipeline pipeline = RenderPipeline.builder()
@@ -103,16 +104,14 @@ public final class MeshTechnique implements RenderTechnique {
     private final float[] pushFloats = new float[MeshShader.PUSH_FLOATS];
 
     /**
-     * @param focalLength the scene's focal length — must be the one the rest of the frame projects with
-     * @param clipDepth   the scene's depth convention — must be the one the rest of the frame writes
-     * @param shading     the lighting model; pass the scene's own for meshes lit like the marched surfaces
+     * @param lens    the scene's lens — {@code scene.lens()}, the one the rest of the frame projects and writes
+     *                depth with
+     * @param shading the lighting model; pass the scene's own for meshes lit like the marched surfaces
      */
-    public MeshTechnique(double focalLength, ClipDepth clipDepth, Shading shading) {
-        if (!(focalLength > 0) || !Double.isFinite(focalLength)) {
-            throw new IllegalArgumentException("focalLength must be finite and positive, got " + focalLength);
-        }
-        this.focalLength = focalLength;
-        this.clipDepth = Objects.requireNonNull(clipDepth, "clipDepth");
+    public MeshTechnique(Lens lens, Shading shading) {
+        Objects.requireNonNull(lens, "lens");
+        this.focalLength = lens.focalLength();
+        this.clipDepth = lens.clipDepth();
         this.shading = Objects.requireNonNull(shading, "shading");
     }
 

@@ -83,7 +83,7 @@ public final class PanelDemo {
     private static PanelTechnique panel(SdfScene scene) {
         Canvas canvas = new Canvas(CANVAS_W, CANVAS_H);
         PanelTechnique panel = new PanelTechnique(canvas,
-                Panel.at(0, PANEL_Y, 0, UNITS_PER_PIXEL), scene.focalLength(), scene.clipDepth());
+                Panel.at(0, PANEL_Y, 0, UNITS_PER_PIXEL), scene.lens());
         // The atlas cannot exist before the device does, so it is built at realise from the device the runtime
         // hands over -- see PanelTechnique.atlas(AtlasSource).
         panel.atlas(device -> {
