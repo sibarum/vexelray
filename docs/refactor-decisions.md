@@ -889,6 +889,58 @@ hold its ground against a later technique. Both states are measured.
   is the claim a textured quad could not make: magnifying an image stretches its blurred edge in exactly the
   proportion the line gets wider.
 
+## 24. Polygon meshes, the first technique with real geometry (D28)
+
+`vexelray-technique-mesh`: triangles through the rasteriser, composited with a marched scene in one colour and
+depth target. `Mesh` is the polygons, `Placement` is where one stands, `MeshShader` is the shader as core IR,
+`MeshTechnique` records it. Until this, everything that occluded was a fullscreen march, and `ClipDepth` had been
+written down as a shared value in anticipation of exactly this technique.
+
+### Three things shared with the march, as values
+
+**The pinhole, not a matrix.** For `PanelShader`'s reason: the scene's camera is an eye, a yaw, a pitch and a
+focal length, and a projection matrix would be a second description of it. The vertex stage undoes the march's
+yaw and then its pitch, and applies `ndc = (focal*vx/(aspect*vz), -focal*vy/vz)`. `MeshProjectionTest` checks the
+two are inverses at every corner of a turned box seen by a turned camera.
+
+**`ClipDepth.clipZ` for depth.** Third consumer, no change. The rasteriser's interpolation of `z/w` gives the
+march's curve, early-z survives, and opaque meshes test and write depth, so the frame is the same whichever side
+of the march they record on — measured byte for byte.
+
+**The scene's `Shading`.** `ShadingPoint` said in its javadoc that a rasteriser would arrive with an interpolated
+normal and a varying; this is that rasteriser, and it took the record as written. A mesh beside a sphere is lit
+by the same light with the same falloff because it is the same IR.
+
+### Two-sided by construction
+
+x right, y up, z forward is a left-handed frame, and a mesh author's right-handed habits would get every winding
+backwards. Rather than impose a convention and document it, the fragment stage turns each normal toward the eye
+and the pipeline culls nothing — so winding is not a contract at all. The cost is overdraw on closed solids, which
+back-face culling would save once some scene is fill-bound on meshes; that is a TODO, and it is the day a
+winding convention becomes worth its explanation.
+
+### Upload once, instance per push constant
+
+Every distinct mesh is packed into one vertex buffer at realise; an instance is 96 bytes of push constant (its
+model matrix, the camera, its tint) and a `vkCmdDraw` over its range. No index buffer: a flat-shaded polygon mesh
+shares almost no vertices, so an index buffer would save little and add a second buffer and a second draw call
+shape. A new mesh after realise is refused rather than silently reallocated, for the reason
+`CanvasTechnique` fixes its capacity — growing a device buffer mid-run is a stall or a second live buffer.
+
+### Concave polygons, because "polygon" means them
+
+`Mesh.Builder.polygon` takes any simple planar polygon and ear-clips it in the plane its Newell normal is most
+perpendicular to. A fan would have been one loop and correct for every convex input — and the tests would have
+had to be careful to only ever draw squares. `MeshTest` measures the unsigned area of the triangles against the
+outline's, which a fan across an L's notch fails. Self-crossing outlines are refused up front, because ear
+clipping on one tends to return triangles rather than to fail.
+
+### What it deliberately is not
+
+A mesh is drawn and not simulated. The march's field is evaluated on the CPU from the IR it is drawn with; a
+triangle soup has no such twin, so render==sim stops at the march, and a mesh that must be solid needs a field
+beside it. That boundary is the honest one for now and is recorded in TODO rather than papered over.
+
 ## Open questions (to revisit as phases land)
 
 - ~~**Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need

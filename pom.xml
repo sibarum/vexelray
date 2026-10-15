@@ -76,6 +76,9 @@
              means something different here (a point on a surface, not a pixel of the window), and that one
              difference changes the vertex stage, the anti-aliasing, the depth state and the per-frame data. -->
         <module>vexelray-technique-panel</module>
+        <!-- Polygon meshes: triangles through the rasteriser, projected through the march's own pinhole, writing
+             the march's depth convention and lit by the same Shading. The first technique with real geometry. -->
+        <module>vexelray-technique-mesh</module>
         <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
         <module>vexelray-demo</module>
         <!-- Research harness: build/run/compare shape-definition + rendering techniques (perf, fidelity, scope). -->

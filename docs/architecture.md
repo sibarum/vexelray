@@ -80,7 +80,8 @@ vexelray-engine-vulkan-api   The Vulkan half of the SPI: VulkanTechniqueContext,
 vexelray-engine        Runtime impl:  │  vexelray-technique-sdf    SdfScene + SdfComposer + SdfRaymarchTechnique
                        implements     │  vexelray-technique-canvas CanvasTechnique
                        VexelEngine,   │  vexelray-technique-panel  Panel + PanelShader + PanelTechnique
-                                      │                            (later: -raster, -splat, …)
+                                      │  vexelray-technique-mesh   Mesh + Placement + MeshShader + MeshTechnique
+                                      │                            (later: -splat, …)
                        realises a     │
                        pipeline, owns │  A technique depends on -engine-api and -engine-vulkan-api. It does NOT
                        window/device/ │  depend on -engine: the runtime depends on the contract, not the
@@ -206,8 +207,8 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 |---|---|---|
 | Runtime ownership | `VexelEngine` facade behind a `ServiceLoader` provider; owns window/instance/device/surface/swapchain/render pass/depth and the frame loop; one frame in flight, as a rule (D25, limited 2026-10-04: mapped buffers are not per slot), per-slot command buffers and sync against per-image depth and semaphores; resize rebuilds the swapchain without re-realising a technique | a second queue, so transfers do not serialise behind the graphics one |
 | Present targets | windowed swapchain and `Target.Kind.OFFSCREEN`, behind one `Target` and one frame loop; `VexelEngine.lastFrameRgba()` hands back the frame a headless run finished on. The single-pipeline `OffscreenRenderer`/`OffscreenDraw` stay for "render one thing to a texture" | recording a sequence rather than a last frame |
-| Render techniques | SDF raymarch and 2D canvas as modules; `FathomTechnique` and `HelloTechnique` authored *outside* the engine's modules | polygon raster, Gaussian splats — same SPI, no core change |
-| Composition / hybrid | N techniques sharing one colour+depth target, one render pass, one command buffer, in declared order (`HybridFrameTest`) **and interleaving per pixel where depth decides** — the march writes `gl_FragDepth` from its hit distance through the shared `ClipDepth` convention, measured by `DepthInterleaveTest` / `MarchDepthTest` / `MarchProjectionTest` | a rasterising technique with real geometry, cross-occluding the march using the same `ClipDepth` |
+| Render techniques | SDF raymarch, 2D canvas, world panel and polygon meshes as modules; `FathomTechnique` and `HelloTechnique` authored *outside* the engine's modules | Gaussian splats — same SPI, no core change |
+| Composition / hybrid | N techniques sharing one colour+depth target, one render pass, one command buffer, in declared order (`HybridFrameTest`) **and interleaving per pixel where depth decides** — the march writes `gl_FragDepth` from its hit distance through the shared `ClipDepth` convention, and `vexelray-technique-mesh` rasterises real geometry through `ClipDepth.clipZ`, cross-occluding it (`MeshOcclusionTest`, D28) | meshes the simulation can collide with — today a mesh is drawn and not simulated |
 | Technique authoring | `DrawCommands` for the Panama boilerplate; the runtime sets viewport and scissor before recording; `HelloTechnique` is the worked example in main source | a pooled allocator on `TechniqueContext` when one exists |
 | Shaders | runtime SDF composed as `core` IR → SPIR-V, type-checked by `CoreCheck` before the driver sees it | `CoreCheck` covering `MathCall`; the operand-type check pushed upstream into SupirVast |
 | Render == sim | SDF evaluated CPU + GPU from one IR; sphere-trace collision | physics/queries against the render field; GPU/CPU placement |
@@ -252,7 +253,7 @@ all along. The engine publishes `EngineEvents` onto the same Atchung! bus input 
 
 **What is genuinely not done**, in leverage order, is in [`TODO.md`](../TODO.md):
 
-- **A technique with real geometry.** Everything that occludes today is a fullscreen march, so the
-  `ClipDepth` convention has one author and one consumer. It is written down as a shared value precisely so
-  the second one — a rasteriser building its projection matrix from the same near and far — is a change to
-  that technique rather than to this argument.
+- ~~**A technique with real geometry.**~~ Landed as `vexelray-technique-mesh` (D28): polygon meshes through the
+  rasteriser, projected by the march's own pinhole rather than a matrix, writing `ClipDepth.clipZ`, and lit by
+  the scene's `Shading` — so `ClipDepth` now has a third consumer and `ShadingPoint` its first rasteriser, and
+  neither needed a change to take them.

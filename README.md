@@ -70,6 +70,8 @@ vexelray                 parent (pom)
 ├─ vexelray-technique-canvas  the canvas technique: a Canvas batch recorded into a frame the runtime began
 ├─ vexelray-technique-panel  the same canvas on a plane in the world: projected through the scene's camera,
 │    dev.vexelray.technique.panel  sharing the frame's depth, with nothing in it fixed to a pixel size
+├─ vexelray-technique-mesh  polygon meshes through the rasteriser: the march's pinhole, its ClipDepth and its
+│    dev.vexelray.technique.mesh  Shading, so meshes and marched surfaces occlude and light alike
 ├─ vexelray-demo         Fathom — the reference demo app (first-person SDF dungeon), -Pnative single binary;
 │                        HelloTechnique is the worked example a third party copies
 └─ vexelray-experimental research harness: build/run/compare shape-definition + rendering techniques

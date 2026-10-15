@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>vexelray-technique-mesh</artifactId>
+
+    <description>
+        Polygon meshes as a RenderTechnique: triangles drawn by the rasteriser, projected through the scene's
+        camera and sharing the frame's depth buffer, so meshes and a marched SDF scene occlude each other per pixel.
+
+        Its own module, because it is a renderable kind and techniques are open rather than a sealed set. It shares
+        three things with the march, each as a value rather than as a copy: the pinhole (eye, yaw, pitch, focal
+        length), the depth convention (ClipDepth), and the lighting model (Shading), whose ShadingPoint was written
+        to be filled by a rasteriser as readily as by a march.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- For ClipDepth and Shading: the depth convention and the lighting model, both shared with whatever else
+             writes into the frame. A mesh that invented its own would composite against the march by luck. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- For VulkanTechniqueContext — the contract only: a technique that compiled against the concrete runtime
+             could never be served by a second one (D18). -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine-vulkan-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-vulkan</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Test-only: the checks and the demo drive a real engine, which is a ServiceLoader lookup. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-engine</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Test-only: meshes are drawn against a marched scene, which is what makes the occlusion check a
+             measurement rather than a picture of some triangles. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-technique-sdf</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-os-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-windows</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation>
+                <os><family>unix</family><name>linux</name></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-linux</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-macos</id>
+            <activation>
+                <os><family>mac</family></os>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-os-macos</artifactId>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

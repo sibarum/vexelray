@@ -217,6 +217,23 @@ file is about the engine and its API. Decisions are logged in
       `PanelScaleTest`: the width doubles when the distance halves *and* matches the pinhole's absolute
       prediction, while the partially covered pixels down its column stay at about two at both distances
 
+### Polygon meshes, the first technique with real geometry (D28)
+
+- [x] **`vexelray-technique-mesh`** — `Mesh` (flat-shaded triangles from any simple planar polygon, convex or
+      concave, by ear clipping; crossing edges refused), `Placement` (position, yaw/pitch/roll in the camera's own
+      convention, uniform scale), `MeshShader` as core IR, and `MeshTechnique`: every distinct mesh uploaded once
+      at realise, each `Instance` a push constant and a draw, so moving a mesh costs the same at any size
+- [x] **Three conventions shared, none copied.** The march's pinhole run forwards instead of a projection matrix;
+      `ClipDepth.clipZ` for depth, so meshes and the march interleave per pixel with early-z intact; and the
+      scene's `Shading`, filled from interpolated varyings — `ShadingPoint` was written for this caller and took
+      it unchanged
+- [x] **Two-sided faces, no culling**, so a mesh author never needs this engine's (left-handed) winding
+- [x] **Four checks.** `MeshTest` (unsigned triangle area equals the outline's, which a fan across an L's notch
+      fails), `MeshProjectionTest` (the march's ray through a projected vertex's pixel points back at it, with
+      camera and mesh turned), `MeshShaderTest`, and `MeshOcclusionTest` — a square pitched through a sphere,
+      each losing pixels to the other, order-reversed frame byte-identical, a no-depth control, and a box under a
+      key light coming out as exactly three flat colours. `MeshDemo` for a look
+
 ---
 
 ## P2 — Consistency and polish
@@ -249,7 +266,15 @@ file is about the engine and its API. Decisions are logged in
       different lens from the frame it stands in looks like a placement bug. A `Lens` value carrying focal
       length and depth convention together — handed to the scene *and* to the panel — would make that agreement
       structural. Worth doing when a second technique needs the same two numbers, which is the point at which
-      the pattern is real rather than anticipated.
+      the pattern is real rather than anticipated. **It is now real:** `MeshTechnique` (D28) takes the same two
+      by hand, and the same camera five numbers through the same per-technique `camera(...)` call.
+- [ ] **Meshes are not anti-aliased.** The march and the panel each solve their own edge; a triangle's edge is
+      the rasteriser's and is a hard step. MSAA on the shared target is the conventional answer and touches the
+      render pass every technique records into, so it is a decision about the target rather than about meshes.
+- [ ] **Meshes are drawn, not simulated.** A triangle soup has no CPU twin of the IR it is drawn with, so the
+      render==sim property stops at the march. A mesh that must be solid needs a field beside it, today by hand.
+- [ ] **Mesh back-face culling** — opt-in, once a scene is fill-bound on meshes. It needs a winding convention,
+      which two-sided shading has so far let this module avoid imposing.
 
 ---
 
