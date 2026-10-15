@@ -257,6 +257,90 @@ class EffectsRenderTest {
 
     // --- helpers ---
 
+    // --- ripple ---
+
+    static final int[] RED_PX = {255, 0, 0};
+    static final int[] BLUE_PX = {0, 0, 255};
+    static final int[] BLACK_PX = {0, 0, 0};
+
+    @Test
+    void aRippleIsADiscOfItsInkAboutItsPointCutToTheShape() {
+        LookTable table = table();
+        Look rippled = Look.of(Look.Use.of("box"), Look.Use.of("ripple"), Look.Use.of("fill"));
+        // The box spans 40..120 x 20..76, centre (80, 48). The disc is about 20 left of the centre, radius 12.
+        float[] small = new float[RippleStyleLayout.LAYOUT.instanceFloats()];
+        RippleStyleLayout.instance(new RippleStyle(Color.rgb(1f, 0f, 0f), -20f, 0f, 12f), small, 0);
+        byte[] rgba = gpu.draw(table, canvas(table).box(40, 20, 80, 56, 6, Color.rgb(0f, 0f, 1f), rippled, small));
+        System.out.printf("[ripple] at the point %s, 18 right of it %s, off the box %s%n",
+                str(rgb(rgba, 60, 48)), str(rgb(rgba, 78, 48)), str(rgb(rgba, 30, 48)));
+        assertPixel(RED_PX, rgb(rgba, 60, 48), 1, "at its point, the ink");
+        assertPixel(BLUE_PX, rgb(rgba, 78, 48), 1, "past its radius, the fill under it");
+
+        // Spread past the box on every side, it is still only the box.
+        float[] wide = new float[RippleStyleLayout.LAYOUT.instanceFloats()];
+        float covering = RippleStyle.covering(-20f, 0f, 40f, 28f);
+        RippleStyleLayout.instance(new RippleStyle(Color.rgb(1f, 0f, 0f), -20f, 0f, covering + 30f), wide, 0);
+        byte[] spread = gpu.draw(table, canvas(table).box(40, 20, 80, 56, 6, Color.rgb(0f, 0f, 1f), rippled, wide));
+        assertPixel(RED_PX, rgb(spread, 118, 48), 1, "at the far edge, the ink: the covering radius reaches it");
+        assertPixel(BLACK_PX, rgb(spread, 36, 48), 0, "off the box, nothing: the disc is cut to the shape");
+    }
+
+    // --- ring ---
+
+    @Test
+    void aRingIsABandStandingClearOfTheEdgeAndIsNotCutOff() {
+        LookTable table = table();
+        Look ringed = Look.of(Look.Use.of("box"), Look.Use.of("ring"), Look.Use.of("fill"));
+        float[] ring = new float[RingStyleLayout.LAYOUT.instanceFloats()];
+        RingStyleLayout.instance(new RingStyle(Color.rgb(1f, 0f, 0f), 4f, 3f), ring, 0);
+        assertEquals(7f, table.reach(ringed, ring, 40f, 18f), 1e-6f, "the ring reaches its offset and its width");
+        byte[] rgba = gpu.draw(table, canvas(table).box(40, 30, 80, 36, 0, Color.rgb(0f, 0f, 1f), ringed, ring));
+        int row = 48;
+        // Pixel x's centre is x + 0.5: pixel 35 is 4.5 out, in the band from 3 to 7; pixel 38 is 1.5 out, in the gap.
+        System.out.printf("[ring] 1.5 out %s, 4.5 out %s, 8.5 out %s, inside %s%n", str(rgb(rgba, 38, row)),
+                str(rgb(rgba, 35, row)), str(rgb(rgba, 31, row)), str(rgb(rgba, 60, row)));
+        assertPixel(BLACK_PX, rgb(rgba, 38, row), 1, "in the gap between the edge and the band, the background");
+        assertPixel(RED_PX, rgb(rgba, 35, row), 1, "in the band, its colour, past the quad's own pad");
+        assertPixel(BLACK_PX, rgb(rgba, 31, row), 1, "past the band, the background");
+        assertPixel(BLUE_PX, rgb(rgba, 60, row), 1, "inside, the fill");
+    }
+
+    // --- gradients ---
+
+    @Test
+    void aLinearGradientRunsAcrossTheShapesOwnExtent() {
+        LookTable table = table();
+        Look graded = Look.of(Look.Use.of("box"), Look.Use.of("linearGradient"));
+        float[] g = new float[LinearGradientStyleLayout.LAYOUT.instanceFloats()];
+        LinearGradientStyleLayout.instance(
+                LinearGradientStyle.at(Color.rgb(1f, 0f, 0f), Color.rgb(0f, 0f, 1f), 0f), g, 0);
+        byte[] rgba = gpu.draw(table, canvas(table).box(20, 30, 120, 36, 0, Color.WHITE, graded, g));
+        int[] left = rgb(rgba, 21, 48);
+        int[] middle = rgb(rgba, 79, 48);
+        int[] right = rgb(rgba, 138, 48);
+        System.out.printf("[linearGradient] left %s middle %s right %s%n", str(left), str(middle), str(right));
+        assertTrue(left[0] > 245 && left[2] < 10, "at the left, the first colour: " + str(left));
+        assertTrue(right[2] > 245 && right[0] < 10, "at the right, the second: " + str(right));
+        // Pixel 79's centre is half a unit left of the middle: t = 0.5 - 0.5 / 120.
+        assertEquals(128, middle[0], 2, "half way, half of each");
+        assertEquals(127, middle[2], 2);
+    }
+
+    @Test
+    void aRadialGradientRunsFromItsCentreToItsRadius() {
+        LookTable table = table();
+        Look graded = Look.of(Look.Use.of("box"), Look.Use.of("radialGradient"));
+        float[] g = new float[RadialGradientStyleLayout.LAYOUT.instanceFloats()];
+        RadialGradientStyleLayout.instance(
+                new RadialGradientStyle(Color.rgb(1f, 0f, 0f), Color.rgb(0f, 0f, 1f), 0f, 0f, 20f), g, 0);
+        byte[] rgba = gpu.draw(table, canvas(table).box(20, 8, 120, 80, 0, Color.WHITE, graded, g));
+        int[] centre = rgb(rgba, 80, 48);
+        int[] beyond = rgb(rgba, 110, 48);
+        System.out.printf("[radialGradient] centre %s 30 out %s%n", str(centre), str(beyond));
+        assertTrue(centre[0] > 245 && centre[2] < 10, "at the centre, the inner colour: " + str(centre));
+        assertPixel(BLUE_PX, beyond, 1, "past the radius, the outer");
+    }
+
     static float[] instance(BoxMorphStyle s) {
         float[] out = new float[BoxMorphStyleLayout.LAYOUT.instanceFloats()];
         BoxMorphStyleLayout.instance(s, out, 0);

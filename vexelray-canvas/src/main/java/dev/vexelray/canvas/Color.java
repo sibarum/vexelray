@@ -52,6 +52,24 @@ public record Color(float r, float g, float b, float a) {
         return new Color(c.r, c.g, c.b, a);
     }
 
+    /**
+     * {@code t} of the way from {@code from} to {@code to}, mixed <b>premultiplied</b> and returned straight. Mixed
+     * straight, a colour fading in from {@link #TRANSPARENT} would pass through grey on its way, since transparent
+     * black's rgb is black; premultiplied, a colour with no alpha has no say in the hue, so the fade is the
+     * destination's colour coming up. {@code t} is not clamped: an easing that overshoots overshoots here too.
+     */
+    public static Color lerp(Color from, Color to, float t) {
+        float a = from.a + (to.a - from.a) * t;
+        if (a <= 0f) {
+            // Nothing to divide the hue out of: the straight mix is as good a colour as any for no coverage.
+            return new Color(from.r + (to.r - from.r) * t, from.g + (to.g - from.g) * t,
+                    from.b + (to.b - from.b) * t, Math.max(a, 0f));
+        }
+        float u = 1f - t;
+        return new Color((from.r * from.a * u + to.r * to.a * t) / a, (from.g * from.a * u + to.g * to.a * t) / a,
+                (from.b * from.a * u + to.b * to.a * t) / a, a);
+    }
+
     public static final Color WHITE = rgb(1, 1, 1);
     public static final Color BLACK = rgb(0, 0, 0);
     public static final Color TRANSPARENT = new Color(0, 0, 0, 0);

@@ -73,6 +73,27 @@ class StyleProcessorTest {
     }
 
     @Test
+    void lerpMixesFloatsLinearlyAndColoursPremultiplied() throws Exception {
+        ClassLoader loader = loader(compile(Map.of("demo.GlowStyle", GLOW)));
+        Class<?> style = loader.loadClass("demo.GlowStyle");
+        Class<?> generated = loader.loadClass("demo.GlowStyleLayout");
+        var make = style.getConstructor(float.class, Color.class, float.class);
+        Object from = make.newInstance(2f, Color.TRANSPARENT, 0f);
+        Object to = make.newInstance(6f, new Color(1f, 0.5f, 0f, 1f), 1f);
+        var lerp = generated.getMethod("lerp", style, style, float.class);
+
+        assertEquals(from, lerp.invoke(null, from, to, 0f), "at 0, the first value");
+        assertEquals(to, lerp.invoke(null, from, to, 1f), "at 1, the second");
+        Object half = lerp.invoke(null, from, to, 0.25f);
+        assertEquals(3f, (float) style.getMethod("radius").invoke(half), 1e-6f);
+        assertEquals(0.25f, (float) style.getMethod("t").invoke(half), 1e-6f);
+        Color tint = (Color) style.getMethod("tint").invoke(half);
+        // Premultiplied, transparent black has no say in the hue: a quarter of the way is the destination's colour at
+        // a quarter of its alpha, not a quarter of the way from black.
+        assertEquals(new Color(1f, 0.5f, 0f, 0.25f), tint);
+    }
+
+    @Test
     void anEmptyStyleHasAnEmptyLayout() throws Exception {
         ClassLoader loader = loader(compile(Map.of("demo.PlainStyle", """
                 package demo;

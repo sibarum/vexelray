@@ -31,6 +31,10 @@ import java.util.Set;
  * by eye; a field added to one and not the others shifts every parameter after it, and the shader reads the wrong
  * floats without a word.
  *
+ * <p>It also generates {@code lerp}, which mixes two values of the style field by field: a float linearly, a colour
+ * premultiplied (by {@code Color.lerp}). A look's states are separate values of one style, so this is what lets an
+ * element animate from one to the other without anyone writing the mix, and getting a field wrong, by hand.
+ *
  * <p>The annotations and {@code Color} are matched by name, not by class: the processor depends on nothing but the
  * JDK, so it loads on any processor path whether or not canvas is beside it. The generated source names every type
  * outright and imports nothing, so it cannot clash with a name the style's package declares.
@@ -194,6 +198,23 @@ public final class StyleProcessor extends AbstractProcessor {
                 b.append("        out[at + ").append(k++).append("] = ").append(read).append(";\n");
             }
         }
+        b.append("    }\n\n");
+
+        b.append("    public static ").append(style).append(" lerp(").append(style).append(" a, ").append(style)
+         .append(" b, float t) {\n");
+        b.append("        return new ").append(style).append('(');
+        for (int i = 0; i < fields.size(); i++) {
+            Field f = fields.get(i);
+            String from = "a." + f.name() + "()";
+            String to = "b." + f.name() + "()";
+            b.append(i == 0 ? "\n                " : ",\n                ");
+            if (f.color()) {
+                b.append(COLOR).append(".lerp(").append(from).append(", ").append(to).append(", t)");
+            } else {
+                b.append(from).append(" + (").append(to).append(" - ").append(from).append(") * t");
+            }
+        }
+        b.append(");\n");
         b.append("    }\n\n");
 
         b.append("    public static ").append(USE).append(" use(java.lang.String shadelet, ").append(style)

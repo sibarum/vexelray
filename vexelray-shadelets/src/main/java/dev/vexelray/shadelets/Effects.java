@@ -16,11 +16,17 @@ import java.util.List;
 
 import static dev.vexelray.ir.Ir.abs;
 import static dev.vexelray.ir.Ir.add;
+import static dev.vexelray.ir.Ir.clamp;
+import static dev.vexelray.ir.Ir.div;
+import static dev.vexelray.ir.Ir.dot;
 import static dev.vexelray.ir.Ir.f;
+import static dev.vexelray.ir.Ir.length;
+import static dev.vexelray.ir.Ir.max;
 import static dev.vexelray.ir.Ir.min;
 import static dev.vexelray.ir.Ir.mix;
 import static dev.vexelray.ir.Ir.mul;
 import static dev.vexelray.ir.Ir.neg;
+import static dev.vexelray.ir.Ir.scale;
 import static dev.vexelray.ir.Ir.sub;
 import static dev.vexelray.ir.Ir.v2;
 import static dev.vexelray.ir.Ir.w;
@@ -34,6 +40,10 @@ import static dev.vexelray.ir.Ir.y;
  *
  * <p>Each is a function of the distance its look's source gives it, so each works on a box and on a field alike,
  * except the morphs, which are sources: one morphs boxes, the other two cells of one field atlas.
+ *
+ * <p>None of them reads a clock. What animates (a ripple's radius, a ring's offset, a gradient's colours) is a
+ * per-instance value the application writes each frame from its own timeline, so a frame is a function of what was
+ * drawn and nothing else: an offscreen capture of it is reproducible, and a loop with nothing moving can sleep.
  */
 public final class Effects {
 
@@ -150,6 +160,133 @@ public final class Effects {
         }
     };
 
+    /**
+     * {@link RippleStyle}: a disc of the ink about a point, inside the shape and nowhere else, both edges one pixel
+     * soft. The point and the radius are the element's own, so a ripple spreads by its radius growing and leaves by its
+     * colour's alpha falling: two curves, as a transition wants (eased out for the spread, linear for the fade).
+     */
+    public static final Shadelet.Painter RIPPLE = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "ripple";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return RippleStyleLayout.LAYOUT;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr colour = style.vector("colour");
+            Expr aa = c.fragment().aa();
+            Expr shape = Expr.MathCall.smoothstep(neg(aa), aa, x(c.distance()));
+            Expr fromCentre = length(sub(c.fragment().local(), v2(style.scalar("x"), style.scalar("y"))));
+            Expr disc = sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa,
+                    sub(fromCentre, style.scalar("radius"))));
+            return Region.of(new Statement.Assign(layer,
+                    Layers.premultiplied(xyz(colour), mul(w(colour), mul(shape, disc)))));
+        }
+    };
+
+    /**
+     * {@link RingStyle}: the band from {@code offset} to {@code offset + width} outside the edge, following the shape,
+     * one pixel soft on both sides. On a field, the band is as true as the field's distance is that far out, which is
+     * its reach; a ring wider than that is the field's business to allow.
+     */
+    public static final Shadelet.Painter RING = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "ring";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return RingStyleLayout.LAYOUT;
+        }
+
+        /** Out to the band's far side: colour (4 floats), width, offset. */
+        @Override
+        public float reach(float[] shared, float[] instance, float halfW, float halfH) {
+            return Math.max(0f, instance[4]) + Math.max(0f, instance[5]);
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr colour = style.vector("colour");
+            Expr half = mul(style.scalar("width"), f(0.5));
+            Expr outside = neg(x(c.distance()));
+            Expr band = sub(abs(sub(outside, add(style.scalar("offset"), half))), half);   // negative in the band
+            Expr aa = c.fragment().aa();
+            Expr cov = sub(f(1.0), Expr.MathCall.smoothstep(neg(aa), aa, band));
+            return Region.of(new Statement.Assign(layer, Layers.premultiplied(xyz(colour), mul(w(colour), cov))));
+        }
+    };
+
+    /**
+     * {@link LinearGradientStyle}: the shape filled from {@code from} to {@code to} along the direction, the ends at
+     * the shape's own extent that way, mixed premultiplied so a colour fading to transparent does not pass through
+     * grey.
+     */
+    public static final Shadelet.Painter LINEAR_GRADIENT = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "linearGradient";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return LinearGradientStyleLayout.LAYOUT;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Expr dx = style.scalar("dx");
+            Expr dy = style.scalar("dy");
+            // How far the shape reaches along the direction from its centre: a box's half extents projected.
+            Expr extent = max(add(mul(abs(dx), x(fr.shape())), mul(abs(dy), y(fr.shape()))), f(1e-3));
+            Expr along = dot(fr.local(), v2(dx, dy));
+            Expr t = clamp(add(f(0.5), div(along, mul(f(2.0), extent))), f(0.0), f(1.0));
+            return Region.of(new Statement.Assign(layer,
+                    covered(c, mixed(style.vector("from"), style.vector("to"), t))));
+        }
+    };
+
+    /** {@link RadialGradientStyle}: the shape filled from {@code inner} at the centre to {@code outer} at the radius. */
+    public static final Shadelet.Painter RADIAL_GRADIENT = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "radialGradient";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return RadialGradientStyleLayout.LAYOUT;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Expr fromCentre = length(sub(c.fragment().local(), v2(style.scalar("x"), style.scalar("y"))));
+            Expr t = clamp(div(fromCentre, max(style.scalar("radius"), f(1e-3))), f(0.0), f(1.0));
+            return Region.of(new Statement.Assign(layer,
+                    covered(c, mixed(style.vector("inner"), style.vector("outer"), t))));
+        }
+    };
+
+    /** Two straight colours mixed {@code t} of the way, premultiplied: a {@code vec4} premultiplied. */
+    private static Expr mixed(Expr from, Expr to, Expr t) {
+        return add(scale(Layers.premultiplied(xyz(from), w(from)), sub(f(1.0), t)),
+                scale(Layers.premultiplied(xyz(to), w(to)), t));
+    }
+
+    /** A premultiplied colour at the shape's coverage, one pixel soft, as a fill's is. */
+    private static Expr covered(PaintContext c, Expr premultiplied) {
+        Expr aa = c.fragment().aa();
+        return scale(premultiplied, Expr.MathCall.smoothstep(neg(aa), aa, x(c.distance())));
+    }
+
     /** All of them, to add to the core set. */
-    public static final List<Shadelet> ALL = List.of(WEIGHT, OUTLINE, BOX_MORPH, FIELD_MORPH);
+    public static final List<Shadelet> ALL = List.of(WEIGHT, OUTLINE, BOX_MORPH, FIELD_MORPH, RIPPLE, RING,
+            LINEAR_GRADIENT, RADIAL_GRADIENT);
 }
