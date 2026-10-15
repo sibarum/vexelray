@@ -29,7 +29,9 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * A sampled R8G8B8A8 texture with everything the fragment stage needs to read it: the {@code VkImage} + memory +
  * view, a linear-clamp {@code VkSampler}, and a one-binding descriptor set (combined image sampler at set 0,
  * binding 0). The RGBA pixels are uploaded once at construction via a staging buffer and a one-time command buffer
- * (barrier {@code UNDEFINED → TRANSFER_DST}, copy, barrier {@code TRANSFER_DST → SHADER_READ_ONLY}).
+ * (barrier {@code UNDEFINED → TRANSFER_DST}, copy, barrier {@code TRANSFER_DST → SHADER_READ_ONLY}), queued on the
+ * device's queue and not waited for: a frame that draws it is submitted after it, and the staging is freed once a
+ * {@link QueueMark} says the copy is done.
  *
  * <p>This is the first sampled-image path in VexelRay's present layer — the MSDF font atlas is the initial client.
  * Expose {@link #descriptorSetLayout()} to build a {@link GraphicsPipeline} against, and {@link #descriptorSet()}
@@ -178,6 +180,15 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
     private final MethodHandle vkDestroySampler;
     private final MethodHandle vkDestroyDescriptorSetLayout;
     private final MethodHandle vkDestroyDescriptorPool;
+    private final MethodHandle vkDestroyBuffer;
+    private final MethodHandle vkDestroyCommandPool;
+
+    /** What the upload needs until its copy has finished: freed by {@link #settle}. */
+    private final long staging;
+    private final long stagingMemory;
+    private final long uploadPool;
+    /** Passed once the upload's copy has finished; null once its staging is freed. */
+    private volatile QueueMark uploaded;
 
     /**
      * A 1x1 opaque-white texture — what gets bound at the image set for spans that draw no image.
@@ -346,11 +357,16 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
                     Vk.PIPELINE_STAGE_TRANSFER_BIT, Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
             check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
-            submitAndWait(arena, vkQueueSubmit, device, cmd);
-
-            invokeVoid(vkDestroyCommandPool, dev, pool, MemorySegment.NULL);
-            invokeVoid(vkDestroyBuffer, dev, staging, MemorySegment.NULL);
-            invokeVoid(vkFreeMemory, dev, stagingMemory, MemorySegment.NULL);
+            submit(arena, vkQueueSubmit, device, cmd);
+            // Not waited for. Every frame that can sample this is submitted after it on the same queue, and the
+            // copy's last barrier orders its write before their fragment reads; all that has to outlive the copy is
+            // the staging and the command buffer, which a mark taken now frees once the copy is done (settle).
+            this.staging = staging;
+            this.stagingMemory = stagingMemory;
+            this.uploadPool = pool;
+            this.vkDestroyBuffer = vkDestroyBuffer;
+            this.vkDestroyCommandPool = vkDestroyCommandPool;
+            this.uploaded = QueueMark.now(device);
 
             // --- image view ---
             MemorySegment viewInfo = arena.allocate(IMAGE_VIEW_CREATE_INFO);
@@ -453,8 +469,14 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         return srgb;
     }
 
-    /** The {@code VkDescriptorSet} to bind before drawing (set 0). */
+    /**
+     * The {@code VkDescriptorSet} to bind before drawing (set 0). Asked for by every frame that draws this, so it is
+     * also where the upload's staging is freed, by the first frame recorded after the copy has finished.
+     */
     public long descriptorSet() {
+        if (uploaded != null) {
+            settle(false);
+        }
         return descriptorSet;
     }
 
@@ -507,7 +529,7 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         return p.get(ADDRESS, 0);
     }
 
-    private void submitAndWait(Arena arena, MethodHandle vkQueueSubmit, VulkanDevice device, MemorySegment cmd) {
+    private void submit(Arena arena, MethodHandle vkQueueSubmit, VulkanDevice device, MemorySegment cmd) {
         MemorySegment pCmd = arena.allocate(ADDRESS);
         pCmd.set(ADDRESS, 0, cmd);
         MemorySegment submit = arena.allocate(SUBMIT_INFO);
@@ -515,7 +537,28 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         si(submit, SUBMIT_INFO, "commandBufferCount", 1);
         sa(submit, SUBMIT_INFO, "pCommandBuffers", pCmd);
         check(invoke(vkQueueSubmit, device.queue(), 1, submit, 0L), "vkQueueSubmit");
-        device.waitIdle();
+    }
+
+    /**
+     * Free the upload's staging buffer and command pool once its copy has finished: without blocking when
+     * {@code wait} is false (and then perhaps not yet), or after waiting for the copy alone when it is true.
+     */
+    private synchronized void settle(boolean wait) {
+        QueueMark mark = uploaded;
+        if (mark == null) {
+            return;
+        }
+        if (wait) {
+            mark.await();
+        } else if (!mark.passed()) {
+            return;
+        }
+        MemorySegment dev = device.handle();
+        invokeVoid(vkDestroyCommandPool, dev, uploadPool, MemorySegment.NULL);
+        invokeVoid(vkDestroyBuffer, dev, staging, MemorySegment.NULL);
+        invokeVoid(vkFreeMemory, dev, stagingMemory, MemorySegment.NULL);
+        mark.close();
+        uploaded = null;
     }
 
     private boolean closed;
@@ -537,6 +580,7 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
         }
         closed = true;
         Probe.closed(Lane.GPU, "AtlasTexture", this);
+        settle(true);
         MemorySegment dev = device.handle();
         invokeVoid(vkDestroyDescriptorPool, dev, descriptorPool, MemorySegment.NULL);
         invokeVoid(vkDestroyDescriptorSetLayout, dev, descriptorSetLayout, MemorySegment.NULL);
