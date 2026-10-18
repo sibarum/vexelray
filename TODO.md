@@ -270,9 +270,6 @@ file is about the engine and its API. Decisions are logged in
       by hand, and the same camera five numbers through the same per-technique `camera(...)` call.
       **Done (D29):** `Lens` in `vexelray-shader`, `SdfScene.lens()` derived like `clipDepth()`, and both
       techniques take a `Lens` in place of the two numbers. The camera pose stays per-technique, by D5.
-- [ ] **Meshes are not anti-aliased.** The march and the panel each solve their own edge; a triangle's edge is
-      the rasteriser's and is a hard step. MSAA on the shared target is the conventional answer and touches the
-      render pass every technique records into, so it is a decision about the target rather than about meshes.
 - [ ] **Meshes are drawn, not simulated.** A triangle soup has no CPU twin of the IR it is drawn with, so the
       render==sim property stops at the march. A mesh that must be solid needs a field beside it, today by hand.
 - [ ] **Mesh back-face culling** — opt-in, once a scene is fill-bound on meshes. It needs a winding convention,

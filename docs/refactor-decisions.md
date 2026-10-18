@@ -911,6 +911,14 @@ of the march they record on — measured byte for byte.
 normal and a varying; this is that rasteriser, and it took the record as written. A mesh beside a sphere is lit
 by the same light with the same falloff because it is the same IR.
 
+### The hard edge is the point
+
+A triangle's edge is the rasteriser's own: a step, with no coverage ramp. That is deliberate and is not a gap to
+close. The march and the panel compute soft analytic edges; a mesh is the technique whose silhouette is the hard,
+faceted one, and that difference is why it exists alongside them. So there is no MSAA on the shared target and
+no coverage term in `MeshShader`, and neither should be added to "fix" meshes. Anyone who wants smooth geometry
+already has the march.
+
 ### Two-sided by construction
 
 x right, y up, z forward is a left-handed frame, and a mesh author's right-handed habits would get every winding
