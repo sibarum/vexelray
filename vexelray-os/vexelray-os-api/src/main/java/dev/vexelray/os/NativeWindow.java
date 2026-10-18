@@ -310,6 +310,26 @@ public interface NativeWindow extends AutoCloseable {
     }
 
     /**
+     * Put the window over the whole of the monitor it is on, with no frame and above the taskbar; or, with
+     * {@code false}, back where and as it was, maximized if it was. Borderless, not an exclusive display mode: the
+     * desktop keeps its resolution, and switching away is as quick as from any window. No-op where the platform
+     * cannot yet, and asking for the state the window is already in does nothing.
+     *
+     * <p><b>A state, not a placement</b>, as maximized is. While full screen, {@link #screenX}, {@link #screenY},
+     * {@link #outerWidth}, {@link #outerHeight} and {@link #isMaximized} answer for the window it will go back to, so
+     * whatever remembers placement remembers that one, and the window does not open full screen next time because it
+     * was closed so. Nothing of the window's own chrome is caption or border meanwhile: there is nothing to drag.
+     */
+    default void fullscreen(boolean on) {
+        // no-op by default
+    }
+
+    /** Whether the window is full screen ({@link #fullscreen}). */
+    default boolean isFullscreen() {
+        return false;
+    }
+
+    /**
      * Ask the window to close, exactly as its system close button would: the request travels the ordinary route,
      * so {@link #pumpEvents()} reports the close on the next pump and the host tears the window down on its own
      * terms. This is what an application-drawn close button calls — never {@link #close()}, which destroys OS

@@ -881,4 +881,122 @@ public final class User32 {
             throw NativeException.rethrow("SetForegroundWindow", t);
         }
     }
+
+
+    // ---- Full screen -----------------------------------------------------------------------------------------
+    //
+    // The style without its frame, the window over the monitor's whole rect, and its placement kept to go back to:
+    // what a borderless full-screen window is on Windows, rather than an exclusive display mode.
+
+    /** {@code GetWindowLongPtrW} index of the window style. */
+    public static final int GWL_STYLE = -16;
+    /** {@code WS_MAXIMIZE}: the style bit a maximized window carries. */
+    public static final int WS_MAXIMIZE = 0x01000000;
+    /** {@code SetWindowPos} flag: leave the owner's place in the z-order alone. */
+    public static final int SWP_NOOWNERZORDER = 0x0200;
+    /** {@code SetWindowPos}'s hWndInsertAfter for the top of the z-order. */
+    private static final MemorySegment HWND_TOP = MemorySegment.NULL;
+
+    /** {@code WINDOWPLACEMENT} — length, flags, the show state, the minimized and maximized corners, the normal rect. */
+    public static final GroupLayout WINDOWPLACEMENT = MemoryLayout.structLayout(
+            JAVA_INT.withName("length"),
+            JAVA_INT.withName("flags"),
+            JAVA_INT.withName("showCmd"),
+            POINT.withName("ptMinPosition"),
+            POINT.withName("ptMaxPosition"),
+            RECT.withName("rcNormalPosition")
+    ).withName("WINDOWPLACEMENT");
+
+    private static final VarHandle WP_length = fieldHandle(WINDOWPLACEMENT, "length");
+    private static final long MI_RCMONITOR_OFFSET = MONITORINFO.byteOffset(PathElement.groupElement("rcMonitor"));
+
+    private static final MethodHandle GetWindowLongPtrW = Ffi.downcall(LIB, "GetWindowLongPtrW",
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT));
+    private static final MethodHandle SetWindowLongPtrW = Ffi.downcall(LIB, "SetWindowLongPtrW",
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT, JAVA_LONG));
+    private static final MethodHandle GetWindowPlacement = Ffi.downcall(LIB, "GetWindowPlacement",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle SetWindowPlacement = Ffi.downcall(LIB, "SetWindowPlacement",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle MonitorFromWindow = Ffi.downcall(LIB, "MonitorFromWindow",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT));
+
+    /** The window's style bits ({@code GWL_STYLE}). */
+    public static int windowStyle(MemorySegment hwnd) {
+        try {
+            return (int) (long) GetWindowLongPtrW.invokeExact(hwnd, GWL_STYLE);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetWindowLongPtrW", t);
+        }
+    }
+
+    /** Set the window's style bits. The frame follows once {@link #placeOver} or {@link #frameChanged} runs. */
+    public static void setWindowStyle(MemorySegment hwnd, int style) {
+        try {
+            long ignored = (long) SetWindowLongPtrW.invokeExact(hwnd, GWL_STYLE, (long) style & 0xFFFFFFFFL);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetWindowLongPtrW", t);
+        }
+    }
+
+    /** Allocate a {@code WINDOWPLACEMENT} with its length stamped, as the calls require. */
+    public static MemorySegment allocWindowPlacement(SegmentAllocator allocator) {
+        MemorySegment wp = allocator.allocate(WINDOWPLACEMENT);
+        WP_length.set(wp, (int) WINDOWPLACEMENT.byteSize());
+        return wp;
+    }
+
+    /** Fill {@code placement} with where the window is, where it restores to, and whether it is maximized. */
+    public static void getWindowPlacement(MemorySegment hwnd, MemorySegment placement) {
+        try {
+            int ok = (int) GetWindowPlacement.invokeExact(hwnd, placement);
+            if (ok == 0) {
+                throw new NativeException("GetWindowPlacement failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetWindowPlacement", t);
+        }
+    }
+
+    /** Put the window back as {@code placement} has it, maximized or not. */
+    public static void setWindowPlacement(MemorySegment hwnd, MemorySegment placement) {
+        try {
+            int ok = (int) SetWindowPlacement.invokeExact(hwnd, placement);
+            if (ok == 0) {
+                throw new NativeException("SetWindowPlacement failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetWindowPlacement", t);
+        }
+    }
+
+    /** The {@code HMONITOR} the window is mostly on, or the nearest one. */
+    public static MemorySegment monitorFromWindow(MemorySegment hwnd) {
+        try {
+            return (MemorySegment) MonitorFromWindow.invokeExact(hwnd, MONITOR_DEFAULTTONEAREST);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("MonitorFromWindow", t);
+        }
+    }
+
+    /** The {@code rcMonitor} member of a filled {@code MONITORINFO}: the whole monitor, taskbar and all. */
+    public static MemorySegment monitorRect(MemorySegment info) {
+        return info.asSlice(MI_RCMONITOR_OFFSET, RECT.byteSize());
+    }
+
+    /**
+     * Move and size the window to {@code rect} and raise it to the top, recalculating its frame: what puts a window
+     * whose style has just lost its frame over a whole monitor.
+     */
+    public static void placeOver(MemorySegment hwnd, MemorySegment rect) {
+        try {
+            int ok = (int) SetWindowPos.invokeExact(hwnd, HWND_TOP, rectLeft(rect), rectTop(rect), rectSpanX(rect),
+                    rectSpanY(rect), SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+            if (ok == 0) {
+                throw new NativeException("SetWindowPos failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetWindowPos", t);
+        }
+    }
 }

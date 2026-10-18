@@ -141,6 +141,17 @@ public final class Win32Window implements NativeWindow {
     private volatile Runnable frameSink;
     private boolean rendering;
     private boolean shown;
+    // Full screen, and what to go back to: the style and placement the window had, and the rect and maximized flag
+    // that placement queries answer with meanwhile (fullscreen's contract). Main thread, except the flag, which the
+    // window procedure reads during the calls that change it.
+    private volatile boolean fullscreen;
+    private int windowedStyle;
+    private MemorySegment windowedPlacement;
+    private int windowedX;
+    private int windowedY;
+    private int windowedWidth;
+    private int windowedHeight;
+    private boolean windowedMaximized;
     private final boolean[] keyDown = new boolean[256];   // indexed by Win32 virtual-key code
 
     // This window's own mark, or null to follow the application's. The two HICONs realising it are handles this
@@ -353,7 +364,7 @@ public final class Win32Window implements NativeWindow {
      * is the application's. Insetting by that thickness is what puts the client area back on the monitor.
      */
     private void calcClientFrame(MemorySegment hwnd, long lParam) {
-        if (!User32.isZoomed(hwnd)) {
+        if (fullscreen || !User32.isZoomed(hwnd)) {
             return;   // client == window: nothing to adjust
         }
         int frame = frameThickness();
@@ -362,6 +373,9 @@ public final class Win32Window implements NativeWindow {
 
     /** Answer {@code WM_NCHITTEST} from the regions the application published. */
     private long hitTest(MemorySegment hwnd, long lParam) {
+        if (fullscreen) {
+            return User32.HTCLIENT;   // no caption to drag and no border to size: the window is the monitor
+        }
         HitRegions regions = hitRegions;
         // Two thicknesses: what the application asked for over its own dead space, and the system metric, which
         // is what still applies inside the chrome it declared (see HitRegions.zone).
@@ -456,7 +470,54 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public boolean isMaximized() {
-        return destroyed ? lastMaximized : User32.isZoomed(hwnd);
+        return destroyed ? lastMaximized : fullscreen ? windowedMaximized : User32.isZoomed(hwnd);
+    }
+
+    /**
+     * The window's frame taken off its style, and the window put over its monitor's whole rect; and back, by the
+     * style and placement it had. Not an exclusive mode: the window is an ordinary one that covers the monitor, which
+     * Windows recognises as full screen and keeps the taskbar under.
+     */
+    @Override
+    public void fullscreen(boolean on) {
+        if (destroyed || on == fullscreen) {
+            return;
+        }
+        if (!on) {
+            fullscreen = false;
+            User32.setWindowStyle(hwnd, windowedStyle);
+            User32.setWindowPlacement(hwnd, windowedPlacement);
+            User32.frameChanged(hwnd);
+            return;
+        }
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment info = temp.allocate(User32.MONITORINFO);
+            if (!User32.getMonitorInfoW(User32.monitorFromWindow(hwnd), info)) {
+                return;
+            }
+            MemorySegment rect = temp.allocate(User32.RECT);
+            User32.getWindowRect(hwnd, rect);
+            windowedX = User32.rectLeft(rect);
+            windowedY = User32.rectTop(rect);
+            windowedWidth = User32.rectSpanX(rect);
+            windowedHeight = User32.rectSpanY(rect);
+            windowedMaximized = User32.isZoomed(hwnd);
+            if (windowedPlacement == null) {
+                windowedPlacement = User32.allocWindowPlacement(arena);
+            }
+            User32.getWindowPlacement(hwnd, windowedPlacement);
+            windowedStyle = User32.windowStyle(hwnd);
+            // Before the frame changes, so the WM_NCCALCSIZE and WM_NCHITTEST it sends already see it. The maximized
+            // bit goes with the frame: the placement puts it back.
+            fullscreen = true;
+            User32.setWindowStyle(hwnd, windowedStyle & ~(User32.WS_OVERLAPPEDWINDOW | User32.WS_MAXIMIZE));
+            User32.placeOver(hwnd, User32.monitorRect(info));
+        }
+    }
+
+    @Override
+    public boolean isFullscreen() {
+        return fullscreen;
     }
 
     @Override
@@ -784,22 +845,22 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public int screenX() {
-        return destroyed ? lastX : windowRect(User32::rectLeft);
+        return destroyed ? lastX : fullscreen ? windowedX : windowRect(User32::rectLeft);
     }
 
     @Override
     public int screenY() {
-        return destroyed ? lastY : windowRect(User32::rectTop);
+        return destroyed ? lastY : fullscreen ? windowedY : windowRect(User32::rectTop);
     }
 
     @Override
     public int outerWidth() {
-        return destroyed ? lastOuterWidth : windowRect(User32::rectSpanX);
+        return destroyed ? lastOuterWidth : fullscreen ? windowedWidth : windowRect(User32::rectSpanX);
     }
 
     @Override
     public int outerHeight() {
-        return destroyed ? lastOuterHeight : windowRect(User32::rectSpanY);
+        return destroyed ? lastOuterHeight : fullscreen ? windowedHeight : windowRect(User32::rectSpanY);
     }
 
     /** Read one value off the window's outer rect — same rect WindowConfig requests, so bounds round-trip. */
@@ -832,6 +893,17 @@ public final class Win32Window implements NativeWindow {
      * {@link #close}, or from the window procedure on {@code WM_DESTROY}, both with the handle still valid.
      */
     private void retire() {
+        if (fullscreen) {
+            // What the window was before it covered the monitor, as the placement queries said while it did.
+            lastX = windowedX;
+            lastY = windowedY;
+            lastOuterWidth = windowedWidth;
+            lastOuterHeight = windowedHeight;
+            lastMaximized = windowedMaximized;
+            lastMinimized = false;
+            destroyed = true;
+            return;
+        }
         try (Arena temp = Arena.ofConfined()) {
             MemorySegment rect = temp.allocate(User32.RECT);
             User32.getWindowRect(hwnd, rect);
