@@ -1009,6 +1009,70 @@ masked object in a frame with no depth has nothing else to be composited against
 `mask` takes plain triangles, so `vexelray-technique-sdf` does not depend on `vexelray-technique-mesh`, and anything
 that can produce triangles can mask a march. `Mesh.worldPositions(Placement)` returns exactly that shape.
 
+## 27. A march culled to its own box (D31)
+
+`SdfRaymarchTechnique.cullToBounds()` masks a march with its scene's conservative box, `Bounds.of(surface)`, and
+marches each ray only where the box cannot answer for the field. The contract is the unculled frame: the box
+contains everything the field draws, so the culling has invisible edges, and it is a cost saving and nothing else.
+A scene with no box (a plane, a repeat to the horizon, an implicit) stays fullscreen rather than getting an
+invented one.
+
+### Pixels: the D30 mask, with the box's twelve triangles
+
+The box is grown by `1e-4` of its size first, so rounding cannot shave a surface that touches it, and drawn with
+both faces and no culling. From outside, each covered pixel runs twice, and the back face's run loses the depth test
+and changes nothing. From inside, the back faces surround the eye, and once the near ones are clipped at the eye
+plane they still cover the screen. `BoxCullTest` looks from inside in four directions to pin this.
+
+### Along the ray: strides, not a jump to the entry
+
+The brief was to start each ray at the slab test's entry and stop at its exit. That was built first and rejected,
+because it is a different march. Sphere tracing from the entry converges to a slightly different point than tracing
+from the eye, which flipped 58 silhouette pixels in the first test scene. The step budget would also reach further,
+so a body beyond `steps × maxStep` would appear in the culled frame and not in the unculled one.
+
+What replaced it keeps the unculled march's steps, exactly. Each step measures the sample point's distance to the
+box, which is a few instructions:
+
+- **At least a stride from the box**, the field is at least that far from anything it draws, so the unculled step
+  `min(d, maxStep)` would have been `maxStep`. The culled step is `t + maxStep` without calling the field. It is the
+  same float added to the same `t` and counted against the same budget, so the `t` sequence is bit-for-bit the
+  unculled one. The field is first called where the ray comes within a stride of the box, which is its entry.
+- **Past the box for good**, after the slab test's exit (or, for a ray that never enters, after it has crossed all
+  six planes), the distance to the box only grows. Once it reaches the larger of a stride and the far plane's hit
+  threshold, every later unculled step is a stride and ends in a miss, so the culled march stops there and misses.
+
+This is exact for fields that are true distances: the primitives, their hard unions, and a soft union whose box
+has grown by its bulge. A field that only bounds the distance from below (a twist, a Lipschitz-scaled implicit) may
+step short where the box says stride, and there the culled march can converge differently by a hair. The field
+itself is unchanged, so render==sim holds: the CPU lowers the same `sdf` the culled march calls.
+
+### Where the box lives: in the vertices
+
+The box's corners travel as two more `vec4` attributes on every mask vertex, passed on as varyings
+(`SdfComposer.Screen.BOX`). Constants would need the box in the `ShaderKey`, or it would need to be provably a
+function of it, and a moved box would mean a recompile. The push block would take room from parameters on the push
+road. Vertex attributes cost 36 vertices × 48 bytes, need no recompile when the box moves (`cullTo` again), and are
+already the layout an instanced draw of many objects would use, with each instance carrying its own box.
+
+### What was measured
+
+`BoxCullTest`: compared with the same box drawn as a plain D30 mask, the culled frame is byte-identical from outside,
+from inside, and with a body beyond the budget. Compared with the unmasked march, the same pixels are lit, and at
+most 1% of them differ by one or two levels. That difference comes from D30, not from this change: a masked pixel's
+ray comes from a clip position divided per fragment, while the fullscreen one comes from an interpolated `vUv`, so
+they are the same ray only to within a rounding. A bit-exact match needs `FRAG_COORD` in SupirVast's core IR.
+
+`BoxCullSmoke` timed forty spheres covering part of a 1280×720 frame on an RTX 5070 Ti Laptop GPU. Unmasked took
+3.5–6.4 ms a frame (it varied between runs), the box as a plain mask 1.2 ms, and culled 1.0–1.1 ms. Most of the
+saving is pixels. The strides add about 10–20% on top, and more where the box is small in the frame and far away.
+
+### Next: many objects, one pipeline
+
+Each culled march is one pipeline and one draw. Fractal detail regions and dormant FLIP volumes want many bounded
+objects, so the next step is instancing. That means one draw of many boxes, with each instance carrying its own box
+(the layout already allows it) and which field to march.
+
 ## Open questions (to revisit as phases land)
 
 - ~~**Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need

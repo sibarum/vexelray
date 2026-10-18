@@ -6,6 +6,7 @@ import dev.vexelray.engine.RenderTechnique;
 import dev.vexelray.engine.TechniqueContext;
 import dev.vexelray.engine.vulkan.VulkanTechniqueContext;
 import dev.vexelray.shader.ComposedShader;
+import dev.vexelray.surface.Bounds;
 import dev.vexelray.surface.ParamBlock;
 import dev.vexelray.surface.ParamId;
 import dev.vexelray.vulkan.present.DrawCommands;
@@ -75,11 +76,38 @@ import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
  * <p>A closed mesh covers each pixel twice, front face and back, and the march runs for both. The second loses
  * the depth test at an equal depth and changes nothing, but it is paid for; a mask made only of the faces that
  * can be seen is half the work.
+ *
+ * <h2>Culled to its box (D31)</h2>
+ *
+ * <p>{@link #cullToBounds} masks the march with its scene's own conservative box, {@code Bounds.of}, and the
+ * fragment then marches each ray only between where it enters that box and where it leaves. The box contains
+ * everything the field draws, so the edges are invisible and the picture is the unculled one; what goes is the
+ * work on pixels that could never hit and on the stretches of ray before and after the box. A scene with no box —
+ * a plane, a lattice to the horizon — stays fullscreen.
  */
 public final class SdfRaymarchTechnique implements RenderTechnique {
 
     /** Floats per mask vertex in the vertex buffer: {@code x, y, z, 1}. */
     private static final int MASK_FLOATS_PER_VERTEX = 4;
+
+    /** Floats per box-mask vertex: the position as above, then the box's two corners, each padded to four. */
+    private static final int BOX_FLOATS_PER_VERTEX = 12;
+
+    /**
+     * A box's twelve triangles, as corner indices — bit 0 of a corner is x, bit 1 y, bit 2 z, set for the max side.
+     * Winding is immaterial: a mask is drawn with no culling.
+     */
+    private static final int[] BOX_TRIANGLES = {
+            0, 1, 3, 0, 3, 2,   // z min
+            4, 5, 7, 4, 7, 6,   // z max
+            0, 1, 5, 0, 5, 4,   // y min
+            2, 3, 7, 2, 7, 6,   // y max
+            0, 2, 6, 0, 6, 4,   // x min
+            1, 3, 7, 1, 7, 5};  // x max
+    private static final int BOX_VERTICES = BOX_TRIANGLES.length;
+
+    /** How much a culling box grows, relative to its size, so rounding cannot shave what touches it. */
+    private static final double BOX_MARGIN = 1e-4;
 
     private final SdfScene scene;
     private final ParamBlock params;
@@ -111,6 +139,8 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
     private int maskVertices;
     private boolean maskDirty;
     private VertexBuffer maskBuffer;
+    /** Whether the mask is a culling box ({@link #cullTo}), whose vertices also carry the box. */
+    private boolean boxed;
 
     /**
      * A technique that marches {@code scene}.
@@ -156,6 +186,10 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         if (xyz.length == 0 || xyz.length % 9 != 0) {
             throw new IllegalArgumentException("a mask is whole triangles, nine numbers each; got " + xyz.length);
         }
+        if (boxed) {
+            throw new IllegalStateException("this march is culled to a box (cullTo); a mask of other triangles "
+                    + "is a different vertex layout");
+        }
         int vertices = xyz.length / 3;
         if (mask == null) {
             if (pipeline != null) {
@@ -184,6 +218,99 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         return mask != null;
     }
 
+    /**
+     * Cull this march to its scene's own conservative box, {@link Bounds#of} — see the class note. For a scene with
+     * no box, a plane or anything else that reaches forever, this does nothing and the march stays fullscreen,
+     * which {@link #culled()} reports.
+     *
+     * <p>The frame is the unculled one: the box contains everything the field draws, so no pixel it leaves out
+     * could have hit, and no stretch of ray the slab test skips could either.
+     *
+     * @throws IllegalStateException as {@link #cullTo}
+     */
+    public SdfRaymarchTechnique cullToBounds() {
+        Bounds.of(scene.surface()).ifPresent(this::cullTo);
+        return this;
+    }
+
+    /**
+     * Cull this march to {@code box}: draw it through the box's twelve triangles, so it runs only on the pixels the
+     * box covers, and march each ray only over its stretch inside the box ({@link SdfComposer.Screen#BOX}).
+     *
+     * <p>The box must contain everything the scene draws. Where it does not, the scene is cut at the box, silently;
+     * {@link #cullToBounds} is the call that cannot get that wrong. The box is grown by a hair before use, so a
+     * surface that touches it — a sphere's box touches the sphere at six points — is not shaved by rounding.
+     *
+     * <p>Both faces are drawn and none culled, so a camera inside the box sees its back faces cover the screen
+     * and marches from the eye, as an unculled march would. A camera outside pays for each pixel twice, front face
+     * and back; the second loses the depth test and changes nothing.
+     *
+     * <p>Like {@link #mask}, the first call comes before {@link #realize}; later ones move the box.
+     *
+     * @throws IllegalStateException for a first call after realise, or on a march already given a {@link #mask}
+     */
+    public SdfRaymarchTechnique cullTo(Bounds box) {
+        if (mask != null && !boxed) {
+            throw new IllegalStateException("this march already has a mask of other triangles; a box mask is a "
+                    + "different vertex layout");
+        }
+        if (mask == null && pipeline != null) {
+            throw new IllegalStateException("this march was realised unculled; a box changes its vertex stage, so "
+                    + "the first cullTo() must come before realise");
+        }
+        Bounds b = padded(box);
+        float[] xyz = boxTriangles(b);
+        if (mask == null) {
+            boxed = true;
+            maskCapacity = BOX_VERTICES;
+            mask = new float[BOX_VERTICES * BOX_FLOATS_PER_VERTEX];
+        }
+        for (int v = 0; v < BOX_VERTICES; v++) {
+            int at = v * BOX_FLOATS_PER_VERTEX;
+            mask[at] = xyz[v * 3];
+            mask[at + 1] = xyz[v * 3 + 1];
+            mask[at + 2] = xyz[v * 3 + 2];
+            mask[at + 3] = 1;
+            mask[at + 4] = (float) b.minX();
+            mask[at + 5] = (float) b.minY();
+            mask[at + 6] = (float) b.minZ();
+            mask[at + 7] = 0;
+            mask[at + 8] = (float) b.maxX();
+            mask[at + 9] = (float) b.maxY();
+            mask[at + 10] = (float) b.maxZ();
+            mask[at + 11] = 0;
+        }
+        maskVertices = BOX_VERTICES;
+        maskDirty = true;
+        return this;
+    }
+
+    /** {@code box} grown by the hair {@link #cullTo} grows it by. */
+    static Bounds padded(Bounds box) {
+        return box.expanded(BOX_MARGIN * (1 + box.largestHalfExtent()));
+    }
+
+    /** {@code box}'s twelve triangles as {@link #mask} takes them: three numbers a vertex, three vertices each. */
+    static float[] boxTriangles(Bounds box) {
+        float[] xyz = new float[BOX_VERTICES * 3];
+        for (int v = 0; v < BOX_VERTICES; v++) {
+            int c = BOX_TRIANGLES[v];
+            xyz[v * 3] = (float) ((c & 1) == 0 ? box.minX() : box.maxX());
+            xyz[v * 3 + 1] = (float) ((c & 2) == 0 ? box.minY() : box.maxY());
+            xyz[v * 3 + 2] = (float) ((c & 4) == 0 ? box.minZ() : box.maxZ());
+        }
+        return xyz;
+    }
+
+    /** Whether this march is culled to a box — false for a scene {@link #cullToBounds} found no box for. */
+    public boolean culled() {
+        return boxed;
+    }
+
+    private int stride() {
+        return boxed ? BOX_FLOATS_PER_VERTEX : MASK_FLOATS_PER_VERTEX;
+    }
+
     /** The scene this technique marches, for a caller that needs its shading or march settings back. */
     public SdfScene scene() {
         return scene;
@@ -195,17 +322,23 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         VulkanDevice device = vk.device();
 
         boolean masked = mask != null;
-        List<ComposedShader> composed = masked
+        List<ComposedShader> composed = boxed
+                ? new SdfComposer().composeBoxed(scene)
+                : masked
                 ? new SdfComposer().composeMasked(scene)
                 : new SdfComposer().compose(scene);
         this.pushBytes = SdfComposer.pushBytes(scene);
 
         // A masked march reads its vertices from a buffer and its vertex stage reads the camera, so both stages
         // share the push range; the fullscreen one has no vertex input and only the fragment reads anything.
+        List<GraphicsPipeline.VertexAttribute> attributes = !masked ? List.of() : boxed
+                ? List.of(
+                        GraphicsPipeline.VertexAttribute.floats(SdfComposer.MASK_POSITION_LOCATION, 4, 0),
+                        GraphicsPipeline.VertexAttribute.floats(SdfComposer.MASK_BOX_MIN_LOCATION, 4, 16),
+                        GraphicsPipeline.VertexAttribute.floats(SdfComposer.MASK_BOX_MAX_LOCATION, 4, 32))
+                : List.of(GraphicsPipeline.VertexAttribute.floats(SdfComposer.MASK_POSITION_LOCATION, 4, 0));
         GraphicsPipeline.Config config = new GraphicsPipeline.Config(
-                masked ? MASK_FLOATS_PER_VERTEX * Float.BYTES : 0,
-                masked ? List.of(GraphicsPipeline.VertexAttribute.floats(
-                        SdfComposer.MASK_POSITION_LOCATION, MASK_FLOATS_PER_VERTEX, 0)) : List.of(),
+                masked ? stride() * Float.BYTES : 0, attributes,
                 new long[0], false, pushStages(), pushBytes, true)
                 // Depth state exactly when the shared pass has depth. The fragment writes gl_FragDepth
                 // regardless — see the class note — so this is the only thing that decides whether the march
@@ -221,8 +354,8 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         this.push = cmds.allocatePushConstants(pushBytes);
         this.pushFloats = new float[pushBytes / Float.BYTES];
         if (masked) {
-            this.maskBuffer = new VertexBuffer(device, maskCapacity * MASK_FLOATS_PER_VERTEX);
-            maskBuffer.update(mask, maskVertices * MASK_FLOATS_PER_VERTEX);
+            this.maskBuffer = new VertexBuffer(device, maskCapacity * stride());
+            maskBuffer.update(mask, maskVertices * stride());
             maskDirty = false;
         }
     }
@@ -260,7 +393,7 @@ public final class SdfRaymarchTechnique implements RenderTechnique {
         // Updated here rather than in mask(): the frame callback runs after the previous frame's fence wait, and
         // so does record, and keeping the upload beside the draw keeps "the buffer the GPU reads" in one place.
         if (maskDirty) {
-            maskBuffer.update(mask, maskVertices * MASK_FLOATS_PER_VERTEX);
+            maskBuffer.update(mask, maskVertices * stride());
             maskDirty = false;
         }
         cmds.push(cmd, pipeline, pushStages(), push, pushBytes);

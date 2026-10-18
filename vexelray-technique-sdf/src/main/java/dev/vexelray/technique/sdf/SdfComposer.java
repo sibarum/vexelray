@@ -493,7 +493,14 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
          * perspective-correct interpolation is exact for, so {@code x/w} at a fragment is that fragment's device
          * coordinate. The IR has no {@code noperspective} to ask for instead, and this needs none.
          */
-        MASK
+        MASK,
+        /**
+         * As {@link #MASK}, for a mask that is the scene's own bounding box (D31), which also hands the fragment
+         * that box: {@code vBoxMin} and {@code vBoxMax}, the same at every vertex. The march then starts where the
+         * ray enters the box and stops where it leaves, by an analytic slab test, instead of walking from the eye
+         * to the far plane. The field is not touched; only the stretch of ray it is asked about.
+         */
+        BOX
     }
 
     /** The pixel's {@code (u, v)} in {@code [0,1]}, as {@link #primaryRay} reads them. */
@@ -526,6 +533,28 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * plane still means "march here".
      */
     public static byte[] maskVertexSpirv(SdfScene scene, ParamBacking backing) {
+        return maskVertexSpirv(scene, backing, false);
+    }
+
+    /**
+     * Locations of a box mask's two further inputs, its box's corners as {@code vec4} (w unused — a three-float
+     * attribute is not a format every device takes), and of the varyings that carry them on to the fragment.
+     */
+    public static final int MASK_BOX_MIN_LOCATION = 1;
+    public static final int MASK_BOX_MAX_LOCATION = 2;
+    private static final int BOX_MIN_VARYING = Fullscreen.UV_LOCATION + 1;
+    private static final int BOX_MAX_VARYING = Fullscreen.UV_LOCATION + 2;
+
+    /**
+     * The same, and with {@code box} also passing each vertex's box corners through to the fragment, which is the
+     * vertex stage of {@link Screen#BOX}.
+     *
+     * <p>The box travels with the vertices rather than in the push block or as constants. It costs the push block
+     * nothing a parameter could have used, it leaves the SPIR-V independent of where the box is — so the
+     * {@link ShaderKey} needs no word about it and a box can move without a recompile — and it is already the
+     * shape many objects in one draw would want, each triangle carrying the box of the object it belongs to.
+     */
+    public static byte[] maskVertexSpirv(SdfScene scene, ParamBacking backing, boolean box) {
         ParamBlock params = paramBlock(scene, backing);
         PushConstants camera = pushConstants(params, backing.usesBuffer(params.size()));
         InterfaceVar inWorld = InterfaceVar.input("inWorld", MASK_POSITION_LOCATION, Ir.V4);
@@ -567,6 +596,14 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         body.add(new Statement.BuiltinWrite(dev.supirvast.vastir.core.Builtin.POSITION, read(clip)));
         body.add(new Statement.InterfaceWrite(vClip,
                 Ir.v3(Ir.x(read(clip)), Ir.y(read(clip)), Ir.w(read(clip)))));
+        if (box) {
+            InterfaceVar inMin = InterfaceVar.input("inBoxMin", MASK_BOX_MIN_LOCATION, Ir.V4);
+            InterfaceVar inMax = InterfaceVar.input("inBoxMax", MASK_BOX_MAX_LOCATION, Ir.V4);
+            body.add(new Statement.InterfaceWrite(InterfaceVar.output("vBoxMin", BOX_MIN_VARYING, Ir.V3),
+                    Ir.xyz(new Expr.InterfaceRead(inMin))));
+            body.add(new Statement.InterfaceWrite(InterfaceVar.output("vBoxMax", BOX_MAX_VARYING, Ir.V3),
+                    Ir.xyz(new Expr.InterfaceRead(inMax))));
+        }
         body.add(new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
@@ -579,6 +616,18 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         return List.of(
                 new ComposedShader(ShaderStage.VERTEX, maskVertexSpirv(scene, backing), Fullscreen.ENTRY_POINT),
                 new ComposedShader(ShaderStage.FRAGMENT, fragmentSpirv(scene, backing, Screen.MASK),
+                        Fullscreen.ENTRY_POINT));
+    }
+
+    /**
+     * The pair for a march masked by a box that contains it (D31): {@link #maskVertexSpirv} passing the box on,
+     * and the fragment reading {@link Screen#BOX}, which marches only the stretch of each ray inside the box.
+     */
+    public List<ComposedShader> composeBoxed(SdfScene scene) {
+        return List.of(
+                new ComposedShader(ShaderStage.VERTEX, maskVertexSpirv(scene, backing, true),
+                        Fullscreen.ENTRY_POINT),
+                new ComposedShader(ShaderStage.FRAGMENT, fragmentSpirv(scene, backing, Screen.BOX),
                         Fullscreen.ENTRY_POINT));
     }
 
@@ -743,12 +792,10 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         LocalVar p = new LocalVar("p", Ir.V3);
         LocalVar d = new LocalVar("d", F32);
 
-        // One step: sample the field, advance by it (clamped), count the iteration.
-        Region step = Region.of(
-                new Statement.Assign(p, Ir.add(read(ro), Ir.scale(read(rd), read(t)))),
-                new Statement.Assign(d, call(sdf, read(p))),
-                new Statement.Assign(t, Ir.add(read(t), Ir.min(read(d), Ir.f(march.maxStep())))),
-                new Statement.Assign(i, new Expr.Binary(BinaryOp.ADD, read(i), new Expr.ConstInt(Type.int32(), 1))));
+        Expr along = Ir.add(read(ro), Ir.scale(read(rd), read(t)));
+        Statement fieldStep = new Statement.Assign(t, Ir.add(read(t), Ir.min(read(d), Ir.f(march.maxStep()))));
+        Statement count = new Statement.Assign(i,
+                new Expr.Binary(BinaryOp.ADD, read(i), new Expr.ConstInt(Type.int32(), 1)));
 
         // Stop on the step budget OR the far plane. The far-plane half is what bounds an unbounded or periodic
         // implicit: without it such a field never stops being "somewhere ahead" and every sky pixel costs the
@@ -757,14 +804,44 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 new Expr.Binary(BinaryOp.LESS_THAN, read(i), new Expr.ConstInt(Type.int32(), march.steps())),
                 new Expr.Binary(BinaryOp.LESS_THAN, read(t), Ir.f(march.farPlane())));
 
-        Region body = Region.of(
+        // One step: sample the field, advance by it (clamped), count the iteration.
+        Region step = Region.of(
+                new Statement.Assign(p, along),
+                new Statement.Assign(d, call(sdf, read(p))),
+                fieldStep,
+                count);
+
+        // Through a box mask the same march, with the field left unasked wherever the box answers for it — see
+        // boxMarch. Elsewhere none of this is emitted, so those paths compile to the SPIR-V they always did.
+        List<Statement> boxPrelude = new ArrayList<>();
+        if (screen == Screen.BOX) {
+            BoxMarch box = boxMarch(read(ro), read(rd), march, boxPrelude);
+            LocalVar gap = new LocalVar("boxGap", F32);
+            boxPrelude.add(new Statement.Assign(p, along));
+            boxPrelude.add(new Statement.DeclareVar(gap, box.gap(read(p))));
+            step = Region.of(
+                    new Statement.If(Ir.lt(read(gap), Ir.f(box.strideGap())),
+                            Region.of(new Statement.Assign(d, call(sdf, read(p))), fieldStep),
+                            Region.of(new Statement.Assign(t, Ir.add(read(t), Ir.f(march.maxStep()))))),
+                    count,
+                    new Statement.Assign(p, along),
+                    new Statement.Assign(gap, box.gap(read(p))));
+            keepMarching = new Expr.Binary(BinaryOp.LOGICAL_AND, keepMarching,
+                    new Expr.Binary(BinaryOp.LOGICAL_OR,
+                            Ir.lt(read(t), box.escapeAt()),
+                            Ir.lt(read(gap), Ir.f(box.missGap()))));
+        }
+
+        List<Statement> statements = new ArrayList<>(List.of(
                 new Statement.DeclareVar(ro, eye),
                 new Statement.DeclareVar(rd, ray.direction()),
                 new Statement.DeclareVar(cosForward, ray.cosForward()),
                 new Statement.DeclareVar(t, Ir.f(0.0)),
                 new Statement.DeclareVar(i, new Expr.ConstInt(Type.int32(), 0)),
                 new Statement.DeclareVar(p, Ir.v3(0, 0, 0)),
-                new Statement.DeclareVar(d, Ir.f(0.0)),
+                new Statement.DeclareVar(d, Ir.f(0.0))));
+        statements.addAll(boxPrelude);
+        statements.addAll(List.of(
                 new Statement.While(keepMarching, step),
                 new Statement.Assign(p, Ir.add(read(ro), Ir.scale(read(rd), read(t)))),
                 new Statement.Assign(d, call(sdf, read(p))),
@@ -775,7 +852,8 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 new Statement.If(hitTest(march, read(d), read(t)),
                         hit(scene, sdf, albedoFn, payloadFn, fragColor, p, rd, t, cosForward),
                         miss(scene, fragColor)),
-                new Statement.ReturnVoid());
+                new Statement.ReturnVoid()));
+        Region body = new Region(statements);
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), body);
         CoreModule module = new CoreModule();
@@ -831,6 +909,89 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         Expr rz = Ir.sub(Ir.mul(pz, cosYaw), Ir.mul(sx, sinYaw));
 
         return new PrimaryRay(Expr.MathCall.normalize(Ir.v3(rx, py, rz)), cosForward);
+    }
+
+    /**
+     * How a march through a box mask leaves the field unasked, while taking exactly the steps — and so drawing
+     * exactly the frame — the unculled march takes (D31).
+     *
+     * <p>Two rules, each a statement about what the unculled march would have done.
+     *
+     * <p><b>Stride outside the box.</b> Where the sample point is at least {@link #strideGap} from the box, the field
+     * there is at least that far from anything it draws, so the unculled step, {@code min(d, maxStep)}, is
+     * {@code maxStep}. This step is {@code t + maxStep} without calling the field: the same float, the same
+     * addition, the same {@code t} to the last bit, and the same step counted against the budget. So the field is
+     * first sampled where the ray comes within a stride of the box — at its entry, give or take that stride.
+     *
+     * <p><b>Stop once past the box for good.</b> Past {@link #escapeAt} the ray is moving away from the box on every
+     * axis, so its distance to the box only grows. Once that distance is {@link #missGap} — no less than a stride
+     * and no less than the hit threshold at the far plane — every later unculled step is a stride and its final
+     * test a miss, so this march stops there and misses too. {@code escapeAt} is where the ray leaves the box by the
+     * slab test, or, for a ray that never enters it, where it has crossed all six planes.
+     *
+     * <p>Why not start the march at the slab entry and stop at the exit, which is the obvious version: it is a
+     * different march. Sphere tracing from the entry converges to a slightly different point than tracing from the
+     * eye, which flips grazing silhouette pixels, and the budget — {@code steps} — would then reach further, so an
+     * object beyond the unculled march's reach would appear. The culled frame must be the unculled frame.
+     *
+     * <p>The guarantee is as exact as the field: a field that is a true distance — every primitive here, their hard
+     * unions, a soft union whose box has grown by its bulge — is at least its distance to a box containing it. A
+     * field that only bounds the distance from below, a twist or a Lipschitz-scaled implicit, may step short of
+     * {@code maxStep} where the box says stride, and there the culled march can converge a hair differently.
+     */
+    private record BoxMarch(Expr centre, Expr half, Expr escapeAt, double strideGap, double missGap) {
+
+        /** The distance from {@code point} to the box, zero inside it. */
+        Expr gap(Expr point) {
+            return Ir.length(Ir.max(Ir.sub(Ir.abs(Ir.sub(point, centre)), half), Ir.v3(0, 0, 0)));
+        }
+    }
+
+    /** Relative slack on the box rules' thresholds, so a field and a box distance a rounding apart agree. */
+    private static final double BOX_SLACK = 1e-3;
+
+    /**
+     * The box the mask's vertices carry, and where along the ray {@code ro + t * rd} it can be let go — see
+     * {@link BoxMarch}. Appends its declarations to {@code out}.
+     *
+     * <p>The slab test: each axis bounds {@code t} between its two planes, {@code (plane - ro) / rd}; the ray is
+     * inside the box where it is inside all three slabs, so it enters at the latest of the near crossings and
+     * leaves at the earliest of the far ones. An axis the ray runs parallel to divides by zero and gets infinities
+     * of the right sign — "always inside" or "never" — so its far crossing is infinite and the march simply never
+     * lets the box go early on its account.
+     */
+    private static BoxMarch boxMarch(Expr ro, Expr rd, MarchSettings march, List<Statement> out) {
+        Expr boxMin = new Expr.InterfaceRead(InterfaceVar.input("vBoxMin", BOX_MIN_VARYING, Ir.V3));
+        Expr boxMax = new Expr.InterfaceRead(InterfaceVar.input("vBoxMax", BOX_MAX_VARYING, Ir.V3));
+        LocalVar centre = new LocalVar("boxCentre", Ir.V3);
+        LocalVar half = new LocalVar("boxHalf", Ir.V3);
+        LocalVar inv = new LocalVar("invRd", Ir.V3);
+        LocalVar near = new LocalVar("slabNear", Ir.V3);
+        LocalVar far = new LocalVar("slabFar", Ir.V3);
+        LocalVar exits = new LocalVar("slabExits", Ir.V3);
+        LocalVar enter = new LocalVar("tEnter", F32);
+        LocalVar leave = new LocalVar("tLeave", F32);
+        LocalVar escape = new LocalVar("tEscape", F32);
+        out.add(new Statement.DeclareVar(centre, Ir.scale(Ir.add(boxMin, boxMax), Ir.f(0.5))));
+        out.add(new Statement.DeclareVar(half, Ir.scale(Ir.sub(boxMax, boxMin), Ir.f(0.5))));
+        out.add(new Statement.DeclareVar(inv, Ir.div(Ir.v3(1, 1, 1), rd)));
+        out.add(new Statement.DeclareVar(near, Ir.mul(Ir.sub(boxMin, ro), read(inv))));
+        out.add(new Statement.DeclareVar(far, Ir.mul(Ir.sub(boxMax, ro), read(inv))));
+        Expr entries = Ir.min(read(near), read(far));
+        out.add(new Statement.DeclareVar(exits, Ir.max(read(near), read(far))));
+        out.add(new Statement.DeclareVar(enter, Ir.max(Ir.max(Ir.x(entries), Ir.y(entries)), Ir.z(entries))));
+        out.add(new Statement.DeclareVar(leave,
+                Ir.min(Ir.min(Ir.x(read(exits)), Ir.y(read(exits))), Ir.z(read(exits)))));
+        // A ray through the box is past it for good once it leaves; one that misses only once it has crossed
+        // every plane, since before that it may still be closing on an edge.
+        out.add(new Statement.DeclareVar(escape,
+                Ir.max(Ir.max(Ir.x(read(exits)), Ir.y(read(exits))), Ir.z(read(exits)))));
+        out.add(new Statement.If(Ir.lt(read(leave), read(enter)), Region.of(),
+                Region.of(new Statement.Assign(escape, read(leave)))));
+        double stride = march.maxStep() * (1 + BOX_SLACK);
+        double miss = Math.max(march.maxStep(), march.hitEpsilon() + march.hitEpsilonSlope() * march.farPlane())
+                * (1 + BOX_SLACK);
+        return new BoxMarch(read(centre), read(half), read(escape), stride, miss);
     }
 
     /** Distance-relative hit threshold: a far pixel covers more world, so it may not demand the same precision. */

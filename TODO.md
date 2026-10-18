@@ -248,6 +248,33 @@ file is about the engine and its API. Decisions are logged in
       boundary row, a mask behind the sphere giving the byte-identical frame (a silhouette, not a portal), and
       a mask wider than the sphere leaving the backdrop mesh untouched where it misses
 
+### A march culled to its own box (D31)
+
+- [x] **`SdfRaymarchTechnique.cullToBounds()`** — masks the march with the twelve triangles of `Bounds.of(surface)`,
+      grown by a hair, so it runs only on the pixels the box covers; a scene with no box (a plane, an endless
+      repeat) stays fullscreen, and `culled()` says which. `cullTo(Bounds)` takes a box from elsewhere and, called
+      again, moves it
+- [x] **The box travels with the mask's vertices** (two more `vec4` attributes, `Screen.BOX`), not in the push
+      block or as constants: no recompile when it moves, no parameter space spent, no `ShaderKey` change, and the
+      layout many objects in one draw would want
+- [x] **Along the ray, the field is left unasked where the box answers for it** — a `maxStep` stride without a
+      call while the sample is a stride from the box, and a stop once the ray is past the box for good (the slab
+      test's exit) and too far from it to hit. Every stride is the step the unculled march would have taken, so
+      the `t` sequence and the step budget are the same to the bit. Jumping to the slab entry was tried and
+      rejected: it flipped 58 silhouette pixels and let the budget reach bodies the unculled march cannot
+- [x] **`BoxCullTest`** (GPU) — from outside the box, from inside it in four directions, and with a body beyond
+      the budget: byte-identical to the same box as a plain D30 mask, and against the unmasked march the same
+      pixels lit, with ≤1% of them a level or two off (D30's screen position); an unbounded scene identical to
+      the fullscreen march; without depth, the sky only inside the box's silhouette
+- [x] **Measured** (`BoxCullSmoke`, 1280×720, forty spheres filling part of the frame, RTX 5070 Ti Laptop): about
+      3.5–6.4 ms a frame unmasked, 1.2 ms through the box as a mask, 1.0–1.1 ms culled
+- [ ] **Many objects in one pipeline.** Each culled march is its own pipeline and draw today. The next step is
+      instancing: one draw of many boxes, each instance carrying its own box (the attribute layout already does)
+      and which object's field to march — the shape fractal detail regions and dormant FLIP volumes want
+- [ ] **Bit-exact screen position for masks.** A masked pixel's ray differs from the fullscreen one by a rounding,
+      because one divides an interpolated clip position and the other interpolates `vUv`. A `FRAG_COORD` builtin in
+      SupirVast's core IR, with the extent in the push block, would make both paths one expression
+
 ---
 
 ## P2 — Consistency and polish
