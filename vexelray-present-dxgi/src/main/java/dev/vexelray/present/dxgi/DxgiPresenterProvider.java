@@ -9,11 +9,14 @@ import dev.vexelray.vulkan.present.PresenterProvider;
 import dev.vexelray.vulkan.present.VulkanRenderPass;
 import dev.vexelray.vulkan.present.WindowPresenter;
 import sibarum.dxgi.DxgiContext;
+import sibarum.probe.Log;
 
 import java.util.List;
 
 /** {@code dxgi}: present through DXGI, which is how VexelRay presents on Windows. See {@link DxgiPresenter}. */
 public final class DxgiPresenterProvider implements PresenterProvider {
+
+    private static final Log LOG = Log.of("present.dxgi");
 
     @Override
     public String name() {
@@ -38,6 +41,7 @@ public final class DxgiPresenterProvider implements PresenterProvider {
     @Override
     public Backend open(VulkanInstance instance, VulkanDevice device) {
         DxgiContext context = DxgiContext.create(instance, device);
+        LOG.info("frames reach D3D12 through a shared {}", context.sharesBuffer() ? "buffer" : "image");
         return new Backend() {
             @Override
             public int colorFormat() {

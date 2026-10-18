@@ -40,7 +40,9 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 /**
  * A window presented through DXGI. Vulkan draws the frame — the same pipeline, vertex buffer and runs a
  * {@link WindowedPresenter} would — into the image {@link DxgiSwapchain} shares with D3D12, and the D3D12 queue
- * copies the window-sized corner of it into the back buffer and presents.
+ * copies the window-sized corner of it into the back buffer and presents. On a driver that cannot draw into a shared
+ * image (dzn), the image is Vulkan's own and the same command buffer copies the corner into a shared buffer after the
+ * render pass ({@link DxgiSwapchain#recordCopyOut}); everything else here is the same.
  *
  * <p>A resize is {@link DxgiSwapchain#resize}, which reallocates nothing until the window outgrows the back buffers,
  * and, only when the window outgrows the shared image, a new image and the one framebuffer over it. No Vulkan swapchain exists, so nothing here can be
@@ -304,6 +306,8 @@ final class DxgiPresenter implements WindowPresenter {
             }
             runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, descriptorSet2, runs, vertexCount);
             invokeVoid(endRp, cmd);
+            swapchain.recordCopyOut(cmd, VulkanRenderPass.IMAGE_LAYOUT_GENERAL,
+                    Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT, w, h);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         }
     }
