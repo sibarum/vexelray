@@ -104,6 +104,39 @@ public final class Mesh {
         return vertices.clone();
     }
 
+    /**
+     * Where this mesh's vertices are in the world when it stands at {@code placement}: three numbers per vertex,
+     * three vertices per triangle, and nothing else — no normals, no colour.
+     *
+     * <p>The shape a mask wants. {@code SdfRaymarchTechnique.mask} takes exactly this, so a marched object drawn
+     * only inside a mesh's silhouette is {@code march.mask(mesh.worldPositions(placement))}, and following the mesh
+     * as it moves is the same call each frame.
+     */
+    public float[] worldPositions(Placement placement) {
+        float[] out = new float[vertexCount() * 3];
+        worldPositions(placement, out);
+        return out;
+    }
+
+    /** The same, into {@code out} — {@code vertexCount() * 3} floats — for a caller that calls it every frame. */
+    public void worldPositions(Placement placement, float[] out) {
+        if (out.length < vertexCount() * 3) {
+            throw new IllegalArgumentException("worldPositions writes " + vertexCount() * 3 + " floats and was "
+                    + "given " + out.length);
+        }
+        float[] m = new float[Placement.MATRIX_FLOATS];
+        placement.modelMatrix(m, 0);
+        for (int i = 0; i < vertexCount(); i++) {
+            int at = i * FLOATS_PER_VERTEX + POSITION;
+            float x = vertices[at];
+            float y = vertices[at + 1];
+            float z = vertices[at + 2];
+            out[i * 3] = m[0] * x + m[3] * y + m[6] * z + m[9];
+            out[i * 3 + 1] = m[1] * x + m[4] * y + m[7] * z + m[10];
+            out[i * 3 + 2] = m[2] * x + m[5] * y + m[8] * z + m[11];
+        }
+    }
+
     /** Copies the vertex data into {@code out} at {@code at}, without the copy {@link #vertices()} makes. */
     void copyInto(float[] out, int at) {
         System.arraycopy(vertices, 0, out, at, vertices.length);

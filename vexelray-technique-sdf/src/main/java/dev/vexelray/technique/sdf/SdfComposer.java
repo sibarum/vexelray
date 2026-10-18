@@ -461,12 +461,125 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
 
     /** The same, on a host that knows which road its device wants the parameters to take. */
     public static byte[] fragmentSpirv(SdfScene scene, ParamBacking backing) {
+        return fragmentSpirv(scene, backing, Screen.FULLSCREEN);
+    }
+
+    /** The same, told where the pixel's screen position comes from — see {@link Screen}. */
+    public static byte[] fragmentSpirv(SdfScene scene, ParamBacking backing, Screen screen) {
         // Compiled once and used twice: the field the march walks, and — only if a surface asked for it — the
         // colour read at the hit point.
         Field field = lower(scene, backing).field();
         return fragmentSpirv(scene, field.asFunction(SDF_FUNCTION),
                 field.hasAlbedo() ? field.albedoFunction(ALBEDO_FUNCTION, sceneAlbedo(scene)) : null,
-                field.helpers(), null, backing);
+                field.helpers(), null, backing, screen);
+    }
+
+    /**
+     * Where the march's fragment learns which pixel it is on, which is the one thing that differs between drawing
+     * the march over the whole frame and drawing it through a mask.
+     */
+    public enum Screen {
+        /**
+         * The fullscreen triangle's {@code vUv}, a {@code vec2} already in {@code [0,1]}. Screen-linear because the
+         * triangle is flat at {@code w = 1}.
+         */
+        FULLSCREEN,
+        /**
+         * A mask's clip-space position, a {@code vec3} of {@code (x, y, w)}, divided per fragment.
+         *
+         * <p>Not a {@code vUv} computed per vertex, because a mask is geometry in perspective and varyings are
+         * interpolated perspective-correctly: a screen coordinate written at the corners would come out bent across
+         * the triangle. The clip position is linear in the triangle's own 3D surface, which is exactly what
+         * perspective-correct interpolation is exact for, so {@code x/w} at a fragment is that fragment's device
+         * coordinate. The IR has no {@code noperspective} to ask for instead, and this needs none.
+         */
+        MASK
+    }
+
+    /** The pixel's {@code (u, v)} in {@code [0,1]}, as {@link #primaryRay} reads them. */
+    private static Expr[] screenUv(Screen screen) {
+        if (screen == Screen.FULLSCREEN) {
+            InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
+            return new Expr[]{
+                    new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 0),
+                    new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 1)};
+        }
+        InterfaceVar vClip = InterfaceVar.input("vClip", Fullscreen.UV_LOCATION, Ir.V3);
+        Expr clip = new Expr.InterfaceRead(vClip);
+        return new Expr[]{
+                Ir.mul(Ir.add(Ir.div(Ir.x(clip), Ir.z(clip)), Ir.f(1.0)), Ir.f(0.5)),
+                Ir.mul(Ir.add(Ir.div(Ir.y(clip), Ir.z(clip)), Ir.f(1.0)), Ir.f(0.5))};
+    }
+
+    /** Location of the mask vertex stage's one input: a world-space position, {@code vec4} with {@code w = 1}. */
+    public static final int MASK_POSITION_LOCATION = 0;
+
+    /**
+     * The vertex stage that draws the march <em>through</em> a mask: world-space triangles projected by the march's
+     * own pinhole, so the march runs on exactly the pixels they cover and nowhere else.
+     *
+     * <p>It declares the scene's own push-constant block and reads only the camera at its head, so the pipeline's
+     * one push range serves both stages with no second layout to keep in step. Its clip z is a constant zero: the
+     * fragment writes {@code gl_FragDepth} from the march, so the mask's own depth is never compared with anything,
+     * and a constant inside {@code [0, w]} keeps the hardware's clipping to the one plane that matters, the eye's.
+     * A clip z built from {@code ClipDepth} would also clip a mask at the far plane, and a mask reaching past the far
+     * plane still means "march here".
+     */
+    public static byte[] maskVertexSpirv(SdfScene scene, ParamBacking backing) {
+        ParamBlock params = paramBlock(scene, backing);
+        PushConstants camera = pushConstants(params, backing.usesBuffer(params.size()));
+        InterfaceVar inWorld = InterfaceVar.input("inWorld", MASK_POSITION_LOCATION, Ir.V4);
+        InterfaceVar vClip = InterfaceVar.output("vClip", Fullscreen.UV_LOCATION, Ir.V3);
+
+        LocalVar rel = new LocalVar("rel", Ir.V3);
+        LocalVar ax = new LocalVar("ax", F32);
+        LocalVar az = new LocalVar("az", F32);
+        LocalVar vy = new LocalVar("vy", F32);
+        LocalVar vz = new LocalVar("vz", F32);
+        LocalVar clip = new LocalVar("clip", Ir.V4);
+
+        Expr world = new Expr.InterfaceRead(inWorld);
+        Expr eye = Ir.v3(camera.read(0), camera.read(1), camera.read(2));
+        Expr yaw = camera.read(3);
+        Expr pitch = camera.read(4);
+        Expr cy = Expr.MathCall.cos(yaw);
+        Expr sy = Expr.MathCall.sin(yaw);
+        Expr cp = Expr.MathCall.cos(pitch);
+        Expr sp = Expr.MathCall.sin(pitch);
+        Expr rx = Ir.x(read(rel));
+        Expr ry = Ir.y(read(rel));
+        Expr rz = Ir.z(read(rel));
+        Expr focal = camera.read(6);
+
+        // primaryRay turns a camera-frame ray into the world by pitch, then yaw; this is that rotation transposed,
+        // then the same pinhole forwards. Device y is the negative of the march's screen y, as everywhere else.
+        List<Statement> body = new ArrayList<>();
+        body.add(new Statement.DeclareVar(rel, Ir.sub(Ir.xyz(world), eye)));
+        body.add(new Statement.DeclareVar(ax, Ir.sub(Ir.mul(rx, cy), Ir.mul(rz, sy))));
+        body.add(new Statement.DeclareVar(az, Ir.add(Ir.mul(rx, sy), Ir.mul(rz, cy))));
+        body.add(new Statement.DeclareVar(vy, Ir.add(Ir.mul(ry, cp), Ir.mul(read(az), sp))));
+        body.add(new Statement.DeclareVar(vz, Ir.sub(Ir.mul(read(az), cp), Ir.mul(ry, sp))));
+        body.add(new Statement.DeclareVar(clip, new Expr.VectorConstruct(Ir.V4, List.of(
+                Ir.div(Ir.mul(focal, read(ax)), camera.read(5)),
+                Ir.neg(Ir.mul(focal, read(vy))),
+                Ir.f(0.0),
+                read(vz)))));
+        body.add(new Statement.BuiltinWrite(dev.supirvast.vastir.core.Builtin.POSITION, read(clip)));
+        body.add(new Statement.InterfaceWrite(vClip,
+                Ir.v3(Ir.x(read(clip)), Ir.y(read(clip)), Ir.w(read(clip)))));
+        body.add(new Statement.ReturnVoid());
+
+        Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
+        CoreModule module = new CoreModule().addEntryPoint(EntryPoint.of(main, ShaderStage.VERTEX));
+        return ComposedShader.lower(ShaderStage.VERTEX, module, Fullscreen.ENTRY_POINT).spirv();
+    }
+
+    /** The pair for a masked march: {@link #maskVertexSpirv} and the fragment reading {@link Screen#MASK}. */
+    public List<ComposedShader> composeMasked(SdfScene scene) {
+        return List.of(
+                new ComposedShader(ShaderStage.VERTEX, maskVertexSpirv(scene, backing), Fullscreen.ENTRY_POINT),
+                new ComposedShader(ShaderStage.FRAGMENT, fragmentSpirv(scene, backing, Screen.MASK),
+                        Fullscreen.ENTRY_POINT));
     }
 
     /**
@@ -599,9 +712,16 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      */
     public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
                                        List<Function> helpers, Function payloadFn, ParamBacking backing) {
+        return fragmentSpirv(scene, sdf, albedoFn, helpers, payloadFn, backing, Screen.FULLSCREEN);
+    }
+
+    /** The same, told where the pixel's screen position comes from — see {@link Screen}. */
+    public static byte[] fragmentSpirv(SdfScene scene, Function sdf, Function albedoFn,
+                                       List<Function> helpers, Function payloadFn, ParamBacking backing,
+                                       Screen screen) {
         MarchSettings march = scene.march();
 
-        InterfaceVar vUv = InterfaceVar.input("vUv", Fullscreen.UV_LOCATION, Ir.V2);
+        Expr[] uv = screenUv(screen);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, Ir.V4);
         // The same block the field was compiled against — rebuilt rather than passed in, because a
         // PushConstantRead carries its block by value and slot order is deterministic, so the two agree by
@@ -611,7 +731,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         PushConstants camera = pushConstants(cameraParams, backing.usesBuffer(cameraParams.size()));
 
         Expr eye = Ir.v3(camera.read(0), camera.read(1), camera.read(2));
-        PrimaryRay ray = primaryRay(vUv, camera.read(3), camera.read(4), camera.read(5), camera.read(6));
+        PrimaryRay ray = primaryRay(uv[0], uv[1], camera.read(3), camera.read(4), camera.read(5), camera.read(6));
 
         LocalVar ro = new LocalVar("ro", Ir.V3);
         LocalVar rd = new LocalVar("rd", Ir.V3);
@@ -694,9 +814,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
      * focal)} whichever way the camera is pointing, and that is {@code focal / length(sx, sy, focal)}. Yaw
      * and pitch never enter it.
      */
-    private static PrimaryRay primaryRay(InterfaceVar vUv, Expr yaw, Expr pitch, Expr aspect, Expr focal) {
-        Expr u = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 0);
-        Expr v = new Expr.VectorExtract(new Expr.InterfaceRead(vUv), 1);
+    private static PrimaryRay primaryRay(Expr u, Expr v, Expr yaw, Expr pitch, Expr aspect, Expr focal) {
         Expr sx = Ir.mul(Ir.sub(Ir.mul(u, Ir.f(2.0)), Ir.f(1.0)), aspect);
         Expr sy = Ir.sub(Ir.f(1.0), Ir.mul(v, Ir.f(2.0)));
 

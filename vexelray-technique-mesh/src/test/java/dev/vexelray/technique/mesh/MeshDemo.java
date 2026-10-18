@@ -16,12 +16,12 @@ import java.io.IOException;
 
 /**
  * Manual demo (not a unit test): polygon meshes standing in a marched scene, lit by the scene's own light and
- * sharing its depth buffer.
+ * sharing its depth buffer — and one marched object drawn only through a mesh.
  *
- * <p>Three meshes, each showing one thing. A crate pushed halfway into a marched sphere, so the two cut each
- * other along a curve that neither technique drew — the depth buffer did. A pyramid, flat-shaded, turning, so
- * its faces brighten and darken under the same key light as the spheres beside it. And a star — a concave
- * polygon, one face — spinning upright, lit from whichever side faces the camera.
+ * <p>A crate pushed halfway into a marched sphere, so the two cut each other along a curve that neither technique
+ * drew — the depth buffer did. A pyramid, flat-shaded, turning, so its faces brighten and darken under the same key
+ * light as the spheres beside it. And a star — a concave polygon, one face, spinning — that is never drawn itself:
+ * it is the render mask of a marched sphere, which shows only inside the star's silhouette, with its hard edge.
  *
  * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; {@code --capture <png>
  * [seconds]} renders one offscreen frame at that point and writes it to a file.
@@ -29,6 +29,8 @@ import java.io.IOException;
 public final class MeshDemo {
 
     private static final double LOOK_Y = 1.0;
+
+    private static final Placement STAR_AT = Placement.at(0.1, 2.3, 1.8);
 
     public static void main(String[] args) throws IOException {
         if (args.length >= 1 && args[0].equals("--capture")) {
@@ -48,12 +50,15 @@ public final class MeshDemo {
         return new SdfRaymarchTechnique(SdfScene.of(scene).withAlbedo(new Surface.Rgb(0.72, 0.75, 0.83)));
     }
 
-    /** The meshes and the instances that move. */
-    private record Scene(MeshTechnique meshes, MeshTechnique.Instance pyramid, MeshTechnique.Instance star) {
+    /** Everything the frame callback moves. */
+    private record Scene(SdfRaymarchTechnique march, MeshTechnique meshes, MeshTechnique.Instance pyramid,
+                         Mesh star, SdfRaymarchTechnique gem) {
     }
 
-    private static Scene meshes(SdfScene scene) {
-        MeshTechnique meshes = new MeshTechnique(scene.lens(), scene.shading());
+    private static Scene scene() {
+        SdfRaymarchTechnique march = march();
+        SdfScene sdf = march.scene();
+        MeshTechnique meshes = new MeshTechnique(sdf.lens(), sdf.shading());
 
         // A white box, coloured per instance: one mesh, uploaded once, tinted by a push constant.
         meshes.add(Mesh.box(1.2, 1.2, 1.2), new Placement(1.15, 0.6, 0.55, 0.4, 0, 0, 1)).tint(0.80, 0.55, 0.30);
@@ -73,34 +78,46 @@ public final class MeshDemo {
         double[] xyz = new double[points * 2 * 3];
         for (int i = 0; i < points * 2; i++) {
             double angle = Math.PI / 2 + Math.PI * i / points;
-            double radius = i % 2 == 0 ? 0.75 : 0.3;
+            double radius = i % 2 == 0 ? 0.9 : 0.38;
             xyz[i * 3] = radius * Math.cos(angle);
             xyz[i * 3 + 1] = radius * Math.sin(angle);
         }
-        Mesh star = Mesh.builder().colour(0.95, 0.78, 0.25).polygon(xyz).build();
-        MeshTechnique.Instance s = meshes.add(star, Placement.at(0.1, 2.3, 1.8));
-        return new Scene(meshes, p, s);
+        Mesh star = Mesh.polygon(xyz);
+
+        // A sphere a little larger than the star, so the star's outline is what you see of it. Its own scene, and
+        // so its own technique: a mask belongs to a march, and this one masks only the sphere.
+        Surface ball = new Surface.Sphere(STAR_AT.x(), STAR_AT.y(), STAR_AT.z(), 1.0);
+        SdfRaymarchTechnique gem = new SdfRaymarchTechnique(SdfScene.of(ball)
+                .withAlbedo(new Surface.Rgb(0.95, 0.42, 0.62)));
+        gem.mask(star.worldPositions(STAR_AT));
+        return new Scene(march, meshes, p, star, gem);
     }
 
     private static void animate(Scene scene, double t) {
         scene.pyramid().place(scene.pyramid().placement().turned(t * 0.6, 0));
-        scene.star().place(scene.star().placement().turned(t * 1.1, 0));
+        // The mask follows the spinning star: one call a frame, the same number of vertices every time.
+        scene.gem().mask(scene.star().worldPositions(STAR_AT.turned(t * 1.1, 0)));
+    }
+
+    private static RenderPipeline pipeline(Scene scene, Target target) {
+        return RenderPipeline.builder()
+                .target(target)
+                .technique(scene.march())
+                .technique(scene.gem())
+                .technique(scene.meshes())
+                .build();
     }
 
     private static void run(int frames) {
-        SdfRaymarchTechnique march = march();
-        Scene scene = meshes(march.scene());
-        RenderPipeline pipeline = RenderPipeline.builder()
-                .target(Target.windowed("VexelRay — polygons in a marched scene", 1100, 700)
-                        .color(AttachmentFormat.SWAPCHAIN)
-                        .depth(AttachmentFormat.DEPTH32F))
-                .technique(march)
-                .technique(scene.meshes())
-                .build();
+        Scene scene = scene();
+        RenderPipeline pipeline = pipeline(scene, Target.windowed("VexelRay — polygons in a marched scene", 1100, 700)
+                .color(AttachmentFormat.SWAPCHAIN)
+                .depth(AttachmentFormat.DEPTH32F)
+                .build());
         try (VexelEngine engine = VexelEngine.create(EngineConfig.of("MeshDemo"))) {
             engine.run(pipeline, frame -> {
                 double t = frame.timeSeconds();
-                aim(march, scene.meshes(), t);
+                aim(scene, t);
                 animate(scene, t);
                 return frame.frameIndex() + 1 < frames;
             });
@@ -110,20 +127,15 @@ public final class MeshDemo {
     private static void capture(String path, double at) throws IOException {
         int w = 1100;
         int h = 700;
-        SdfRaymarchTechnique march = march();
-        Scene scene = meshes(march.scene());
-        RenderPipeline pipeline = RenderPipeline.builder()
-                .target(Target.offscreen(w, h)
-                        .color(AttachmentFormat.RGBA8_UNORM)
-                        .depth(AttachmentFormat.DEPTH32F)
-                        .build())
-                .technique(march)
-                .technique(scene.meshes())
-                .build();
+        Scene scene = scene();
+        RenderPipeline pipeline = pipeline(scene, Target.offscreen(w, h)
+                .color(AttachmentFormat.RGBA8_UNORM)
+                .depth(AttachmentFormat.DEPTH32F)
+                .build());
         byte[] rgba;
         try (VexelEngine engine = VexelEngine.create(EngineConfig.of("MeshDemo"))) {
             engine.run(pipeline, frame -> {
-                aim(march, scene.meshes(), at);
+                aim(scene, at);
                 animate(scene, at);
                 return false;
             });
@@ -138,15 +150,16 @@ public final class MeshDemo {
         System.out.println("wrote " + path);
     }
 
-    /** One camera, told to both techniques — the engine never learns what a camera is (D5). */
-    private static void aim(SdfRaymarchTechnique march, MeshTechnique meshes, double t) {
+    /** One camera, told to every technique — the engine never learns what a camera is (D5). */
+    private static void aim(Scene scene, double t) {
         double angle = -1.6 + t * 0.25;
         double radius = 6.0;
         double eyeX = -Math.sin(angle) * radius;
         double eyeZ = -Math.cos(angle) * radius + 1.0;
         double eyeY = 2.2;
         double pitch = Math.asin((eyeY - LOOK_Y) / radius);
-        march.camera(eyeX, eyeY, eyeZ, angle, pitch);
-        meshes.camera(eyeX, eyeY, eyeZ, angle, pitch);
+        scene.march().camera(eyeX, eyeY, eyeZ, angle, pitch);
+        scene.gem().camera(eyeX, eyeY, eyeZ, angle, pitch);
+        scene.meshes().camera(eyeX, eyeY, eyeZ, angle, pitch);
     }
 }

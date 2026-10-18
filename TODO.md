@@ -234,6 +234,20 @@ file is about the engine and its API. Decisions are logged in
       each losing pixels to the other, order-reversed frame byte-identical, a no-depth control, and a box under a
       key light coming out as exactly three flat colours. `MeshDemo` for a look
 
+### A mesh as the render mask of a marched object (D30)
+
+- [x] **`SdfRaymarchTechnique.mask(float[] xyz)`** — world-space triangles in place of the fullscreen triangle,
+      so the march runs only on the pixels they cover: the scene appears inside the mask's silhouette, with its
+      hard edge, and the mask is never drawn. `Mesh.worldPositions(Placement)` is the matching shape; following a
+      moving mesh is one `mask(...)` call a frame within the first call's vertex count
+- [x] **The mask is projected by the march's own pinhole** (`SdfComposer.maskVertexSpirv`, core IR, the scene's
+      own push block), and the fragment reads the interpolated clip position and divides — `Screen.MASK` —
+      because a per-vertex screen coordinate would interpolate perspective-correctly and bend
+- [x] **Misses leave the pixel alone** with depth: a miss writes the far plane and the test is `LESS`
+- [x] **`MeshMaskTest`** — the sphere drawn only inside the mask's projected square and filling it to within its
+      boundary row, a mask behind the sphere giving the byte-identical frame (a silhouette, not a portal), and
+      a mask wider than the sphere leaving the backdrop mesh untouched where it misses
+
 ---
 
 ## P2 — Consistency and polish

@@ -971,6 +971,44 @@ pair one scene's focal length with another's far plane. A test that wants a lens
 through its own `camera(...)` call; a lens is what is fixed when the shaders are built. A shared camera object
 would make the runtime know what a camera is, which is a larger decision than this one.
 
+## 26. A mesh as the render mask of a marched object (D30)
+
+`SdfRaymarchTechnique.mask(xyz)` draws a marched scene only where world-space triangles cover the screen. The
+triangles replace the fullscreen triangle as the march's geometry, so the march runs on exactly those pixels.
+
+### Three meanings, and the one chosen
+
+A mesh "masking" an SDF could mean three different things. The **silhouette** reading: the SDF shows inside the
+mesh's screen footprint, the mesh's own depth plays no part. The **portal** reading: the SDF shows only through the
+mesh and behind its surface. The **volume clip** reading: the SDF is cut to the inside of the mesh's 3D volume, a
+boolean intersection. The silhouette was chosen. It is the one that is purely a statement about which pixels ask,
+so nothing about the field, its depth or its lighting changes, and it gives the masked object the mesh's hard,
+faceted edge, which is the property meshes exist for (D28). `MeshMaskTest` pins the choice: a mask behind the
+object masks it identically to one in front.
+
+### Why the fragment divides a clip position
+
+The march's fragment learns its pixel from a screen coordinate. Over the fullscreen triangle that is `vUv`, which
+is screen-linear because the triangle has `w = 1`. A mask is geometry in perspective, and varyings interpolate
+perspective-correctly, so a screen coordinate written at the corners comes out bent across the triangle. The IR has
+no `noperspective`, and none is needed: the clip position is linear on the triangle's own surface, which is what
+perspective-correct interpolation is exact for, so the fragment interpolates `(x, y, w)` and divides. That is the
+whole of `SdfComposer.Screen`. The fullscreen path's SPIR-V is unchanged.
+
+### Depth, and misses
+
+The mask's clip z is a constant zero. The fragment writes `gl_FragDepth` from the march, so the mask's own depth is
+never compared with anything, and clipping stays at the eye plane. A z from `ClipDepth` would also have cut the mask
+at the far plane, where it still means "march here". A miss writes the far-plane depth, which never passes the
+`LESS` test, so with a depth attachment a miss leaves whatever was already in the pixel. Without depth there is no
+test, and a miss paints sky inside the mask. That is accepted rather than worked around: the IR has no discard, and a
+masked object in a frame with no depth has nothing else to be composited against anyway.
+
+### Not coupled to the mesh module
+
+`mask` takes plain triangles, so `vexelray-technique-sdf` does not depend on `vexelray-technique-mesh`, and anything
+that can produce triangles can mask a march. `Mesh.worldPositions(Placement)` returns exactly that shape.
+
 ## Open questions (to revisit as phases land)
 
 - ~~**Frames-in-flight vs technique state.** With N frames in flight, per-technique push-constant buffers need
