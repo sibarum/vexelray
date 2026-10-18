@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -141,7 +142,14 @@ public class GenerateAtlasMojo extends AbstractMojo {
 
         File manifestFile = new File(outputDir, "fonts.json");
         try {
-            Files.writeString(manifestFile.toPath(), FontManifest.json(manifest), StandardCharsets.UTF_8);
+            // Written only when it changed: the manifest is usually committed, and rewriting a CRLF checkout with
+            // the same content in LF leaves the working tree dirty after every build.
+            String json = FontManifest.json(manifest);
+            Path path = manifestFile.toPath();
+            if (!Files.isRegularFile(path)
+                    || !Files.readString(path, StandardCharsets.UTF_8).replace("\r\n", "\n").equals(json)) {
+                Files.writeString(path, json, StandardCharsets.UTF_8);
+            }
         } catch (IOException e) {
             throw new MojoExecutionException("Failed writing font manifest " + manifestFile, e);
         }
