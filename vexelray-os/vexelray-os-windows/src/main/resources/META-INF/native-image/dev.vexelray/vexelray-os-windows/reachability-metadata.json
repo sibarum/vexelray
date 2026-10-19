@@ -6,6 +6,12 @@
       "methods": [
         { "name": "wndProc", "parameterTypes": ["java.lang.foreign.MemorySegment", "int", "long", "long"] }
       ]
+    },
+    {
+      "type": "dev.vexelray.os.windows.Win32Tray",
+      "methods": [
+        { "name": "wndProc", "parameterTypes": ["java.lang.foreign.MemorySegment", "int", "long", "long"] }
+      ]
     }
   ],
   "resources": [
@@ -18,6 +24,12 @@
     "directUpcalls": [
       {
         "class": "dev.vexelray.os.windows.Win32Window",
+        "method": "wndProc",
+        "returnType": "jlong",
+        "parameterTypes": ["void*", "jint", "jlong", "jlong"]
+      },
+      {
+        "class": "dev.vexelray.os.windows.Win32Tray",
         "method": "wndProc",
         "returnType": "jlong",
         "parameterTypes": ["void*", "jint", "jlong", "jlong"]
@@ -49,7 +61,10 @@
         { "returnType": "void*", "parameterTypes": ["void*", "jint"] },
         { "returnType": "jint", "parameterTypes": ["void*", "void*", "void*", "void*"] },
         { "returnType": "jlong", "parameterTypes": ["void*", "jint"] },
-        { "returnType": "jlong", "parameterTypes": ["void*", "jint", "jlong"] }
+        { "returnType": "jlong", "parameterTypes": ["void*", "jint", "jlong"] },
+        { "returnType": "jint", "parameterTypes": ["jint", "void*"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jint", "jlong", "void*"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jint", "jint", "jint", "jint", "void*", "void*"] }
       ]
   }
 }
