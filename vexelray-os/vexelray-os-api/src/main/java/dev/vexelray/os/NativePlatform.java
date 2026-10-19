@@ -58,6 +58,23 @@ public interface NativePlatform {
     }
 
     /**
+     * Set the mark the application wears while nothing of it is on screen — the background icon. A window wears it
+     * between {@link NativeWindow#hide()} and the next {@link NativeWindow#show()}, whatever icon it wears otherwise;
+     * a {@link BackgroundRun background run}'s notification-area icon wears it while every window of the process is
+     * hidden, and the application icon again as soon as one is shown.
+     *
+     * <p>The suite draws one for every application: the primary mark dimmed, inside a dashed rim in the
+     * application's hue, so a program still running with no window up is told apart at a glance from one in front
+     * of you. A window that is only minimized is not hidden, and keeps its own mark.
+     *
+     * <p>{@code null}, the default, means there is none: a hidden window and the notification area keep the mark
+     * they had. Applies at once to whatever is hidden now. Defaults to a no-op, like {@link #setApplicationIcon}.
+     */
+    default void setBackgroundIcon(Icon icon) {
+        // no-op by default
+    }
+
+    /**
      * The usable area of the monitor containing the screen point {@code (x, y)} — its full rectangle minus the
      * taskbar or dock — or of the primary monitor when that point is on no monitor at all. That last case is the
      * whole reason this exists: an application restoring saved window bounds has to ask whether the screen it

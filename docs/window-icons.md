@@ -129,6 +129,21 @@ icon says what is *in* it has to change it when the content does — the documen
 project after the user opens another one, a build turning red. That is the same argument as a window title, and
 nobody would expect to fix one of those at creation.
 
+### While nothing is on screen: the background icon
+
+```java
+platform.setBackgroundIcon(backgroundIcon);   // the mark dimmed, in a dashed rim of its hue
+```
+
+A third mark, for an application that is running with nothing of it up. A window wears it from
+`NativeWindow.hide()` to the next `show()`, over whatever icon it wears otherwise, and a
+[background run](../vexelray-os/vexelray-os-api/src/main/java/dev/vexelray/os/BackgroundRun.java)'s
+notification-area icon wears it while every window of the process is hidden; one window shown puts the
+application icon back in both places. Minimizing is not hiding, and changes nothing. `null`, the default, means
+there is none, and a hidden window keeps its mark. The suite draws one per application (vexelray-icons'
+`apps/<app>/background.svg`); `vexelray-framework` finds it as `<icon>-background.ico` beside the application's
+icon.
+
 ---
 
 ## 5. What this is not
@@ -146,8 +161,9 @@ group's thumbnail flyout — but "three windows, three separate taskbar buttons 
 a per-window AppUserModelID, which is a `shell32` binding that does not exist yet. Worth knowing before
 designing a UI around it.
 
-**Not a cursor, and not a tray icon.** Cursors are `NativeWindow.setCursor`. A notification-area icon is a
-different OS concept (`Shell_NotifyIcon` on Windows) and is not implemented.
+**Not a cursor, and not a tray icon of the application's choosing.** Cursors are `NativeWindow.setCursor`. The
+one notification-area icon (`Shell_NotifyIcon` on Windows) is a background run's, made by the platform with the
+application icon, or the background icon while every window is hidden; an application cannot add one of its own.
 
 ---
 

@@ -49,6 +49,12 @@ public final class WindowsPlatform implements NativePlatform {
         Win32Window.setApplicationIcon(icon);
     }
 
+    /** Kept beside the application icon, and worn in its place by every hidden window and by an idle tray. */
+    @Override
+    public void setBackgroundIcon(Icon icon) {
+        Win32Window.setBackgroundIcon(icon);
+    }
+
     /**
      * In a native image, the arguments re-read from the UTF-16 command line ({@link CommandLine}): the image's own
      * decoding goes through the ANSI code page and loses whatever is outside it. Under the JVM, as given.

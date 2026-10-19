@@ -67,6 +67,9 @@ public final class Win32Window implements NativeWindow {
     /** The process-wide mark, worn by every window that did not ask for one of its own. */
     private static volatile Icon applicationIcon;
 
+    /** The process-wide mark for a window that is hidden, and for an idle tray; null for none. */
+    private static volatile Icon backgroundIcon;
+
     /**
      * Whether every window of this process is a {@link BackgroundRun background run}'s: created cloaked and
      * {@code WS_EX_NOACTIVATE}, shown without being activated, and never raised. Decided here, at the one place
@@ -166,6 +169,10 @@ public final class Win32Window implements NativeWindow {
     // This window's own mark, or null to follow the application's. The two HICONs realising it are handles this
     // window owns: Windows only borrows what WM_SETICON hands it, so replacing or closing has to destroy them.
     private volatile Icon icon;
+    // Between hide() and the next show(): the window wears the background icon then. Not !shown, which is also
+    // the state before the first show(), when the window is being made under its own mark.
+    private volatile boolean hidden;
+    private volatile Icon worn;   // what the two HICONs were made from; null for the OS default
     private MemorySegment bigIcon = MemorySegment.NULL;
     private MemorySegment smallIcon = MemorySegment.NULL;
 
@@ -604,6 +611,12 @@ public final class Win32Window implements NativeWindow {
             return;
         }
         shown = true;
+        if (hidden) {
+            // Its own mark back before it is on screen, so it never appears under the background one.
+            hidden = false;
+            applyIcon();
+            trayFollows();
+        }
         User32.showWindow(hwnd, BACKGROUND ? User32.SW_SHOWNOACTIVATE : User32.SW_SHOW);
     }
 
@@ -614,6 +627,19 @@ public final class Win32Window implements NativeWindow {
         }
         shown = false;
         User32.showWindow(hwnd, User32.SW_HIDE);
+        hidden = true;
+        applyIcon();
+        trayFollows();
+    }
+
+    /**
+     * A background run's tray wears the background icon while every window is hidden: the run is still going, and
+     * nothing of it is up. One window shown puts the application icon back.
+     */
+    private static void trayFollows() {
+        if (BACKGROUND) {
+            Win32Tray.idle(!WINDOWS.isEmpty() && WINDOWS.values().stream().allMatch(w -> w.hidden));
+        }
     }
 
     @Override
@@ -773,6 +799,24 @@ public final class Win32Window implements NativeWindow {
         }
     }
 
+    /** The icon this window's two slots were last filled from, or {@code null} for none. For tests. */
+    Icon wearing() {
+        return worn;
+    }
+
+    /** Set the background icon and push it to every window that is hidden now, and to the tray. */
+    static void setBackgroundIcon(Icon icon) {
+        backgroundIcon = icon;
+        if (BACKGROUND) {
+            Win32Tray.backgroundChanged(icon);
+        }
+        for (Win32Window window : WINDOWS.values()) {
+            if (window.hidden) {
+                window.applyIcon();
+            }
+        }
+    }
+
     /**
      * Realise the effective icon as two {@code HICON}s and hand them to the window.
      *
@@ -792,7 +836,9 @@ public final class Win32Window implements NativeWindow {
         if (destroyed) {
             return;
         }
-        Icon effective = icon != null ? icon : applicationIcon;
+        Icon background = hidden ? backgroundIcon : null;
+        Icon effective = background != null ? background : icon != null ? icon : applicationIcon;
+        worn = effective;
         MemorySegment newBig = effective == null ? MemorySegment.NULL
                 : createHicon(effective.bestFor(User32.getSystemMetrics(User32.SM_CXICON)));
         MemorySegment newSmall = effective == null ? MemorySegment.NULL
@@ -1005,6 +1051,8 @@ public final class Win32Window implements NativeWindow {
         }
         if (BACKGROUND && WINDOWS.isEmpty()) {
             Win32Tray.lastWindowClosed();
+        } else {
+            trayFollows();   // the one shown window may just have closed, leaving only hidden ones
         }
     }
 }

@@ -47,6 +47,13 @@ final class Win32Tray {
     private MemorySegment hicon = MemorySegment.NULL;   // ours to destroy; the stock icon is not
     private boolean ownsIcon;
     private boolean shown;
+    private Icon primary;   // the application's icon; null for the stock one
+    private volatile Icon worn;
+
+    // Kept here rather than on the instance: the background icon is usually set before the first window, and so
+    // before there is a tray to give it to.
+    private static volatile Icon background;
+    private static volatile boolean idle;
 
     private Win32Tray(String application, Icon icon) {
         this.application = application;
@@ -63,7 +70,8 @@ final class Win32Tray {
                     MemorySegment.NULL);
         }
         taskbarCreated = User32.registerWindowMessage("TaskbarCreated");
-        setIcon(icon);
+        this.primary = icon;
+        wear();
         add();
         // A backstop for an exit that skips close(): an icon left behind stays in the notification area until the
         // pointer passes over it, which looks like a run still going.
@@ -83,9 +91,48 @@ final class Win32Tray {
     static void iconChanged(Icon icon) {
         Win32Tray tray = instance;
         if (tray != null) {
-            tray.setIcon(icon);
+            tray.primary = icon;
+            tray.wear();
             tray.modify();
         }
+    }
+
+    /** The application's background icon changed: wear it now if the run is idle, else from when it is. */
+    static void backgroundChanged(Icon icon) {
+        background = icon;
+        rewear();
+    }
+
+    /**
+     * Whether every window of the run is hidden. While it is, the icon is the background one (if there is one):
+     * the run is still going, and nothing of it is up.
+     */
+    static void idle(boolean everyWindowHidden) {
+        if (idle != everyWindowHidden) {
+            idle = everyWindowHidden;
+            rewear();
+        }
+    }
+
+    private static void rewear() {
+        Win32Tray tray = instance;
+        if (tray != null) {
+            tray.wear();
+            tray.modify();
+        }
+    }
+
+    /** The background icon while idle and there is one, else the application's. */
+    private void wear() {
+        Icon hidden = idle ? background : null;
+        worn = hidden != null ? hidden : primary;
+        setIcon(worn);
+    }
+
+    /** The icon the notification area was last given, or {@code null} for none or no tray. For tests. */
+    static Icon wearing() {
+        Win32Tray tray = instance;
+        return tray == null ? null : tray.worn;
     }
 
     /** The last window closed: take the icon away. */
@@ -105,6 +152,9 @@ final class Win32Tray {
             hicon = User32.applicationIcon();
             ownsIcon = false;
         }
+        // Its never-shown window carries the same icon, so what the notification area shows can be read back from
+        // outside the process (WM_GETICON on the VexelRayTrayClass window), which the shell itself does not offer.
+        User32.sendMessageW(hwnd, User32.WM_SETICON, User32.ICON_SMALL, hicon.address());
         User32.destroyIcon(old);
     }
 
