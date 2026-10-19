@@ -1,5 +1,6 @@
 package dev.vexelray.os.windows;
 
+import dev.vexelray.os.BackgroundRun;
 import dev.vexelray.os.Decorations;
 import dev.vexelray.os.HitRegions;
 import dev.vexelray.os.Icon;
@@ -65,6 +66,13 @@ public final class Win32Window implements NativeWindow {
 
     /** The process-wide mark, worn by every window that did not ask for one of its own. */
     private static volatile Icon applicationIcon;
+
+    /**
+     * Whether every window of this process is a {@link BackgroundRun background run}'s: created cloaked and
+     * {@code WS_EX_NOACTIVATE}, shown without being activated, and never raised. Decided here, at the one place
+     * windows are made, so that no window (a dialog, a popup, a satellite) can come out as anything else.
+     */
+    private static final boolean BACKGROUND = BackgroundRun.active();
 
     // Predefined system cursors, loaded once and shared (process-lifetime; the OS owns them).
     private static MemorySegment arrowCursor = MemorySegment.NULL;
@@ -141,6 +149,7 @@ public final class Win32Window implements NativeWindow {
     private volatile Runnable frameSink;
     private boolean rendering;
     private boolean shown;
+    private boolean minimizedInBackground;   // see iconic()
     // Full screen, and what to go back to: the style and placement the window had, and the rect and maximized flag
     // that placement queries answer with meanwhile (fullscreen's contract). Main thread, except the flag, which the
     // window procedure reads during the calls that change it.
@@ -185,9 +194,15 @@ public final class Win32Window implements NativeWindow {
                     : MemorySegment.NULL;
             int x = config.x() == WindowConfig.UNPOSITIONED ? User32.CW_USEDEFAULT : config.x();
             int y = config.y() == WindowConfig.UNPOSITIONED ? User32.CW_USEDEFAULT : config.y();
-            this.hwnd = User32.createWindowExW(0, classNameSeg, title, style,
+            int exStyle = BACKGROUND ? User32.WS_EX_NOACTIVATE : 0;
+            this.hwnd = User32.createWindowExW(exStyle, classNameSeg, title, style,
                     x, y, config.width(), config.height(),
                     owner, MemorySegment.NULL, hInstance, MemorySegment.NULL);
+        }
+        if (BACKGROUND) {
+            // Before anything can show it, so it is never on screen for a frame. The style and size are left
+            // exactly as a visible run's: the client area, and so every frame and every capture, must be the same.
+            Dwmapi.cloak(hwnd, true);
         }
 
         WINDOWS.put(hwnd.address(), this);
@@ -418,7 +433,7 @@ public final class Win32Window implements NativeWindow {
      */
     private void runFrameSink() {
         Runnable sink = frameSink;
-        if (sink == null || rendering || User32.isIconic(hwnd)) {
+        if (sink == null || rendering || iconic()) {
             return;
         }
         rendering = true;
@@ -449,7 +464,24 @@ public final class Win32Window implements NativeWindow {
         if (destroyed) {
             return;
         }
+        if (BACKGROUND) {
+            if (!minimizedInBackground && shown) {
+                minimizedInBackground = true;
+                User32.showWindow(hwnd, User32.SW_HIDE);
+            }
+            return;
+        }
         User32.showWindow(hwnd, User32.SW_MINIMIZE);
+    }
+
+    /**
+     * Whether the window is minimized. In a background run that is the window's own state and not Windows': coming
+     * back from minimized activates a window whatever show state it is restored with (measured, in
+     * BackgroundRunWindowTest), so a background window is hidden instead, which activates nothing, and remembers
+     * that it is minimized. Everything that asks still gets "minimized" and does what it does for one.
+     */
+    private boolean iconic() {
+        return BACKGROUND ? minimizedInBackground : User32.isIconic(hwnd);
     }
 
     @Override
@@ -465,7 +497,12 @@ public final class Win32Window implements NativeWindow {
         if (destroyed) {
             return;
         }
-        User32.showWindow(hwnd, User32.SW_RESTORE);
+        if (BACKGROUND && minimizedInBackground) {
+            minimizedInBackground = false;
+            User32.showWindow(hwnd, User32.SW_SHOWNA);   // back as it was, maximized or not, and not activated
+            return;
+        }
+        User32.showWindow(hwnd, BACKGROUND ? User32.SW_SHOWNOACTIVATE : User32.SW_RESTORE);
     }
 
     @Override
@@ -486,6 +523,9 @@ public final class Win32Window implements NativeWindow {
         if (!on) {
             fullscreen = false;
             User32.setWindowStyle(hwnd, windowedStyle);
+            if (BACKGROUND) {
+                User32.withoutActivation(windowedPlacement);
+            }
             User32.setWindowPlacement(hwnd, windowedPlacement);
             User32.frameChanged(hwnd);
             return;
@@ -511,7 +551,7 @@ public final class Win32Window implements NativeWindow {
             // bit goes with the frame: the placement puts it back.
             fullscreen = true;
             User32.setWindowStyle(hwnd, windowedStyle & ~(User32.WS_OVERLAPPEDWINDOW | User32.WS_MAXIMIZE));
-            User32.placeOver(hwnd, User32.monitorRect(info));
+            User32.placeOver(hwnd, User32.monitorRect(info), !BACKGROUND);
         }
     }
 
@@ -522,7 +562,7 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public boolean isMinimized() {
-        return destroyed ? lastMinimized : User32.isIconic(hwnd);
+        return destroyed ? lastMinimized : iconic();
     }
 
     @Override
@@ -560,7 +600,7 @@ public final class Win32Window implements NativeWindow {
             return;
         }
         shown = true;
-        User32.showWindow(hwnd, User32.SW_SHOW);
+        User32.showWindow(hwnd, BACKGROUND ? User32.SW_SHOWNOACTIVATE : User32.SW_SHOW);
     }
 
     @Override
@@ -574,12 +614,19 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public boolean isVisible() {
-        return shown && !destroyed && User32.isWindowVisible(hwnd);
+        return shown && !destroyed && (minimizedInBackground || User32.isWindowVisible(hwnd));
     }
 
     @Override
     public void focus() {
         if (destroyed) {
+            return;
+        }
+        if (BACKGROUND) {
+            // Focus means "put this in front of me", and a background run has nobody in front of it: the only
+            // thing it may take is the existence that show() gives. Raising it would take the keyboard from
+            // whoever is at the desk, which is the whole thing a background run exists not to do.
+            show();
             return;
         }
         // Restoring first, because a minimized window cannot be "focused" in any sense the user would accept:
@@ -679,7 +726,9 @@ public final class Win32Window implements NativeWindow {
 
     @Override
     public boolean isFocused() {
-        return !destroyed && User32.isForeground(hwnd);
+        // A background run's window never holds the foreground, and is always the one its driver is working in:
+        // parking it as if nobody were waiting would make it a different run from a visible one.
+        return !destroyed && (BACKGROUND || User32.isForeground(hwnd));
     }
 
     @Override
@@ -915,7 +964,7 @@ public final class Win32Window implements NativeWindow {
             // Zeros, rather than a close that fails: nothing reading them afterwards is worth a crash.
         }
         lastMaximized = User32.isZoomed(hwnd);
-        lastMinimized = User32.isIconic(hwnd);
+        lastMinimized = iconic();
         destroyed = true;
     }
 

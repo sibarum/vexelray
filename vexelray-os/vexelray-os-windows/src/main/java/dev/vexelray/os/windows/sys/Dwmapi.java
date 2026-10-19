@@ -45,6 +45,31 @@ public final class Dwmapi {
     private static final MethodHandle DwmExtendFrameIntoClientArea =
             Ffi.downcall(LIB, "DwmExtendFrameIntoClientArea", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
 
+    /** {@code DWMWA_CLOAK}: the window is kept out of composition, so it is drawn nowhere and hit by nothing. */
+    public static final int DWMWA_CLOAK = 13;
+
+    private static final MethodHandle DwmSetWindowAttribute = Ffi.downcall(LIB, "DwmSetWindowAttribute",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT));
+
+    /**
+     * Cloak or uncloak a window. A cloaked window keeps its size, its surface and its swapchain, and is still shown
+     * as far as the window manager is concerned, but the compositor leaves it out: it is not on screen, not in the
+     * taskbar or Alt+Tab, and no screen point is over it. It is how a window on another virtual desktop is hidden.
+     */
+    public static void cloak(MemorySegment hwnd, boolean cloaked) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment value = temp.allocate(JAVA_INT);
+            value.set(JAVA_INT, 0, cloaked ? 1 : 0);
+            int hr = (int) DwmSetWindowAttribute.invokeExact(hwnd, DWMWA_CLOAK, value, 4);
+            if (hr != 0) {
+                throw new NativeException("DwmSetWindowAttribute(DWMWA_CLOAK) failed: HRESULT 0x"
+                        + Integer.toHexString(hr));
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("DwmSetWindowAttribute", t);
+        }
+    }
+
     private static final MethodHandle DwmFlush =
             Ffi.downcall(LIB, "DwmFlush", FunctionDescriptor.of(JAVA_INT));
 

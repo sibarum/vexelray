@@ -25,4 +25,20 @@
             <artifactId>vexelray-os-api</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Every window the tests open is a background run's: real, and unseen and unreachable by whoever is at
+                 the desk. BackgroundRunWindowTest measures exactly that, so it needs it on in every build. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <vexelray.background>true</vexelray.background>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

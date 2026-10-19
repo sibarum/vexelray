@@ -42,6 +42,17 @@ public final class User32 {
     public static final int CW_USEDEFAULT       = 0x80000000;
 
     public static final int SW_SHOW = 5;
+    /** {@code SW_SHOWNOACTIVATE} — shown at its last normal size and place, without taking the foreground. */
+    public static final int SW_SHOWNOACTIVATE  = 4;
+    /** {@code SW_SHOWMINNOACTIVE} — minimized, leaving the foreground where it was. */
+    public static final int SW_SHOWMINNOACTIVE = 7;
+    /** {@code SW_SHOWNA} — shown in its current state (maximized or not), without taking the foreground. */
+    public static final int SW_SHOWNA          = 8;
+    /**
+     * {@code WS_EX_NOACTIVATE} — never made the foreground window by a click, nor by the system when the foreground
+     * window closes or minimizes.
+     */
+    public static final int WS_EX_NOACTIVATE   = 0x08000000;
 
     public static final int PM_REMOVE = 0x0001;
 
@@ -985,13 +996,32 @@ public final class User32 {
     }
 
     /**
-     * Move and size the window to {@code rect} and raise it to the top, recalculating its frame: what puts a window
-     * whose style has just lost its frame over a whole monitor.
+     * Change a filled {@code WINDOWPLACEMENT} so that putting it back leaves the foreground where it is: a normal or
+     * minimized show state becomes its no-activate twin. A maximized one has no such twin and is left as it is.
      */
-    public static void placeOver(MemorySegment hwnd, MemorySegment rect) {
+    public static void withoutActivation(MemorySegment placement) {
+        int show = (int) WP_showCmd.get(placement);
+        if (show == SW_SHOWNORMAL) {
+            WP_showCmd.set(placement, SW_SHOWNOACTIVATE);
+        } else if (show == SW_SHOWMINIMIZED) {
+            WP_showCmd.set(placement, SW_SHOWMINNOACTIVE);
+        }
+    }
+
+    private static final int SW_SHOWNORMAL = 1;
+    private static final int SW_SHOWMINIMIZED = 2;
+    private static final VarHandle WP_showCmd = fieldHandle(WINDOWPLACEMENT, "showCmd");
+
+    /**
+     * Move and size the window to {@code rect}, recalculating its frame: what puts a window whose style has just lost
+     * its frame over a whole monitor. With {@code raise} it also goes to the top and is activated, as a window the
+     * person just asked to fill their screen should be; without, its z-order and the foreground are left alone.
+     */
+    public static void placeOver(MemorySegment hwnd, MemorySegment rect, boolean raise) {
+        int flags = SWP_NOOWNERZORDER | SWP_FRAMECHANGED | (raise ? 0 : SWP_NOZORDER | SWP_NOACTIVATE);
         try {
             int ok = (int) SetWindowPos.invokeExact(hwnd, HWND_TOP, rectLeft(rect), rectTop(rect), rectSpanX(rect),
-                    rectSpanY(rect), SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                    rectSpanY(rect), flags);
             if (ok == 0) {
                 throw new NativeException("SetWindowPos failed (GetLastError=" + Kernel32.getLastError() + ")");
             }
