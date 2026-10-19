@@ -220,6 +220,10 @@ public final class Win32Window implements NativeWindow {
         // a visible flicker in the taskbar, and on a slow start-up not a brief one.
         applyIcon();
         readClientSize();
+        if (BACKGROUND) {
+            // The run's one visible thing, and the person's way to end it: see Win32Tray.
+            Win32Tray.ensure(config.title(), icon != null ? icon : applicationIcon);
+        }
 
         // Appear immediately, painted with the class background brush, and pump once so the OS actually erases the
         // client area now. The (potentially slow) Vulkan bring-up then runs with a clean coloured window on screen
@@ -759,6 +763,9 @@ public final class Win32Window implements NativeWindow {
      */
     static void setApplicationIcon(Icon icon) {
         applicationIcon = icon;
+        if (BACKGROUND) {
+            Win32Tray.iconChanged(icon);
+        }
         for (Win32Window window : WINDOWS.values()) {
             if (window.icon == null) {
                 window.applyIcon();
@@ -802,7 +809,7 @@ public final class Win32Window implements NativeWindow {
     }
 
     /** One size of an {@link Icon} as an {@code HICON}: colour bitmap, mask, icon, and the scaffolding freed. */
-    private static MemorySegment createHicon(Icon.Image image) {
+    static MemorySegment createHicon(Icon.Image image) {
         MemorySegment color = Gdi32.createArgbBitmap(image.width(), image.height(), image.argb());
         MemorySegment mask = MemorySegment.NULL;
         try {
@@ -995,6 +1002,9 @@ public final class Win32Window implements NativeWindow {
         // hand the timer back while another window still wants it.
         if (timerHeld.compareAndSet(true, false)) {
             TimerResolution.release();
+        }
+        if (BACKGROUND && WINDOWS.isEmpty()) {
+            Win32Tray.lastWindowClosed();
         }
     }
 }

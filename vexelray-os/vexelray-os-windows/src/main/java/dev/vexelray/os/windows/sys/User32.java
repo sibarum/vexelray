@@ -14,6 +14,7 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.nio.charset.StandardCharsets;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
@@ -1027,6 +1028,91 @@ public final class User32 {
             }
         } catch (Throwable t) {
             throw NativeException.rethrow("SetWindowPos", t);
+        }
+    }
+
+    // ---- Popup menus, as the notification area's icon shows one ----------------------------------------------
+
+    public static final int MF_STRING = 0x0;
+    public static final int MF_SEPARATOR = 0x800;
+    public static final int TPM_RIGHTBUTTON = 0x2;
+    public static final int TPM_RETURNCMD = 0x100;
+    public static final int TPM_NONOTIFY = 0x80;
+    public static final int WM_APP = 0x8000;
+    public static final int WM_CONTEXTMENU = 0x007B;
+    public static final int WM_LBUTTONUP = 0x0202;
+    public static final int WM_RBUTTONUP = 0x0205;
+    /** {@code IDI_APPLICATION}, the icon an application that names none is drawn with. */
+    public static final int IDI_APPLICATION = 32512;
+
+    private static final MethodHandle CreatePopupMenu = Ffi.downcall(LIB, "CreatePopupMenu",
+            FunctionDescriptor.of(ADDRESS));
+    private static final MethodHandle AppendMenuW = Ffi.downcall(LIB, "AppendMenuW",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, ADDRESS));
+    private static final MethodHandle TrackPopupMenu = Ffi.downcall(LIB, "TrackPopupMenu",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle DestroyMenu = Ffi.downcall(LIB, "DestroyMenu",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle RegisterWindowMessageW = Ffi.downcall(LIB, "RegisterWindowMessageW",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle GetCursorPos = Ffi.downcall(LIB, "GetCursorPos",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle LoadIconW = Ffi.downcall(LIB, "LoadIconW",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
+
+    /**
+     * Show a popup menu of {@code labels} at the cursor for {@code owner}, and wait for a choice. Returns the index
+     * chosen, or -1 when the menu was dismissed. A null label is a separator.
+     *
+     * <p>{@code owner} is made the foreground window first, and a {@code WM_NULL} posted to it after: without both, a
+     * menu shown from the notification area does not close when the person clicks elsewhere. That is the documented
+     * dance, and the person asked for the menu, so taking the foreground for it is theirs to give.
+     */
+    public static int popupMenu(MemorySegment owner, java.util.List<String> labels) {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment menu = (MemorySegment) CreatePopupMenu.invokeExact();
+            if (menu.address() == 0L) {
+                throw new NativeException("CreatePopupMenu failed (GetLastError=" + Kernel32.getLastError() + ")");
+            }
+            try {
+                for (int i = 0; i < labels.size(); i++) {
+                    String label = labels.get(i);
+                    int ok = label == null
+                            ? (int) AppendMenuW.invokeExact(menu, MF_SEPARATOR, 0L, MemorySegment.NULL)
+                            : (int) AppendMenuW.invokeExact(menu, MF_STRING, (long) (i + 1),
+                                    temp.allocateFrom(label, StandardCharsets.UTF_16LE));
+                }
+                MemorySegment point = temp.allocate(POINT);
+                int ignoredPos = (int) GetCursorPos.invokeExact(point);
+                int ignoredFg = (int) SetForegroundWindow.invokeExact(owner);
+                int chosen = (int) TrackPopupMenu.invokeExact(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+                        point.get(JAVA_INT, 0), point.get(JAVA_INT, 4), 0, owner, MemorySegment.NULL);
+                postMessageW(owner, WM_NULL, 0, 0);
+                return chosen - 1;
+            } finally {
+                int ignored = (int) DestroyMenu.invokeExact(menu);
+            }
+        } catch (Throwable t) {
+            throw NativeException.rethrow("TrackPopupMenu", t);
+        }
+    }
+
+    /** {@code RegisterWindowMessageW}: the process-independent number for a named message. */
+    public static int registerWindowMessage(String name) {
+        try (Arena temp = Arena.ofConfined()) {
+            return (int) RegisterWindowMessageW.invokeExact(temp.allocateFrom(name, StandardCharsets.UTF_16LE));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("RegisterWindowMessageW", t);
+        }
+    }
+
+    /** The system's stock application icon; shared, never destroyed. */
+    public static MemorySegment applicationIcon() {
+        try {
+            return (MemorySegment) LoadIconW.invokeExact(MemorySegment.NULL,
+                    MemorySegment.ofAddress(IDI_APPLICATION));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("LoadIconW", t);
         }
     }
 }
