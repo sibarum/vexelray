@@ -10,3 +10,4 @@ target/
 # Maven dependency:build-classpath scratch output
 cp.txt
 cp-*.txt
+.claude/
