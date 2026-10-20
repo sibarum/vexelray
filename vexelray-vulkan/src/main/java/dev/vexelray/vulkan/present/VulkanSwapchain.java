@@ -110,12 +110,15 @@ public final class VulkanSwapchain implements AutoCloseable {
             MemorySegment first = formats.asSlice(0, stride);
             this.format = gi(first, SURFACE_FORMAT, "format");          // fall back to the first reported pair
             this.colorSpace = gi(first, SURFACE_FORMAT, "colorSpace");
+            // UNORM, never an _SRGB format: the shaders write sRGB-encoded values already, as every other target
+            // (the offscreen capture, DXGI's shared image) expects. An _SRGB swapchain encodes them a second time,
+            // which washes the whole window out. Drivers list either one first (Mesa lists _SRGB first), so the
+            // order they come in cannot decide it.
             for (int i = 0; i < count; i++) {
                 MemorySegment entry = formats.asSlice(i * stride, stride);
                 int f = gi(entry, SURFACE_FORMAT, "format");
                 int cs = gi(entry, SURFACE_FORMAT, "colorSpace");
-                if ((f == Vk.FORMAT_B8G8R8A8_UNORM || f == Vk.FORMAT_B8G8R8A8_SRGB)
-                        && cs == Vk.COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                if (f == Vk.FORMAT_B8G8R8A8_UNORM && cs == Vk.COLOR_SPACE_SRGB_NONLINEAR_KHR) {
                     this.format = f;
                     this.colorSpace = cs;
                     break;
