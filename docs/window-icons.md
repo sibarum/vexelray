@@ -194,6 +194,13 @@ Both `HICON`s are owned by the window: Windows only borrows what `WM_SETICON` is
 the new pair over *before* destroying the old, and `close()` frees them. Nothing here leaks a handle, and nothing
 here needs the application's help to avoid it.
 
+The taskbar does not keep a button's icon. It asks the window (`WM_GETICON`, with a timeout) whenever it rebuilds
+the button, and it rebuilds them on a wake from sleep and when displays change, exactly when every window is being
+asked for everything at once. A window that misses the timeout gets its class icon, and VexelRay's class has none,
+so the button goes generic and stays that way: nothing makes the taskbar ask again until the icon changes. So on
+`PBT_APMRESUMEAUTOMATIC` and `WM_DISPLAYCHANGE` a window hands its icon over again as new handles, which is that
+change. `IconAfterWakeTest` checks the handles move and the mark does not.
+
 ---
 
 ## 7. Where the code is

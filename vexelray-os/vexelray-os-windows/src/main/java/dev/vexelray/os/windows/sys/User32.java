@@ -738,6 +738,13 @@ public final class User32 {
     /** {@code ICON_BIG} — Alt-Tab and the taskbar's large views. */
     public static final int ICON_BIG = 1;
 
+    /** {@code WM_POWERBROADCAST} — a power event; {@code wParam} says which. */
+    public static final int WM_POWERBROADCAST = 0x0218;
+    /** {@code PBT_APMRESUMEAUTOMATIC} — the system is back from sleep, whoever woke it. */
+    public static final int PBT_APMRESUMEAUTOMATIC = 0x0012;
+    /** {@code WM_DISPLAYCHANGE} — a display's resolution changed, or one came or went. */
+    public static final int WM_DISPLAYCHANGE = 0x007E;
+
     /** {@code SM_CXICON} — the width Windows wants a large icon to be, on this display, at this scale. */
     public static final int SM_CXICON = 11;
     /** {@code SM_CXSMICON} — the same for a small icon. */

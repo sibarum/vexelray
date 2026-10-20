@@ -375,6 +375,12 @@ public final class Win32Window implements NativeWindow {
                         return 0;
                     }
                 }
+                case User32.WM_POWERBROADCAST -> {
+                    if (wParam == User32.PBT_APMRESUMEAUTOMATIC) {
+                        window.reassertIcon();
+                    }
+                }
+                case User32.WM_DISPLAYCHANGE -> window.reassertIcon();
                 default -> { /* fall through */ }
             }
         }
@@ -796,6 +802,21 @@ public final class Win32Window implements NativeWindow {
             if (window.icon == null) {
                 window.applyIcon();
             }
+        }
+    }
+
+    /**
+     * Hand the window its icon again, as new handles, after a wake from sleep or a change of displays.
+     *
+     * <p>The taskbar does not keep a button's icon: it asks the window ({@code WM_GETICON}) whenever it rebuilds
+     * the button, and both of those rebuild it. It asks with a timeout, and on a wake every window is being asked
+     * for everything at once, so a window that does not answer in time gets the class icon instead -- this class
+     * has none, so the button goes generic -- and the taskbar has no reason to ask again until the icon changes.
+     * New handles are that change. Re-sending the same ones might be taken for no change at all.
+     */
+    private void reassertIcon() {
+        if (worn != null) {
+            applyIcon();
         }
     }
 
