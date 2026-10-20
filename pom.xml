@@ -223,6 +223,16 @@
                 <artifactId>vastir-vulkan</artifactId>
                 <version>${supirvast.version}</version>
             </dependency>
+            <dependency>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>vastir-vulkan-windows</artifactId>
+                <version>${supirvast.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.supirvast</groupId>
+                <artifactId>vastir-vulkan-linux</artifactId>
+                <version>${supirvast.version}</version>
+            </dependency>
             <!-- The Truffle CPU backend: runs the same core IR on the CPU (physics/collision to the GPU's render). -->
             <dependency>
                 <groupId>dev.supirvast</groupId>

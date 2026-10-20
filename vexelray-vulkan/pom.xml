@@ -82,6 +82,12 @@
                     <artifactId>vexelray-os-windows</artifactId>
                     <scope>runtime</scope>
                 </dependency>
+                <!-- And vastir-vulkan's: where the Vulkan loader is on this OS. -->
+                <dependency>
+                    <groupId>dev.supirvast</groupId>
+                    <artifactId>vastir-vulkan-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
             </dependencies>
         </profile>
         <profile>
@@ -93,6 +99,12 @@
                 <dependency>
                     <groupId>dev.vexelray</groupId>
                     <artifactId>vexelray-os-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+                <!-- And vastir-vulkan's: where the Vulkan loader is on this OS. -->
+                <dependency>
+                    <groupId>dev.supirvast</groupId>
+                    <artifactId>vastir-vulkan-linux</artifactId>
                     <scope>runtime</scope>
                 </dependency>
             </dependencies>
