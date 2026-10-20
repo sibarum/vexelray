@@ -148,7 +148,7 @@ public interface VexelEngine extends AutoCloseable {
      * <pre>{@code
      * engine.run(pipeline, frame -> {
      *     if (frame.frameIndex() == 0) {
-     *         input.attach(NativeWindow.ofHwnd(engine.windowHandle()));
+     *         input.attach(engine.windowHandle());
      *     }
      *     ...
      * });

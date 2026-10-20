@@ -159,7 +159,7 @@ public final class Fathom {
             engine.run(renderPipeline, bus, frame -> {
                 if (frame.frameIndex() == 0) {
                     try {
-                        input.attach(sibarum.tactroller.api.NativeWindow.ofHwnd(engine.windowHandle()));
+                        input.attach(engine.windowHandle());
                     } catch (BackendException ex) {
                         throw new RuntimeException("could not attach input to the engine's window", ex);
                     }
