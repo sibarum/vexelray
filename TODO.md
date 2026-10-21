@@ -316,6 +316,19 @@ file is about the engine and its API. Decisions are logged in
 - [ ] **Mesh back-face culling** — opt-in, once a scene is fill-bound on meshes. It needs a winding convention,
       which two-sided shading has so far let this module avoid imposing.
 
+- [ ] **Display scaling on Linux.** `vexelray-os-linux` reports no DPI at all, so every window draws at 1×
+      whatever the desktop is set to. Read the scale where the session publishes it — `Xft.dpi` from the
+      `RESOURCE_MANAGER` root property under X11/XWayland (GNOME writes it there), and per-monitor through RandR
+      for mixed setups — and change it on `PropertyNotify`, as Windows does on `WM_DPICHANGED`. XWayland with
+      fractional scaling also hands X11 clients either a scaled-up buffer or a blurry one depending on the
+      compositor's setting; decide which we expect. Linux-only code, so it all lands in `vexelray-os-linux`.
+- [ ] **An `msdf-atlas-gen` for Linux (`vexelray-msdf-tool-linux`).** The plugin's `auto` mode generates
+      atlases only where a `vexelray-msdf-tool-<os>` module supplies the binary; on Linux it falls back to
+      `prebuilt` and verifies the committed atlases, so a charset or font change can only be made on Windows.
+      Build `msdf-atlas-gen` (it is CMake, with freetype) the way `ffmpeg-wrapper-linux` builds its natives —
+      a `native/build.sh` — and ship it as `vexelray-msdf-tool-linux` writing the same descriptor the Windows
+      module does. Nothing outside the new module should change.
+
 ---
 
 ## P3 — Docs and infrastructure
