@@ -42,4 +42,16 @@
             <version>0.1.2-SNAPSHOT</version>
         </dependency>
     </dependencies>
+    <build>
+        <plugins>
+            <!-- This module is Windows' by nature (DXGI): its platform-specific code is where it belongs. -->
+            <plugin>
+                <groupId>dev.vexelray.build</groupId>
+                <artifactId>vexelray-build-maven-plugin</artifactId>
+                <configuration>
+                    <os>windows</os>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
