@@ -328,6 +328,20 @@ file is about the engine and its API. Decisions are logged in
       Build `msdf-atlas-gen` (it is CMake, with freetype) the way `ffmpeg-wrapper-linux` builds its natives —
       a `native/build.sh` — and ship it as `vexelray-msdf-tool-linux` writing the same descriptor the Windows
       module does. Nothing outside the new module should change.
+- [ ] **`WindowedPresenter` cannot read its frames back, so a screenshot on Linux draws the window twice.** Only
+      `DxgiPresenter` implements `WindowPresenter.readFrame()`. On Linux the default returns null, and
+      vexelray-gui-core's `GuiWindow.capture` presents a frame it then cannot use and draws the tree again through
+      `offscreen()`. That is code the screen never runs, which is what `readFrame`'s javadoc warns a screenshot
+      against. Measured on the text editor under llvmpipe with the `capture …` probe zones: render 52–55 ms
+      (wasted), offscreen pipeline 37 ms (first shot only), offscreen draw 56–63 ms, PNG encode 12–22 ms, so
+      125–176 ms on the GUI thread per `shot`. The ~360 ms first shot seen on the native image is not explained
+      yet. Fix in two halves:
+      1. **`readFrame()` in `WindowedPresenter`**: create the swapchain with `TRANSFER_SRC` usage, copy the
+         presented image into a host-visible buffer, and wait on a fence. That removes the pipeline and the
+         second draw (about 60% of the cost), and makes Linux screenshots the frame on the screen, as on Windows.
+      2. **The PNG off the GUI thread**: in `GuiWindow.capture`, hand the RGBA bytes to the offload lane for
+         `PngWriter` and the move into place. Render and read-back stay on the main thread, where Vulkan is.
+         `shot` already waits for the file to appear, so ottermate needs no change.
 
 ---
 
