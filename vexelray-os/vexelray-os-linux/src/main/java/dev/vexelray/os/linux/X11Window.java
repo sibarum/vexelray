@@ -42,7 +42,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  *
  * <p><b>Background runs.</b> X11 has nothing like DWM cloaking: a mapped window is a visible one. So a background
  * run's window is never mapped. It is otherwise fully real — it has its surface, its swapchain and its frames — and
- * {@link #isVisible} reports what the host asked for, so the host behaves as it would on screen.
+ * {@link #isVisible} reports what the host asked for, so the host behaves as it would on screen. The first one posts
+ * the run's notification ({@link BackgroundNotice}), the person's way to end it, as the tray icon is on Windows.
  *
  * <p><b>Client-drawn chrome.</b> A {@link Decorations#CLIENT} or {@link Decorations#NONE} window asks the window manager
  * for no frame ({@code _MOTIF_WM_HINTS}). A press in a caption or resize zone of the {@link HitRegions} is handed to the
@@ -157,10 +158,11 @@ final class X11Window implements NativeWindow {
                     X11.connectionNumber(display), wake[0], wake[1], Atoms.intern(display),
                     Arena.global().allocate(X11.XEVENT_SIZE, 8));
             if (BACKGROUND) {
-                // There is no notification area to put an icon in on every Linux desktop, so the person's way to
-                // end the run is the one every process has. Said once, where the log starts.
+                // Said once, where the log starts. The person's handle on the run is the notification the first
+                // window posts (BackgroundNotice); this is the agent's, and the fallback where there is none.
                 System.err.println("vexelray: background run (" + "pid " + ProcessHandle.current().pid()
-                        + "): its windows are never mapped. End it from the terminal that started it, or with kill.");
+                        + "): its windows are never mapped. End it from its notification, from the terminal that"
+                        + " started it, or with kill.");
             }
         }
         return connection;
@@ -212,6 +214,9 @@ final class X11Window implements NativeWindow {
     X11Window(WindowConfig config) {
         this.c = connection();
         this.display = c.display();
+        if (BACKGROUND) {
+            BackgroundNotice.show(config.title());
+        }
         this.decorations = config.decorations();
         this.icon = config.icon();
 
