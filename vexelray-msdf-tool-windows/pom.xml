@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.vexelray</groupId>
+        <artifactId>vexelray</artifactId>
+        <version>0.1.2-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>vexelray-msdf-tool-windows</artifactId>
+
+    <name>VexelRay :: msdf-atlas-gen for Windows</name>
+    <description>
+        msdf-atlas-gen.exe, the tool vexelray-msdf-maven-plugin generates font atlases with, and
+        META-INF/vexelray/msdf-atlas-gen.properties saying where it is. The plugin's OS-activated profile puts it on
+        the plugin's class path; on an OS with no such module the plugin uses the committed atlases instead.
+    </description>
+</project>

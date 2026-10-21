@@ -22,6 +22,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Properties;
 import java.util.Set;
 
 /**
@@ -35,11 +36,14 @@ import java.util.Set;
  * face it has is baked into its own atlas, with every glyph each face maps, plus a {@code fonts.json} manifest and
  * a printed account of the texture memory they will take. See docs/plans/font-families.md in vexelray-gui.
  *
- * <p>Two modes via {@code msdf.mode}:
+ * <p>Three modes via {@code msdf.mode}:
  * <ul>
- *   <li>{@code primary} (default): invoke {@code msdf-atlas-gen} to regenerate outputs; fails loudly if the
- *       bundled binary is unavailable for the current OS.</li>
- *   <li>{@code prebuilt}: skip the binary; verify pre-generated atlas files exist. Used on non-Windows builds.</li>
+ *   <li>{@code auto} (default): {@code primary} where a {@code vexelray-msdf-tool-<os>} module gives this OS an
+ *       {@code msdf-atlas-gen}, {@code prebuilt} where none does. No OS is named here: the tool module is on the
+ *       plugin's class path or it is not.</li>
+ *   <li>{@code primary}: invoke {@code msdf-atlas-gen} to regenerate outputs; fails loudly if there is none for
+ *       the current OS.</li>
+ *   <li>{@code prebuilt}: skip the binary; verify pre-generated atlas files exist.</li>
  * </ul>
  * Primary mode is incremental: if all outputs are newer than the input font, the atlas is left alone (the
  * missing-glyph box is still baked idempotently).
@@ -47,7 +51,7 @@ import java.util.Set;
 @Mojo(name = "generate-atlas", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
 public class GenerateAtlasMojo extends AbstractMojo {
 
-    @Parameter(property = "msdf.mode", defaultValue = "primary")
+    @Parameter(property = "msdf.mode", defaultValue = "auto")
     private String mode;
 
     /** Base output directory; each atlas writes {@code <name>.png}, {@code <name>.json} and {@code <name>.rgba} here. */
@@ -95,14 +99,20 @@ public class GenerateAtlasMojo extends AbstractMojo {
             getLog().warn("No <atlases> or <families> configured; nothing to do.");
             return;
         }
-        boolean prebuilt = "prebuilt".equalsIgnoreCase(mode);
-        if (!prebuilt && !"primary".equalsIgnoreCase(mode)) {
-            throw new MojoExecutionException("Invalid mode '" + mode + "' — expected 'primary' or 'prebuilt'.");
+        if (!"auto".equalsIgnoreCase(mode) && !"primary".equalsIgnoreCase(mode)
+                && !"prebuilt".equalsIgnoreCase(mode)) {
+            throw new MojoExecutionException("Invalid mode '" + mode + "' — expected 'auto', 'primary' or 'prebuilt'.");
+        }
+        Properties tool = tool();
+        boolean prebuilt = "prebuilt".equalsIgnoreCase(mode) || ("auto".equalsIgnoreCase(mode) && tool == null);
+        if (prebuilt && "auto".equalsIgnoreCase(mode)) {
+            getLog().info("No msdf-atlas-gen for this OS (no vexelray-msdf-tool-<os> module): using the committed"
+                    + " atlases.");
         }
         if (!outputDir.exists() && !outputDir.mkdirs()) {
             throw new MojoExecutionException("Failed to create output dir: " + outputDir);
         }
-        File binary = prebuilt ? null : extractBinary();
+        File binary = prebuilt ? null : extractBinary(tool);
         for (AtlasConfig cfg : noAtlases ? List.<AtlasConfig>of() : atlases) {
             processAtlas(cfg, binary, prebuilt);
         }
@@ -319,28 +329,46 @@ public class GenerateAtlasMojo extends AbstractMojo {
         }
     }
 
-    private File extractBinary() throws MojoExecutionException {
-        String resource = "/bin/windows-x64/msdf-atlas-gen.exe";
-        if (!System.getProperty("os.name", "").toLowerCase().contains("windows")) {
-            throw new MojoExecutionException(
-                    "msdf-atlas-gen.exe is bundled only for Windows in this plugin. "
-                            + "Use -Dmsdf.mode=prebuilt to consume pre-generated atlases on other platforms, "
-                            + "or supply a binary for the current OS.");
+    /**
+     * The msdf-atlas-gen this OS has: the {@code META-INF/vexelray/msdf-atlas-gen.properties} a
+     * {@code vexelray-msdf-tool-<os>} module on the plugin's class path carries ({@code resource}, {@code file}), or
+     * null when there is none.
+     */
+    private Properties tool() throws MojoExecutionException {
+        try (InputStream in = getClass().getResourceAsStream("/META-INF/vexelray/msdf-atlas-gen.properties")) {
+            if (in == null) {
+                return null;
+            }
+            Properties p = new Properties();
+            p.load(in);
+            return p;
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed to read msdf-atlas-gen.properties", e);
         }
+    }
+
+    private File extractBinary(Properties tool) throws MojoExecutionException {
+        if (tool == null) {
+            throw new MojoExecutionException("There is no msdf-atlas-gen for this OS (no vexelray-msdf-tool-<os>"
+                    + " module). Use the default -Dmsdf.mode=auto or prebuilt to consume the committed atlases, or add"
+                    + " a tool module for this OS.");
+        }
+        String resource = tool.getProperty("resource");
+        String fileName = tool.getProperty("file");
         File binDir = new File(workDir, "bin");
         if (!binDir.exists() && !binDir.mkdirs()) {
             throw new MojoExecutionException("Failed to create binary work dir: " + binDir);
         }
-        File target = new File(binDir, "msdf-atlas-gen.exe");
+        File target = new File(binDir, fileName);
         if (!target.exists()) {
             try (InputStream in = getClass().getResourceAsStream(resource)) {
                 if (in == null) {
                     throw new MojoExecutionException("Bundled binary not found at classpath resource " + resource
-                            + " — the plugin JAR may be corrupted.");
+                            + " — the tool module's JAR may be corrupted.");
                 }
                 Files.copy(in, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e) {
-                throw new MojoExecutionException("Failed to extract msdf-atlas-gen.exe", e);
+                throw new MojoExecutionException("Failed to extract " + fileName, e);
             }
             target.setExecutable(true, false);
         }

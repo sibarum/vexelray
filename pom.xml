@@ -39,6 +39,8 @@
         <!-- The SDF technique: composes a surface + lighting model into a fullscreen ray-march fragment. Today
              the composer; it grows the RenderTechnique impl when the Phase 2 runtime lands. -->
         <module>vexelray-technique-sdf</module>
+        <!-- msdf-atlas-gen itself, per OS; the plugin's OS-activated profile adds the one for the build host. -->
+        <module>vexelray-msdf-tool-windows</module>
         <!-- Build-time MSDF atlas generator (Maven plugin). Listed before vexelray-text, which uses it. -->
         <module>vexelray-msdf-maven-plugin</module>
         <!-- MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, and the MSDF shader as core IR. -->

@@ -89,6 +89,15 @@ public interface NativePlatform {
     }
 
     /**
+     * The presenter every window on this platform must present through, by its {@code PresenterProvider} name, or
+     * empty for a Vulkan swapchain. A platform that names one does not start without it: on Windows that is DXGI,
+     * because a swapchain recreated on resize is what DXGI replaces there (on some machines it freezes the desktop).
+     */
+    default Optional<String> presenter() {
+        return Optional.empty();
+    }
+
+    /**
      * The arguments {@code main} was handed, as the operating system actually holds them.
      *
      * <p>Exists for one platform's sake: a GraalVM native image on Windows decodes its arguments through the ANSI

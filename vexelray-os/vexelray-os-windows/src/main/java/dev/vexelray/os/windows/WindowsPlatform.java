@@ -27,6 +27,12 @@ public final class WindowsPlatform implements NativePlatform {
         return Platform.WINDOWS;
     }
 
+    /** DXGI, always: see {@link NativePlatform#presenter()}. {@code vexelray-present-dxgi} provides it. */
+    @Override
+    public Optional<String> presenter() {
+        return Optional.of("dxgi");
+    }
+
     @Override
     public List<String> requiredVulkanInstanceExtensions() {
         return List.of("VK_KHR_surface", "VK_KHR_win32_surface");

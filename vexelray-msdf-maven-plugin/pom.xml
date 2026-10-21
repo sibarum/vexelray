@@ -17,7 +17,8 @@
         Build-time MSDF font-atlas generation: the generate-atlas goal runs a bundled msdf-atlas-gen binary over a
         TTF/OTF font to produce the atlas PNG + JSON that vexelray-text consumes at runtime, then bakes a
         font-independent missing-glyph box. A focused adaptation of Dasum's dasum-msdf-maven-plugin (single font,
-        no icon codegen). Windows binary bundled; other OSes consume committed atlases via -Dmsdf.mode=prebuilt.
+        no icon codegen). The binary comes from a vexelray-msdf-tool-&lt;os&gt; module (Windows has one); on an OS
+        without one the default mode consumes the committed atlases.
     </description>
 
     <properties>
@@ -58,4 +59,22 @@
             </plugin>
         </plugins>
     </build>
+
+    <!-- msdf-atlas-gen for the build host's OS, where there is one: on the plugin's class path, found by the resource
+         META-INF/vexelray/msdf-atlas-gen.properties. Where there is none, the default mode uses the committed
+         atlases. -->
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation><os><family>windows</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>dev.vexelray</groupId>
+                    <artifactId>vexelray-msdf-tool-windows</artifactId>
+                    <version>${project.version}</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

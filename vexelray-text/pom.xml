@@ -37,9 +37,9 @@
         <plugins>
             <!--
               Regenerate the committed MSDF atlas from the bundled font at build time (generate-resources), the
-              way Dasum's dasum-files does. Default mode 'primary' runs the bundled msdf-atlas-gen (Windows) and is
-              incremental — it only re-runs when the font is newer than the outputs. On non-Windows, build with
-              -Dmsdf.mode=prebuilt to consume the committed primary.png/json instead of regenerating.
+              way Dasum's dasum-files does. The default mode, 'auto', runs msdf-atlas-gen where a
+              vexelray-msdf-tool-<os> module provides it (Windows) and is incremental — it only re-runs when the font
+              is newer than the outputs; elsewhere it consumes the committed primary.png/json instead.
             -->
             <plugin>
                 <groupId>dev.vexelray</groupId>
