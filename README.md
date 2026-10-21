@@ -133,5 +133,9 @@ never happened. It runs the first in isolation and counts the pixels that are no
 mvn install
 ```
 
-Requires the sibling projects installed to the local `.m2` first: **SupirVast** (`mvn install` in
-`../supirvast`) for the shader story, plus **Tactroller** and **Atchung** for the Fathom demo's input fabric.
+Requires the sibling projects installed to the local `.m2` first: `vexelray-build` (every module's build plugin),
+`atchung` with the `intrabuf` it needs (the bus and the logger the engine uses), `supirvast` (the shaders),
+`dxgi-bridge` (presentation on Windows) and `tactroller` (input). `../vexelray-framework/bootstrap.sh` clones and
+installs the whole stack in order; after changing this repo, `--from vexelray` reinstalls it and everything that
+depends on it. Building an application rather than the engine? Start at the
+[developer guide](https://sibarum.github.io/vexelray-framework/developers/).
