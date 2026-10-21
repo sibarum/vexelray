@@ -32,6 +32,14 @@ public final class DBus {
     public static final int TYPE_ARRAY = 'a';
     public static final int TYPE_VARIANT = 'v';
     public static final int TYPE_DICT_ENTRY = 'e';
+    public static final int TYPE_STRUCT = 'r';
+    public static final int TYPE_OBJECT_PATH = 'o';
+    public static final int TYPE_BYTE = 'y';
+    public static final int TYPE_INVALID = 0;
+
+    /** {@code dbus_message_get_type}: a method call, and a signal. */
+    public static final int MESSAGE_METHOD_CALL = 1;
+    public static final int MESSAGE_SIGNAL = 4;
 
     /** Room for a {@code DBusError} or a {@code DBusMessageIter}, with margin. */
     public static final long STRUCT_SIZE = 128;
@@ -75,6 +83,26 @@ public final class DBus {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
     private static final MethodHandle dbus_connection_pop_message = Ffi.downcall(LIB, "dbus_connection_pop_message",
             FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_new_method_return = Ffi.downcall(LIB,
+            "dbus_message_new_method_return", FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_new_error = Ffi.downcall(LIB, "dbus_message_new_error",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_get_type = Ffi.downcall(LIB, "dbus_message_get_type",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    private static final MethodHandle dbus_message_get_member = Ffi.downcall(LIB, "dbus_message_get_member",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_get_interface = Ffi.downcall(LIB, "dbus_message_get_interface",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_get_path = Ffi.downcall(LIB, "dbus_message_get_path",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_iter_recurse = Ffi.downcall(LIB, "dbus_message_iter_recurse",
+            FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_message_iter_append_fixed_array = Ffi.downcall(LIB,
+            "dbus_message_iter_append_fixed_array", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT));
+    private static final MethodHandle dbus_bus_get_unique_name = Ffi.downcall(LIB, "dbus_bus_get_unique_name",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+    private static final MethodHandle dbus_bus_name_has_owner = Ffi.downcall(LIB, "dbus_bus_name_has_owner",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
     private static final MethodHandle dbus_connection_send = Ffi.downcall(LIB, "dbus_connection_send",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
     private static final MethodHandle dbus_connection_flush = Ffi.downcall(LIB, "dbus_connection_flush",
@@ -179,6 +207,13 @@ public final class DBus {
         MemorySegment slot = arena.allocate(ADDRESS);
         slot.set(ADDRESS, 0, arena.allocateFrom(value));
         appendBasic(it, TYPE_STRING, slot);
+    }
+
+    /** An object path ({@code o}): a string on the wire, under its own type. */
+    public static void appendObjectPath(MemorySegment it, String path, Arena arena) {
+        MemorySegment slot = arena.allocate(ADDRESS);
+        slot.set(ADDRESS, 0, arena.allocateFrom(path));
+        appendBasic(it, TYPE_OBJECT_PATH, slot);
     }
 
     /** A {@code u}, {@code i} or {@code b} (D-Bus booleans are 32-bit). */
@@ -318,6 +353,120 @@ public final class DBus {
             throw e;
         } catch (Throwable t) {
             throw NativeException.rethrow("dbus_connection_send", t);
+        }
+    }
+
+    // ---- Answering calls -------------------------------------------------------------------------------------------
+
+    /** {@link #MESSAGE_METHOD_CALL}, {@link #MESSAGE_SIGNAL}, ... */
+    public static int type(MemorySegment msg) {
+        try {
+            return (int) dbus_message_get_type.invokeExact(msg);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_get_type", t);
+        }
+    }
+
+    public static String member(MemorySegment msg) {
+        try {
+            return string((MemorySegment) dbus_message_get_member.invokeExact(msg));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_get_member", t);
+        }
+    }
+
+    public static String iface(MemorySegment msg) {
+        try {
+            return string((MemorySegment) dbus_message_get_interface.invokeExact(msg));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_get_interface", t);
+        }
+    }
+
+    public static String path(MemorySegment msg) {
+        try {
+            return string((MemorySegment) dbus_message_get_path.invokeExact(msg));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_get_path", t);
+        }
+    }
+
+    private static String string(MemorySegment p) {
+        return p.equals(MemorySegment.NULL) ? "" : p.reinterpret(Integer.MAX_VALUE).getString(0);
+    }
+
+    /** The reply to {@code call}, to fill and send; the caller unrefs it. */
+    public static MemorySegment newReturn(MemorySegment call) {
+        try {
+            MemorySegment reply = (MemorySegment) dbus_message_new_method_return.invokeExact(call);
+            if (reply.equals(MemorySegment.NULL)) {
+                throw new NativeException("dbus_message_new_method_return returned NULL");
+            }
+            return reply;
+        } catch (NativeException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_new_method_return", t);
+        }
+    }
+
+    /** An error reply to {@code call}; the caller sends and unrefs it. */
+    public static MemorySegment newError(MemorySegment call, String name, String message, Arena arena) {
+        try {
+            return (MemorySegment) dbus_message_new_error.invokeExact(call, arena.allocateFrom(name),
+                    arena.allocateFrom(message));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_new_error", t);
+        }
+    }
+
+    /** An iterator into the container {@code it} is on. */
+    public static MemorySegment recurse(MemorySegment it, Arena arena) {
+        MemorySegment sub = arena.allocate(STRUCT_SIZE, 8);
+        try {
+            dbus_message_iter_recurse.invokeExact(it, sub);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_iter_recurse", t);
+        }
+        return sub;
+    }
+
+    /** An {@code ay} of {@code bytes}, in one call, into the array container {@code it}. */
+    public static void appendBytes(MemorySegment it, byte[] bytes, Arena arena) {
+        MemorySegment data = arena.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, bytes);
+        MemorySegment slot = arena.allocate(ADDRESS);
+        slot.set(ADDRESS, 0, data);
+        try {
+            if ((int) dbus_message_iter_append_fixed_array.invokeExact(it, TYPE_BYTE, slot, bytes.length) == 0) {
+                throw new NativeException("dbus_message_iter_append_fixed_array: out of memory");
+            }
+        } catch (NativeException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_iter_append_fixed_array", t);
+        }
+    }
+
+    /** This connection's unique bus name ({@code :1.42}). */
+    public static String uniqueName(MemorySegment conn) {
+        try {
+            return string((MemorySegment) dbus_bus_get_unique_name.invokeExact(conn));
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_bus_get_unique_name", t);
+        }
+    }
+
+    /** Whether some connection owns {@code name} right now. */
+    public static boolean nameHasOwner(MemorySegment conn, String name, Arena arena) {
+        MemorySegment err = newError(arena);
+        try {
+            boolean owned = (int) dbus_bus_name_has_owner.invokeExact(conn, arena.allocateFrom(name), err) != 0;
+            check(err, "dbus_bus_name_has_owner");
+            return owned;
+        } catch (NativeException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_bus_name_has_owner", t);
         }
     }
 

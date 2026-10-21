@@ -215,7 +215,7 @@ final class X11Window implements NativeWindow {
         this.c = connection();
         this.display = c.display();
         if (BACKGROUND) {
-            BackgroundNotice.show(config.title());
+            BackgroundNotice.show(config.title(), config.icon() != null ? config.icon() : applicationIcon);
         }
         this.decorations = config.decorations();
         this.icon = config.icon();
