@@ -1,6 +1,7 @@
 # Maven build output, in every module at any depth. A Java package named
 # `target` under src/ is source, not build output (dev.vexelray.target).
 target/
+target-linux/
 !**/src/**/target/
 *.class
 .idea/
