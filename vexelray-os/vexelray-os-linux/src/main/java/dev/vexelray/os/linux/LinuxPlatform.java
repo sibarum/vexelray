@@ -8,8 +8,10 @@ import dev.vexelray.os.WindowConfig;
 import dev.vexelray.os.WorkArea;
 import dev.vexelray.os.linux.sys.X11;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * The Linux {@link NativePlatform}: X11 windowing via {@code libX11} and a {@code VkSurfaceKHR} via
@@ -52,5 +54,20 @@ public final class LinuxPlatform implements NativePlatform {
             return Optional.empty();
         }
         return Optional.of(new WorkArea((int) area[0], (int) area[1], (int) area[2], (int) area[3]));
+    }
+
+    /**
+     * {@code $XDG_DATA_HOME}, or {@code ~/.local/share} where it is unset or empty: the XDG base directory rule, and
+     * the one {@code vexelray-installer}'s {@code install.sh} applies ({@code ${XDG_DATA_HOME:-$HOME/.local/share}}).
+     */
+    @Override
+    public Optional<Path> userDataDir() {
+        return Optional.of(userDataDir(System::getenv, System.getProperty("user.home")));
+    }
+
+    /** As {@link #userDataDir()}, with the environment and the home folder given. */
+    static Path userDataDir(Function<String, String> env, String home) {
+        String data = env.apply("XDG_DATA_HOME");
+        return data != null && !data.isBlank() ? Path.of(data) : Path.of(home, ".local", "share");
     }
 }

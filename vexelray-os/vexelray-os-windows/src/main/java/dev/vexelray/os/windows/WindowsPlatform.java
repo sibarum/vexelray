@@ -11,8 +11,10 @@ import dev.vexelray.os.windows.sys.User32;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * The Windows {@link NativePlatform}: windows via {@code user32}/{@code kernel32} and a {@code VkSurfaceKHR} via
@@ -97,5 +99,20 @@ public final class WindowsPlatform implements NativePlatform {
             // Placement is a convenience: an application must not fail to launch over a monitor query.
             return Optional.empty();
         }
+    }
+
+    /**
+     * {@code %LOCALAPPDATA%}, where Windows says per-user data goes; {@code AppData\Local} under the home folder when
+     * it is not set.
+     */
+    @Override
+    public Optional<Path> userDataDir() {
+        return Optional.of(userDataDir(System::getenv, System.getProperty("user.home")));
+    }
+
+    /** As {@link #userDataDir()}, with the environment and the home folder given. */
+    static Path userDataDir(Function<String, String> env, String home) {
+        String local = env.apply("LOCALAPPDATA");
+        return local != null && !local.isBlank() ? Path.of(local) : Path.of(home, "AppData", "Local");
     }
 }

@@ -1,5 +1,6 @@
 package dev.vexelray.os;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.ServiceLoader;
@@ -94,6 +95,18 @@ public interface NativePlatform {
      * because a swapchain recreated on resize is what DXGI replaces there (on some machines it freezes the desktop).
      */
     default Optional<String> presenter() {
+        return Optional.empty();
+    }
+
+    /**
+     * The folder this OS gives each user for application data, by its own convention: where another program that
+     * follows the convention writes, so that what it wrote can be found. Empty where this platform does not say.
+     *
+     * <p>Not where a VexelRay application keeps its own files: that is {@code AppHome}, one layout on every OS. This
+     * is for reading what something else put in the OS's place, as the suite reads {@code vexelray-installer}'s
+     * install records.
+     */
+    default Optional<Path> userDataDir() {
         return Optional.empty();
     }
 
