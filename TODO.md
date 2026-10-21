@@ -339,6 +339,10 @@ file is about the engine and its API. Decisions are logged in
       1. **`readFrame()` in `WindowedPresenter`**: create the swapchain with `TRANSFER_SRC` usage, copy the
          presented image into a host-visible buffer, and wait on a fence. That removes the pipeline and the
          second draw (about 60% of the cost), and makes Linux screenshots the frame on the screen, as on Windows.
+         *Half done since 2026-10-21:* the swapchain asks for `TRANSFER_SRC` wherever the surface allows it
+         (`VulkanSwapchain.readable()`), and `FrameTapRing` already copies a presented swapchain image out of
+         `PRESENT_SRC_KHR` and back for a recording (`WindowPresenter.tap`, `PresenterTapTest`). `readFrame` can be
+         a tap of one frame followed by a fence wait.
       2. **The PNG off the GUI thread**: in `GuiWindow.capture`, hand the RGBA bytes to the offload lane for
          `PngWriter` and the move into place. Render and read-back stay on the main thread, where Vulkan is.
          `shot` already waits for the file to appear, so ottermate needs no change.

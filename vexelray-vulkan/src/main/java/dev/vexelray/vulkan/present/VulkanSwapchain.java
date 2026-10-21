@@ -73,6 +73,7 @@ public final class VulkanSwapchain implements AutoCloseable {
     private long[] images = new long[0];
     private int format;
     private int colorSpace;
+    private boolean readable;
     private int extentWidth;
     private int extentHeight;
 
@@ -160,8 +161,14 @@ public final class VulkanSwapchain implements AutoCloseable {
             si(info, SWAPCHAIN_CREATE_INFO, "imageExtent_w", extentWidth);
             si(info, SWAPCHAIN_CREATE_INFO, "imageExtent_h", extentHeight);
             si(info, SWAPCHAIN_CREATE_INFO, "imageArrayLayers", 1);
-            si(info, SWAPCHAIN_CREATE_INFO, "imageUsage",
-                    Vk.IMAGE_USAGE_COLOR_ATTACHMENT_BIT | Vk.IMAGE_USAGE_TRANSFER_DST_BIT);
+            // TRANSFER_SRC where the surface allows it, so a presented frame can be copied out (FrameTapRing). Every
+            // desktop driver does; one that does not presents as before and simply has no tap.
+            int usage = Vk.IMAGE_USAGE_COLOR_ATTACHMENT_BIT | Vk.IMAGE_USAGE_TRANSFER_DST_BIT;
+            readable = (gi(caps, SURFACE_CAPABILITIES, "supportedUsageFlags") & Vk.IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+            if (readable) {
+                usage |= Vk.IMAGE_USAGE_TRANSFER_SRC_BIT;
+            }
+            si(info, SWAPCHAIN_CREATE_INFO, "imageUsage", usage);
             si(info, SWAPCHAIN_CREATE_INFO, "imageSharingMode", Vk.SHARING_MODE_EXCLUSIVE);
             si(info, SWAPCHAIN_CREATE_INFO, "preTransform", gi(caps, SURFACE_CAPABILITIES, "currentTransform"));
             si(info, SWAPCHAIN_CREATE_INFO, "compositeAlpha", Vk.COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
@@ -209,6 +216,11 @@ public final class VulkanSwapchain implements AutoCloseable {
 
     public long[] images() {
         return images;
+    }
+
+    /** Whether the images can be copied from (made with {@code TRANSFER_SRC} usage): what a frame tap needs. */
+    public boolean readable() {
+        return readable;
     }
 
     public int format() {

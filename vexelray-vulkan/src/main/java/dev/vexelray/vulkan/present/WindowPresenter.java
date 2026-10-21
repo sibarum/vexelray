@@ -55,6 +55,17 @@ public interface WindowPresenter extends AutoCloseable {
         return null;
     }
 
+    /**
+     * Hand every frame presented from now on to {@code tap}, read back a frame or more later without the loop waiting
+     * for it ({@link FrameTap}); {@code null} stops, after the frames already copied for the old tap are handed to it.
+     * False when this presenter cannot read its frames back, and nothing will come.
+     *
+     * <p>On the thread that renders, between frames.
+     */
+    default boolean tap(FrameTap tap) {
+        return false;
+    }
+
     @Override
     void close();
 }

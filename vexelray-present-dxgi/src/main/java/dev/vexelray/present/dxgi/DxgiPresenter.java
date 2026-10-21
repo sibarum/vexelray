@@ -4,6 +4,8 @@ import dev.supirvast.vulkan.Vk;
 import dev.supirvast.vulkan.VkStructs;
 import dev.supirvast.vulkan.VulkanDevice;
 import dev.vexelray.os.NativeWindow;
+import dev.vexelray.vulkan.present.FrameTap;
+import dev.vexelray.vulkan.present.FrameTapRing;
 import dev.vexelray.vulkan.present.FrameUpdate;
 import dev.vexelray.vulkan.offscreen.OffscreenReadback;
 import dev.vexelray.vulkan.present.GraphicsPipeline;
@@ -74,6 +76,8 @@ final class DxgiPresenter implements WindowPresenter {
     private final MethodHandle pushConstants, bindVertexBuffers, setViewport, setScissor;
     /** Records the runs: their sets and draws, by the same rules as every other path that draws them. */
     private final RunRecorder runRecorder;
+    /** Each presented frame copied out for a {@link FrameTap}, while there is one. The shared image is BGRA. */
+    private final FrameTapRing tapRing;
     private final MethodHandle createFramebuffer, destroyFramebuffer, destroyFence, destroyPool;
 
     private final long pool;
@@ -121,6 +125,7 @@ final class DxgiPresenter implements WindowPresenter {
         this.endRp = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
         this.bindPipe = device.command("vkCmdBindPipeline", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
         this.runRecorder = new RunRecorder(device, arena);
+        this.tapRing = new FrameTapRing(device, true);
         this.pushConstants = device.command("vkCmdPushConstants",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
         this.bindVertexBuffers = device.command("vkCmdBindVertexBuffers",
@@ -224,6 +229,8 @@ final class DxgiPresenter implements WindowPresenter {
             check(invoke(waitFences, dev, 1, pInFlight, Vk.VK_TRUE, Long.MAX_VALUE),
                     "vkWaitForFences");
         }
+        // The last frame's copy for a tap is done with it: hand it over before this frame records another.
+        tapRing.collect();
 
         int w = window.width();
         int h = window.height();
@@ -308,6 +315,10 @@ final class DxgiPresenter implements WindowPresenter {
             invokeVoid(endRp, cmd);
             swapchain.recordCopyOut(cmd, VulkanRenderPass.IMAGE_LAYOUT_GENERAL,
                     Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT, w, h);
+            // The corner present copies is the frame on the screen; a tap gets the same corner, read in place.
+            tapRing.record(cmd, swapchain.image().image(), VulkanRenderPass.IMAGE_LAYOUT_GENERAL,
+                    VulkanRenderPass.IMAGE_LAYOUT_GENERAL, Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT, w, h, inFlight);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         }
     }
@@ -381,6 +392,15 @@ final class DxgiPresenter implements WindowPresenter {
         return pixels;
     }
 
+    @Override
+    public boolean tap(FrameTap tap) {
+        if (closed) {
+            return false;
+        }
+        tapRing.tap(tap);
+        return true;
+    }
+
     /** The one framebuffer, over the shared image's view at its full capacity. The device must be idle on the old one. */
     private void rebuildFramebuffer() {
         if (framebuffer != 0L) {
@@ -416,6 +436,7 @@ final class DxgiPresenter implements WindowPresenter {
         Probe.closed(Lane.GPU, "DxgiPresenter", this);
         device.waitIdle();
         try {
+            tapRing.close();
             swapchain.close();
         } finally {
             if (framebuffer != 0L) {

@@ -67,6 +67,9 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class WindowedPresenter implements WindowPresenter {
     private static final Log LOG = Log.of("vulkan.present");
+
+    /** Not in supir's {@code Vk}: what a frame tap's copy waits on, the render pass's final transition included. */
+    private static final int PIPELINE_STAGE_ALL_COMMANDS_BIT = 0x10000;
     /** Experiment: hold the present queue to one frame by waiting out the vblank after every present. */
     private static final boolean FLUSH_AFTER_PRESENT = Boolean.getBoolean("vexelray.present.flush");
 
@@ -101,6 +104,11 @@ public final class WindowedPresenter implements WindowPresenter {
     private final MethodHandle bindVertexBuffers, setViewport, setScissor;
     /** Records the runs: their sets and draws, by the same rules as every other path that draws them. */
     private final RunRecorder runRecorder;
+    /**
+     * Each presented frame copied out for a {@link FrameTap}, while there is one. B, G, R, A when the swapchain is the
+     * BGRA format {@link VulkanSwapchain} prefers, which every desktop driver offers.
+     */
+    private final FrameTapRing tapRing;
     private final MethodHandle destroySem, destroyFence, destroyPool;
     /** Kept because {@link #rebuild()} makes a fresh render-finished semaphore per swapchain image. */
     private final MethodHandle createSem;
@@ -398,6 +406,8 @@ public final class WindowedPresenter implements WindowPresenter {
         this.beginRp = device.command("vkCmdBeginRenderPass", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
         this.bindPipe = device.command("vkCmdBindPipeline", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, JAVA_LONG));
         this.runRecorder = new RunRecorder(device, a);
+        this.tapRing = new FrameTapRing(device, swapchain.format() == Vk.FORMAT_B8G8R8A8_UNORM
+                || swapchain.format() == Vk.FORMAT_B8G8R8A8_SRGB);
         this.endRp = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
         this.pushConstants = device.command("vkCmdPushConstants",
                 FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS));
@@ -610,6 +620,8 @@ public final class WindowedPresenter implements WindowPresenter {
         try (Zone w = Probe.zone(Lane.GPU, "wait fence")) {
             check(invoke(waitFences, dev, 1, s.pFence, Vk.VK_TRUE, Long.MAX_VALUE), "vkWaitForFences");
         }
+        // Copies for a tap that the GPU has finished, this slot's among them, handed over before it records another.
+        tapRing.collect();
         if (Probe.ON && submittedAt[slot] != 0L) {
             // Submit to fence, as seen from here: the GPU's time on the previous frame plus everything it queued
             // behind, including the wait on the swapchain image. A value that climbs over a burst of frames and
@@ -696,6 +708,7 @@ public final class WindowedPresenter implements WindowPresenter {
             setFullViewport(s, cmd, extentW, extentH);
             recorder.record(cmd, extentW, extentH);
             invokeVoid(endRp, cmd);
+            recordTap(cmd, imageIndex, extentW, extentH, inFlight[slot]);
             check(invoke(endCmd, cmd), "vkEndCommandBuffer");
             return submitAndPresent(s, inFlight[slot]);
         }
@@ -718,8 +731,33 @@ public final class WindowedPresenter implements WindowPresenter {
         }
         runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, descriptorSet2, runs, vertexCount);
         invokeVoid(endRp, cmd);
+        recordTap(cmd, imageIndex, extentW, extentH, inFlight[slot]);
         check(invoke(endCmd, cmd), "vkEndCommandBuffer");
         return submitAndPresent(s, inFlight[slot]);
+    }
+
+    /**
+     * The frame just drawn, copied out for a tap if there is one: after the render pass has left the image in
+     * {@code PRESENT_SRC_KHR}, read in {@code TRANSFER_SRC_OPTIMAL} and put back, all before the present. Waits on every
+     * earlier stage, since the pass's own transition to the present layout is ordered only against the end of the pipe.
+     */
+    private void recordTap(MemorySegment cmd, int imageIndex, int w, int h, long fence) {
+        if (!tapRing.tapped() || !swapchain.readable()) {
+            return;
+        }
+        tapRing.record(cmd, swapchain.images()[imageIndex], Vk.IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT, w, h, fence);
+    }
+
+    /** Hands frames to {@code tap}, where the swapchain's images can be copied from. */
+    @Override
+    public boolean tap(FrameTap tap) {
+        if (closed || (tap != null && !swapchain.readable())) {
+            return false;
+        }
+        tapRing.tap(tap);
+        return true;
     }
 
     /**
@@ -1020,6 +1058,7 @@ public final class WindowedPresenter implements WindowPresenter {
         // early has not closed anything.
         Probe.closed(Lane.GPU, "WindowedPresenter", this);
         device.waitIdle();
+        tapRing.close();
         invokeVoid(destroyPool, dev, pool, MemorySegment.NULL);
         for (int slot = 0; slot < framesInFlight; slot++) {
             invokeVoid(destroyFence, dev, inFlight[slot], MemorySegment.NULL);
