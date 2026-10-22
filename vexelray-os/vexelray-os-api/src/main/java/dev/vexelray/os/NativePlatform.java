@@ -128,6 +128,21 @@ public interface NativePlatform {
     }
 
     /**
+     * Point this process's standard error at {@code file}, appending, if it has none: a Windows GUI-subsystem
+     * program (the installed build of an application) starts without one, and whatever is written there is lost.
+     * That includes the report a native image's runtime writes when the process dies of a native fault, which
+     * cannot go through Java and so cannot reach the log. A process that has a standard error keeps it.
+     *
+     * <p>Native only: {@code System.err} is not changed, because its stream was opened before this; the caller
+     * replaces it. Defaults to {@code false}, for a platform where a process always has one.
+     *
+     * @return whether it was pointed at {@code file}
+     */
+    default boolean redirectStandardError(Path file) {
+        return false;
+    }
+
+    /**
      * The one OS platform on the classpath. Throws if none is present (no {@code vexelray-os-<platform>} module
      * was selected by the build) — a clear, early failure rather than a mysterious later one.
      */

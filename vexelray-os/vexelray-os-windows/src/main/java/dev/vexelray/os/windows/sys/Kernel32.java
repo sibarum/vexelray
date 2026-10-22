@@ -39,6 +39,33 @@ public final class Kernel32 {
     private static final MethodHandle SetProcessInformation =Ffi.downcall(LIB, "SetProcessInformation",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT));
 
+    private static final MethodHandle GetStdHandle = Ffi.downcall(LIB, "GetStdHandle",
+            FunctionDescriptor.of(ADDRESS, JAVA_INT));
+
+    private static final MethodHandle SetStdHandle = Ffi.downcall(LIB, "SetStdHandle",
+            FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS));
+
+    private static final MethodHandle CreateFileW = Ffi.downcall(LIB, "CreateFileW",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS));
+
+    /** {@code STD_ERROR_HANDLE}. */
+    public static final int STD_ERROR_HANDLE = -12;
+
+    /** {@code FILE_APPEND_DATA}: every write goes to the end, whoever else writes the file. */
+    public static final int FILE_APPEND_DATA = 0x4;
+
+    /** {@code FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE}. */
+    public static final int FILE_SHARE_ALL = 0x1 | 0x2 | 0x4;
+
+    /** {@code OPEN_ALWAYS}: open the file, creating it if it is not there. */
+    public static final int OPEN_ALWAYS = 4;
+
+    /** {@code FILE_ATTRIBUTE_NORMAL}. */
+    public static final int FILE_ATTRIBUTE_NORMAL = 0x80;
+
+    /** {@code INVALID_HANDLE_VALUE}. */
+    public static final MemorySegment INVALID_HANDLE_VALUE = MemorySegment.ofAddress(-1L);
+
     /** {@code PROCESS_INFORMATION_CLASS.ProcessPowerThrottling}. */
     public static final int PROCESS_POWER_THROTTLING = 4;
 
@@ -110,6 +137,35 @@ public final class Kernel32 {
             return (int) lstrlenW.invokeExact(string);
         } catch (Throwable t) {
             throw NativeException.rethrow("lstrlenW", t);
+        }
+    }
+
+    /** {@code GetStdHandle}: NULL when the process has no such handle, {@link #INVALID_HANDLE_VALUE} on failure. */
+    public static MemorySegment getStdHandle(int which) {
+        try {
+            return (MemorySegment) GetStdHandle.invokeExact(which);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("GetStdHandle", t);
+        }
+    }
+
+    /** {@code SetStdHandle}: whether it succeeded. */
+    public static boolean setStdHandle(int which, MemorySegment handle) {
+        try {
+            return (int) SetStdHandle.invokeExact(which, handle) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SetStdHandle", t);
+        }
+    }
+
+    /** {@code CreateFileW}, with no security attributes or template: {@link #INVALID_HANDLE_VALUE} on failure. */
+    public static MemorySegment createFileW(MemorySegment fileName, int access, int share, int disposition,
+                                            int flags) {
+        try {
+            return (MemorySegment) CreateFileW.invokeExact(fileName, access, share, MemorySegment.NULL, disposition,
+                    flags, MemorySegment.NULL);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("CreateFileW", t);
         }
     }
 

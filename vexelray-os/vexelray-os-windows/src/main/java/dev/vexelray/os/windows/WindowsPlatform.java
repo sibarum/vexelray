@@ -7,10 +7,14 @@ import dev.vexelray.os.Platform;
 import dev.vexelray.os.WindowConfig;
 import dev.vexelray.os.WorkArea;
 import dev.supirvast.ffi.NativeException;
+import dev.vexelray.os.windows.sys.Kernel32;
 import dev.vexelray.os.windows.sys.User32;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
@@ -98,6 +102,36 @@ public final class WindowsPlatform implements NativePlatform {
         } catch (NativeException e) {
             // Placement is a convenience: an application must not fail to launch over a monitor query.
             return Optional.empty();
+        }
+    }
+
+    /**
+     * {@code GetStdHandle} says whether there is one; if not, {@code CreateFileW} opens {@code file} for appending
+     * and {@code SetStdHandle} makes it the standard error. A native image's runtime asks {@code GetStdHandle} each
+     * time it writes a crash report, so the report lands there. The file is shared for reading, writing and
+     * deletion, so it can be read and deleted while this process holds it, and it is held until the process ends.
+     */
+    @Override
+    public boolean redirectStandardError(Path file) {
+        MemorySegment current = Kernel32.getStdHandle(Kernel32.STD_ERROR_HANDLE);
+        if (!current.equals(MemorySegment.NULL) && !current.equals(Kernel32.INVALID_HANDLE_VALUE)) {
+            return false;
+        }
+        try (Arena temp = Arena.ofConfined()) {
+            Path parent = file.toAbsolutePath().getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            MemorySegment handle = Kernel32.createFileW(
+                    temp.allocateFrom(file.toAbsolutePath().toString(), StandardCharsets.UTF_16LE),
+                    Kernel32.FILE_APPEND_DATA, Kernel32.FILE_SHARE_ALL, Kernel32.OPEN_ALWAYS,
+                    Kernel32.FILE_ATTRIBUTE_NORMAL);
+            if (handle.equals(Kernel32.INVALID_HANDLE_VALUE)) {
+                return false;
+            }
+            return Kernel32.setStdHandle(Kernel32.STD_ERROR_HANDLE, handle);
+        } catch (IOException e) {
+            return false;
         }
     }
 
