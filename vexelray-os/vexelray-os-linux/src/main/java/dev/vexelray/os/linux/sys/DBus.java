@@ -35,6 +35,7 @@ public final class DBus {
     public static final int TYPE_STRUCT = 'r';
     public static final int TYPE_OBJECT_PATH = 'o';
     public static final int TYPE_BYTE = 'y';
+    public static final int TYPE_DOUBLE = 'd';
     public static final int TYPE_INVALID = 0;
 
     /** {@code dbus_message_get_type}: a method call, and a signal. */
@@ -303,6 +304,17 @@ public final class DBus {
             throw NativeException.rethrow("dbus_message_iter_get_basic", t);
         }
         return slot.get(JAVA_INT, 0);
+    }
+
+    /** The current argument as a double ({@code d}). */
+    public static double getDouble(MemorySegment it, Arena arena) {
+        MemorySegment slot = arena.allocate(8, 8);
+        try {
+            dbus_message_iter_get_basic.invokeExact(it, slot);
+        } catch (Throwable t) {
+            throw NativeException.rethrow("dbus_message_iter_get_basic", t);
+        }
+        return slot.get(java.lang.foreign.ValueLayout.JAVA_DOUBLE, 0);
     }
 
     /** The current argument as a string ({@code s}). */

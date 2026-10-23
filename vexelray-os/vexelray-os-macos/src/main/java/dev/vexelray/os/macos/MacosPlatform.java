@@ -4,7 +4,9 @@ import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.Platform;
 import dev.vexelray.os.WindowConfig;
+import dev.vexelray.os.macos.sys.ObjC;
 
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
@@ -35,6 +37,31 @@ public final class MacosPlatform implements NativePlatform {
     @Override
     public Optional<Path> userDataDir() {
         return Optional.of(Path.of(System.getProperty("user.home"), "Library", "Application Support"));
+    }
+
+    private static final String APPKIT = "/System/Library/Frameworks/AppKit.framework/AppKit";
+
+    /**
+     * {@code [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceMotion]}: System Settings → Accessibility
+     * → Display → "Reduce motion". The first binding this module has, and the smallest: two messages to one shared
+     * object, so it can be here before the windowing is.
+     */
+    @Override
+    public Optional<Boolean> reducedMotion() {
+        try {
+            ObjC.framework(APPKIT);
+            MemorySegment workspaceClass = ObjC.getClass("NSWorkspace");
+            if (workspaceClass.equals(MemorySegment.NULL)) {
+                return Optional.empty();
+            }
+            MemorySegment workspace = ObjC.sendObject(workspaceClass, ObjC.selector("sharedWorkspace"));
+            if (workspace.equals(MemorySegment.NULL)) {
+                return Optional.empty();
+            }
+            return Optional.of(ObjC.sendBool(workspace, ObjC.selector("accessibilityDisplayShouldReduceMotion")));
+        } catch (RuntimeException | LinkageError e) {
+            return Optional.empty();   // no AppKit (a headless or very old system): this platform cannot say
+        }
     }
 
     @Override

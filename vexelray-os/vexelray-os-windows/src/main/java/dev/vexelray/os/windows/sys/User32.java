@@ -553,6 +553,26 @@ public final class User32 {
     private static final MethodHandle BringWindowToTop = Ffi.downcall(LIB, "BringWindowToTop",
             FunctionDescriptor.of(JAVA_INT, ADDRESS));
 
+    private static final int SPI_GETCLIENTAREAANIMATION = 0x1042;
+    private static final MethodHandle SystemParametersInfoW = Ffi.downcall(LIB, "SystemParametersInfoW",
+            FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT));
+
+    /**
+     * {@code SPI_GETCLIENTAREAANIMATION}: whether "Animation effects" is on (Settings → Accessibility → Visual
+     * effects), the switch Windows itself reads for whether an application's own content should animate.
+     *
+     * @return whether animations are on; true when the query fails, which is Windows' own default
+     */
+    public static boolean clientAreaAnimation() {
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment on = temp.allocate(JAVA_INT);   // a BOOL
+            int ok = (int) SystemParametersInfoW.invokeExact(SPI_GETCLIENTAREAANIMATION, 0, on, 0);
+            return ok == 0 || on.get(JAVA_INT, 0) != 0;
+        } catch (Throwable t) {
+            throw NativeException.rethrow("SystemParametersInfoW", t);
+        }
+    }
+
     /** A system metric ({@code SM_*}). */
     public static int getSystemMetrics(int index) {
         try {

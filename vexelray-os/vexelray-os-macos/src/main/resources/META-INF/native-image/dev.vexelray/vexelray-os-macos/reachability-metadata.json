@@ -1,0 +1,15 @@
+{
+  "reflection": [
+    { "type": "dev.vexelray.os.macos.MacosPlatform" }
+  ],
+  "resources": [
+    { "glob": "META-INF/services/dev.vexelray.os.NativePlatform" }
+  ],
+  "foreign": {
+    "downcalls": [
+        { "returnType": "void*", "parameterTypes": ["void*"] },
+        { "returnType": "void*", "parameterTypes": ["void*", "void*"] },
+        { "returnType": "jbyte", "parameterTypes": ["void*", "void*"] }
+      ]
+  }
+}

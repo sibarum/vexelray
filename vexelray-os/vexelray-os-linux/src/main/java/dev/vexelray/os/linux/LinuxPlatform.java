@@ -56,6 +56,12 @@ public final class LinuxPlatform implements NativePlatform {
         return Optional.of(new WorkArea((int) area[0], (int) area[1], (int) area[2], (int) area[3]));
     }
 
+    /** The desktop's animations turned off, as the XDG desktop portal reports it for GNOME or KDE. */
+    @Override
+    public Optional<Boolean> reducedMotion() {
+        return MotionPreference.reducedMotion();
+    }
+
     /**
      * {@code $XDG_DATA_HOME}, or {@code ~/.local/share} where it is unset or empty: the XDG base directory rule, and
      * the one {@code vexelray-installer}'s {@code install.sh} applies ({@code ${XDG_DATA_HOME:-$HOME/.local/share}}).

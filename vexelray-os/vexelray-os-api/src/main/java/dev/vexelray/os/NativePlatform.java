@@ -90,6 +90,19 @@ public interface NativePlatform {
     }
 
     /**
+     * Whether the user has asked this OS to reduce motion: Windows' "Animation effects" turned off, macOS's
+     * "Reduce motion", a desktop's animations disabled on Linux. An application that animates should take this as
+     * its default, because a user who needs motion reduced has already said so once, to the OS, and should not
+     * have to say it again to every program.
+     *
+     * <p>Read when asked, so a caller that wants a change mid-session asks again. {@link Optional#empty()} means
+     * this platform cannot say, and the caller keeps its own default.
+     */
+    default Optional<Boolean> reducedMotion() {
+        return Optional.empty();
+    }
+
+    /**
      * The presenter every window on this platform must present through, by its {@code PresenterProvider} name, or
      * empty for a Vulkan swapchain. A platform that names one does not start without it: on Windows that is DXGI,
      * because a swapchain recreated on resize is what DXGI replaces there (on some machines it freezes the desktop).

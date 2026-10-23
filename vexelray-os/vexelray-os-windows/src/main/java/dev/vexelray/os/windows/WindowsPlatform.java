@@ -139,6 +139,12 @@ public final class WindowsPlatform implements NativePlatform {
      * {@code %LOCALAPPDATA%}, where Windows says per-user data goes; {@code AppData\Local} under the home folder when
      * it is not set.
      */
+    /** "Animation effects" turned off ({@code SPI_GETCLIENTAREAANIMATION}). */
+    @Override
+    public Optional<Boolean> reducedMotion() {
+        return Optional.of(!User32.clientAreaAnimation());
+    }
+
     @Override
     public Optional<Path> userDataDir() {
         return Optional.of(userDataDir(System::getenv, System.getProperty("user.home")));
