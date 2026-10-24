@@ -40,6 +40,11 @@ public final class LinuxPlatform implements NativePlatform {
         X11Window.setApplicationIcon(icon);
     }
 
+    @Override
+    public void setApplicationId(String id) {
+        X11Window.setApplicationId(id);
+    }
+
     /**
      * {@code _NET_WORKAREA} of the current desktop. X11 reports one work area spanning every monitor, so this is
      * the same answer for any point; a point outside it gets it too, which is the "primary monitor" fallback the

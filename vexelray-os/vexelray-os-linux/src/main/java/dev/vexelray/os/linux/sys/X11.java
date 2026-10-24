@@ -73,6 +73,8 @@ public final class X11 {
     public static final int Success = 0;
     public static final long XA_ATOM = 4L;
     public static final long XA_CARDINAL = 6L;
+    public static final long XA_STRING = 31L;
+    public static final long XA_WM_CLASS = 67L;
 
     /** {@code XSizeHints.flags}: the minimum size is set. */
     public static final long PMinSize = 1L << 4;

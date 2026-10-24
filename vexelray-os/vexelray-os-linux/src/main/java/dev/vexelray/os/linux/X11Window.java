@@ -117,6 +117,9 @@ final class X11Window implements NativeWindow {
     /** The application icon, worn by every window that has none of its own. */
     private static volatile Icon applicationIcon;
 
+    /** The application id, worn by every window as its {@code WM_CLASS}; {@code null} for none. */
+    private static volatile String applicationId;
+
     /** The shared display, its atoms, and the self-pipe that ends a {@link #waitEvents} from another thread. */
     record Connection(MemorySegment display, int screen, long root, int fd, int wakeRead, int wakeWrite,
                               Atoms atoms, MemorySegment event) {
@@ -174,6 +177,13 @@ final class X11Window implements NativeWindow {
             if (w.icon == null) {
                 w.applyIcon();
             }
+        }
+    }
+
+    static void setApplicationId(String id) {
+        applicationId = id;
+        for (X11Window w : WINDOWS.values()) {
+            w.applyClass();
         }
     }
 
@@ -235,6 +245,7 @@ final class X11Window implements NativeWindow {
         X11.setWMProtocols(display, window, c.atoms().wmDeleteWindow());
         setTitle(config.title());
         setPid();
+        applyClass();
         if (!framed) {
             removeFrame();
         }
@@ -275,6 +286,24 @@ final class X11Window implements NativeWindow {
             MemorySegment pid = temp.allocateFrom(JAVA_LONG, ProcessHandle.current().pid());
             X11.changeProperty(display, window, c.atoms().netWmPid(), X11.XA_CARDINAL, 32, pid, 1);
         }
+    }
+
+    /**
+     * {@code WM_CLASS}: the instance name, then the class name, each ending in a NUL. Both are the application id, since
+     * a dock may match either against the desktop entry (GNOME tries the instance first, then the class).
+     */
+    private void applyClass() {
+        String id = applicationId;
+        if (id == null) {
+            X11.deleteProperty(display, window, X11.XA_WM_CLASS);
+        } else {
+            byte[] latin1 = (id + '\0' + id + '\0').getBytes(StandardCharsets.ISO_8859_1);
+            try (Arena temp = Arena.ofConfined()) {
+                MemorySegment data = temp.allocateFrom(JAVA_BYTE, latin1);
+                X11.changeProperty(display, window, X11.XA_WM_CLASS, X11.XA_STRING, 8, data, latin1.length);
+            }
+        }
+        X11.flush(display);
     }
 
     /** {@code _MOTIF_WM_HINTS} with no decorations: the one hint every X window manager honours for "no frame". */

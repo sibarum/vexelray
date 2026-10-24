@@ -59,6 +59,24 @@ public interface NativePlatform {
     }
 
     /**
+     * Set the name every window of this process goes by on the desktop — the application id — so the desktop can
+     * tell whose windows they are: a taskbar or dock matches it against the installed application's desktop entry,
+     * and shows that entry's icon and pins for them. On X11 it is the windows' {@code WM_CLASS}, on Wayland it would
+     * be their {@code app_id}.
+     *
+     * <p>{@code <groupId>.<artifactId>} unless the application overrides it ({@code vexelray-build/README.md}), and the
+     * installer names the desktop entry after the same id, so the two meet. Applies to windows already open as well as
+     * to windows opened later, but a desktop decides whose a window is mostly when it first appears, so set it at
+     * startup, before the first window. {@code null} clears it.
+     *
+     * <p>Defaults to a no-op. Windows has the counterpart in the AppUserModelID, which a process can set only if its
+     * shortcuts carry the same one; setting it without them would split the running program from its pinned shortcut.
+     */
+    default void setApplicationId(String id) {
+        // no-op by default
+    }
+
+    /**
      * Set the mark the application wears while nothing of it is on screen — the background icon. A window wears it
      * between {@link NativeWindow#hide()} and the next {@link NativeWindow#show()}, whatever icon it wears otherwise;
      * a {@link BackgroundRun background run}'s notification-area icon wears it while every window of the process is
