@@ -1,6 +1,6 @@
 # Trace sites: `@Trace`
 
-Status: **proposed 2026-10-24; steps 1 and 2 done 2026-10-24** (see "As built", below). Written for `vexelray-gui/docs/plans/export.md` (its M2), beside atchung's
+Status: **proposed 2026-10-24; steps 1 to 3 done 2026-10-24** (see "As built", below). Written for `vexelray-gui/docs/plans/export.md` (its M2), beside atchung's
 [correlation.md](../../atchung/docs/correlation.md), which carries a cause through every message. A cause says what
 set a chain of work off; a trace site says which code the chain passed through.
 
@@ -96,8 +96,11 @@ What the first two steps settled that the sections above left open:
 - **The plugin targets JDK 25**, for `java.lang.classfile`, so its pom gives `maven-plugin-plugin` ASM 9.9.1: the
   3.15.1 default (9.7.1) cannot read a JDK 25 class. `vexelray-msdf-maven-plugin` stayed on 21 for the same reason.
 
-Not yet: a native image (step 3; no GraalVM on the machine this was built on), and any sites in an application
-(step 4).
+- **A native image needs nothing added**: a woven test project built with GraalVM CE 25.0.1 (`native-image
+  --no-fallback`, no metadata of its own) finds its table through `ServiceLoader`, writes the same rows as on the
+  JVM when launched with `-Dprobe=trace`, writes nothing without it, and reads an enum argument back by name.
+
+Not yet: any sites in an application (step 4).
 
 ## Steps
 
