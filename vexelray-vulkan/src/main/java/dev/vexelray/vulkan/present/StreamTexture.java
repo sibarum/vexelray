@@ -32,14 +32,19 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * <p><b>A ring of slots, not one image rewritten.</b> {@link AtlasTexture} is never rewritten because a texture that
  * changed under a frame in flight would tear. This keeps that promise by never writing the image a node names: it holds
  * {@code slots} images of one size, each a {@link Slot} with its own descriptor set, made once. A frame is written into
- * a slot nothing shows, copied to the GPU, and then the node is pointed at that slot ({@link Slot} is a
- * {@link SampledImage}), which costs a descriptor bind and nothing else. Three slots is enough: one shown, one landing,
- * one being written.
+ * a slot nothing shows, copied to the GPU, and then {@link #show}n. Three slots is enough: one shown, one landing, one
+ * being written.
+ *
+ * <p><b>A node names the stream, not a slot.</b> {@link #live} is one {@link SampledImage} for the stream's whole life,
+ * whose descriptor set is whichever slot was shown last, read as each frame is recorded. A node is pointed at it once,
+ * and a new frame is a slot shown and a frame asked for ({@link #onShown}), never an edit to the tree: a video that
+ * plays under still controls changes nothing a tree holds. A {@link Slot} is a {@link SampledImage} too, for a node
+ * that must hold one frame.
  *
  * <p><b>The life of a slot</b> is {@link #take} (any thread: a free slot, its staging memory now the caller's), writing
  * its levels into {@link Slot#level}, {@link #submit} (the GUI thread: the copy is recorded and queued), and
- * {@link #show} (the GUI thread, once a node has been pointed at it: the slot shown before it is free again).
- * {@link #drop} gives back a slot taken or submitted and then not wanted.
+ * {@link #show} (the GUI thread, between frames: it is what {@link #live} draws from now, and the slot shown before it
+ * is free again). {@link #drop} gives back a slot taken or submitted and then not wanted.
  *
  * <p><b>Why no wait.</b> Each slot has its own region of one persistently mapped staging buffer, its own command
  * buffer and its own fence. A copy is ordered after any frame that sampled the slot before it by its own barrier
@@ -231,6 +236,11 @@ public final class StreamTexture implements AutoCloseable {
     private final MethodHandle vkCmdPipelineBarrier;
     private final MethodHandle vkCmdCopyBufferToImage;
     private final MethodHandle vkQueueSubmit;
+
+    /** What a node is pointed at to show whichever slot is shown ({@link #live}). */
+    private final Live live = new Live();
+    /** Told after every {@link #show}, outside the lock. */
+    private volatile Runnable onShown = () -> { };
 
     // Guarded by this.
     private Slot shown;
@@ -595,20 +605,41 @@ public final class StreamTexture implements AutoCloseable {
     }
 
     /**
-     * A node now names {@code s}: the slot shown before it is free to be written again. On the thread that submits
-     * frames, after the node has been pointed at {@code s}, so every frame that sampled the old slot has already been
-     * submitted and any copy into it is ordered after them.
+     * {@code s} is what {@link #live} draws from now, and the slot shown before it is free to be written again; then
+     * {@link #onShown} is told. On the thread that submits frames, between frames, so every frame that sampled the old
+     * slot has already been submitted and any copy into it is ordered after them. A node pointed at {@code s} itself
+     * is pointed there before this, for the same reason.
      */
-    public synchronized void show(Slot s) {
-        requireMine(s);
-        if (s.state != State.SUBMITTED && s.state != State.SHOWN) {
-            throw new IllegalStateException("only a submitted slot can be shown; " + s + " is " + s.state);
+    public void show(Slot s) {
+        synchronized (this) {
+            requireMine(s);
+            if (s.state != State.SUBMITTED && s.state != State.SHOWN) {
+                throw new IllegalStateException("only a submitted slot can be shown; " + s + " is " + s.state);
+            }
+            if (shown != null && shown != s) {
+                shown.state = State.FREE;
+            }
+            s.state = State.SHOWN;
+            shown = s;
         }
-        if (shown != null && shown != s) {
-            shown.state = State.FREE;
-        }
-        s.state = State.SHOWN;
-        shown = s;
+        onShown.run();
+    }
+
+    /**
+     * The stream as one image: whichever slot was {@link #show}n last, read as each frame is recorded. The same object
+     * for the stream's life, so a node pointed at it once shows every frame after without being written to again. Point
+     * a node at it only once a slot has been shown: before that there is nothing to draw.
+     */
+    public SampledImage live() {
+        return live;
+    }
+
+    /**
+     * Run {@code r} after every {@link #show}, on the thread that shows: the pixels under {@link #live} changed with no
+     * edit to any tree, so whoever draws must be asked for a frame. Its owner's to set ({@code GuiApp.stream}).
+     */
+    public void onShown(Runnable r) {
+        onShown = r == null ? () -> { } : r;
     }
 
     /**
@@ -622,7 +653,7 @@ public final class StreamTexture implements AutoCloseable {
         }
     }
 
-    /** The slot a node was last pointed at with {@link #show}, or null. */
+    /** The slot last {@link #show}n, which {@link #live} draws from; or null. */
     public synchronized Slot shown() {
         return shown;
     }
@@ -789,6 +820,39 @@ public final class StreamTexture implements AutoCloseable {
         @Override
         public String toString() {
             return "Slot[" + index + " of " + StreamTexture.this + "]";
+        }
+    }
+
+    /** {@link #live}: the slot shown, asked for each time a frame binds it. */
+    private final class Live implements SampledImage {
+
+        @Override
+        public long descriptorSet() {
+            Slot s = shown();
+            if (s == null) {
+                throw new IllegalStateException(StreamTexture.this + " was drawn before any frame was shown");
+            }
+            return s.set;
+        }
+
+        @Override
+        public long descriptorSetLayout() {
+            return descriptorSetLayout;
+        }
+
+        @Override
+        public VulkanDevice device() {
+            return device;
+        }
+
+        @Override
+        public boolean linear() {
+            return picture;
+        }
+
+        @Override
+        public String toString() {
+            return "Live[" + StreamTexture.this + "]";
         }
     }
 }

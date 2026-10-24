@@ -77,6 +77,32 @@ class StreamTextureTest {
     }
 
     @Test
+    void theLiveImageIsOneObjectThatDrawsTheSlotShownAndEveryShowIsTold() {
+        try (Rig rig = rigOrSkip(); StreamTexture stream = new StreamTexture(rig.device, 8, 4, 3, true)) {
+            SampledImage live = stream.live();
+            int[] told = {0};
+            stream.onShown(() -> told[0]++);
+            assertThrows(IllegalStateException.class, live::descriptorSet, "nothing shown yet: nothing to draw");
+
+            StreamTexture.Slot a = stream.take();
+            a.write(MipChain.of(solid(8, 4, 255, 0, 0), 8, 4));
+            stream.submit(a);
+            stream.show(a);
+            assertEquals(a.descriptorSet(), live.descriptorSet());
+
+            StreamTexture.Slot b = stream.take();
+            b.write(MipChain.of(solid(8, 4, 0, 255, 0), 8, 4));
+            stream.submit(b);
+            stream.show(b);
+            assertEquals(b.descriptorSet(), live.descriptorSet(), "a new frame moves what it draws, not the handle");
+            assertSame(live, stream.live(), "one handle for the stream's life");
+            assertEquals(2, told[0], "each show asks for a frame");
+            assertEquals(stream.descriptorSetLayout(), live.descriptorSetLayout());
+            assertEquals(stream.picture(), live.linear());
+        }
+    }
+
+    @Test
     void aLongRunGoesRoundTheRing() {
         try (Rig rig = rigOrSkip(); StreamTexture stream = new StreamTexture(rig.device, 64, 64, 3, true)) {
             for (int i = 0; i < 300; i++) {
