@@ -286,7 +286,7 @@ public final class Effects {
         return scale(premultiplied, Expr.MathCall.smoothstep(neg(aa), aa, x(c.distance())));
     }
 
-    /** All of them, to add to the core set. */
+    /** All of them, to add to the core set, {@link Condense}'s among them. */
     public static final List<Shadelet> ALL = List.of(WEIGHT, OUTLINE, BOX_MORPH, FIELD_MORPH, RIPPLE, RING,
-            LINEAR_GRADIENT, RADIAL_GRADIENT);
+            LINEAR_GRADIENT, RADIAL_GRADIENT, Condense.MTSDF, Condense.CONDENSE, Condense.ORB);
 }

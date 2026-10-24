@@ -60,6 +60,26 @@ public record DistanceField(byte[] rgba, int inner, int spread) {
      * {@code spread} texels of margin are added round it.
      */
     public static DistanceField of(byte[] mask, int inner, int spread) {
+        int side = inner + 2 * spread;
+        float[] d = distances(mask, inner, spread);
+        float range = 2f * Math.max(1, spread);
+        byte[] rgba = new byte[side * side * 4];
+        for (int i = 0; i < d.length; i++) {
+            int v = Math.round(Math.max(0f, Math.min(1f, 0.5f + d[i] / range)) * 255f);
+            rgba[i * 4] = (byte) v;
+            rgba[i * 4 + 1] = (byte) v;
+            rgba[i * 4 + 2] = (byte) v;
+            rgba[i * 4 + 3] = (byte) 255;
+        }
+        return new DistanceField(rgba, inner, spread);
+    }
+
+    /**
+     * What {@link #of} encodes, before it is: the signed distance at every texel of the field, in texels, positive
+     * inside, {@code side * side} of them top row first. For a bake that stores the distance some other way, at two
+     * ranges, say, as an MTSDF's alpha and its colour channels do.
+     */
+    public static float[] distances(byte[] mask, int inner, int spread) {
         if (inner <= 0 || spread < 0) {
             throw new IllegalArgumentException("a field of " + inner + " texels with " + spread + " round it");
         }
@@ -77,7 +97,7 @@ public record DistanceField(byte[] rgba, int inner, int spread) {
                 inside[(y + pad) * n + x + pad] = (mask[(y * fine + x) * 4 + 3] & 0xFF) >= 128;
             }
         }
-        return new DistanceField(encode(signed(inside, n), n, inner + 2 * spread, spread), inner, spread);
+        return average(signed(inside, n), n, inner + 2 * spread);
     }
 
     /**
@@ -159,11 +179,10 @@ public record DistanceField(byte[] rgba, int inner, int spread) {
         return ((f[q] + (double) q * q) - (f[p] + (double) p * p)) / (2.0 * q - 2.0 * p);
     }
 
-    /** Average each texel's fine pixels' distances, in texels, and store {@code 0.5 + d / (2 * spread)}. */
-    private static byte[] encode(float[] fine, int n, int side, int spread) {
-        byte[] rgba = new byte[side * side * 4];
+    /** Average each texel's fine pixels' distances, in texels. */
+    private static float[] average(float[] fine, int n, int side) {
+        float[] out = new float[side * side];
         float scale = 1f / OVERSAMPLE;
-        float range = 2f * Math.max(1, spread);
         for (int ty = 0; ty < side; ty++) {
             for (int tx = 0; tx < side; tx++) {
                 float sum = 0f;
@@ -172,15 +191,9 @@ public record DistanceField(byte[] rgba, int inner, int spread) {
                         sum += fine[y * n + x];
                     }
                 }
-                float d = sum / (OVERSAMPLE * OVERSAMPLE) * scale;
-                int v = Math.round(Math.max(0f, Math.min(1f, 0.5f + d / range)) * 255f);
-                int o = (ty * side + tx) * 4;
-                rgba[o] = (byte) v;
-                rgba[o + 1] = (byte) v;
-                rgba[o + 2] = (byte) v;
-                rgba[o + 3] = (byte) 255;
+                out[ty * side + tx] = sum / (OVERSAMPLE * OVERSAMPLE) * scale;
             }
         }
-        return rgba;
+        return out;
     }
 }
