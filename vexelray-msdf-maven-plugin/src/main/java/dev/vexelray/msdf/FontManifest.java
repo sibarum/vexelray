@@ -23,11 +23,12 @@ import java.util.regex.Pattern;
 final class FontManifest {
 
     /** One baked face, as the manifest describes it. Paths are relative to the manifest's directory. */
-    record Entry(FamilyPlan.Face face, String metrics, String pixels, int width, int height, int glyphs) {
+    record Entry(FamilyPlan.Face face, FieldType type, String metrics, String pixels, int width, int height,
+                 int glyphs) {
 
-        /** The texture's size on the GPU: RGBA8, one mip level. */
+        /** The texture's size on the GPU: a byte per channel of its {@link FieldType}, one mip level. */
         long bytes() {
-            return (long) width * height * 4;
+            return (long) width * height * type.channels;
         }
     }
 
@@ -43,7 +44,8 @@ final class FontManifest {
     }
 
     /** Reads one face's produced atlas JSON for the numbers the manifest records. */
-    static Entry entry(FamilyPlan.Face face, String metrics, String pixels, File json) throws MojoExecutionException {
+    static Entry entry(FamilyPlan.Face face, FieldType type, String metrics, String pixels, File json)
+            throws MojoExecutionException {
         String text;
         try {
             text = Files.readString(json.toPath(), StandardCharsets.UTF_8);
@@ -60,7 +62,8 @@ final class FontManifest {
         while (u.find()) {
             glyphs++;
         }
-        return new Entry(face, metrics, pixels, Integer.parseInt(w.group(1)), Integer.parseInt(h.group(1)), glyphs);
+        return new Entry(face, type, metrics, pixels, Integer.parseInt(w.group(1)), Integer.parseInt(h.group(1)),
+                glyphs);
     }
 
     static long bytes(List<Family> families) {
@@ -91,6 +94,7 @@ final class FontManifest {
                         .append(", \"stretch\": ").append(s.stretch())
                         .append(", \"slope\": ").append(quote(s.slope().name().toLowerCase(Locale.ROOT)))
                         .append(", \"source\": ").append(quote(e.face().source()))
+                        .append(", \"type\": ").append(quote(e.type().key))
                         .append(", \"metrics\": ").append(quote(e.metrics()))
                         .append(", \"pixels\": ").append(quote(e.pixels()))
                         .append(", \"width\": ").append(e.width())
@@ -109,11 +113,12 @@ final class FontManifest {
         List<String> out = new ArrayList<>();
         for (Family f : families) {
             for (Entry e : f.faces()) {
-                out.add(String.format(Locale.ROOT, "  %-28s %5d x %-5d %6d glyphs %8s",
-                        f.name() + "/" + e.face().key(), e.width(), e.height(), e.glyphs(), megabytes(e.bytes())));
+                out.add(String.format(Locale.ROOT, "  %-28s %-4s %5d x %-5d %6d glyphs %8s",
+                        f.name() + "/" + e.face().key(), e.type().key, e.width(), e.height(), e.glyphs(),
+                        megabytes(e.bytes())));
             }
         }
-        out.add(String.format(Locale.ROOT, "  %-28s %37s", "total", megabytes(bytes(families))));
+        out.add(String.format(Locale.ROOT, "  %-28s %42s", "total", megabytes(bytes(families))));
         return out;
     }
 

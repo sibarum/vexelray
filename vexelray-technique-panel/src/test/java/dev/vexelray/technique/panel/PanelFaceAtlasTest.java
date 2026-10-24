@@ -83,7 +83,7 @@ class PanelFaceAtlasTest {
         panel.camera(0, 0, 0, 0, 0);
         FontSet.Face first = SET.faces().get(0);
         AtlasPixels p = SET.pixels(first);
-        panel.atlas(device -> new AtlasTexture(device, p.width(), p.height(), p.rgba()));
+        panel.atlas(device -> new AtlasTexture(device, p.width(), p.height(), p.channels(), p.texels()));
         TextLayout layout = new TextLayout(SET.layout(first));
         panel.draw(c -> c.text(layout, "A", 40, 40, TextLayout.TextStyle.of(120f), Color.WHITE));
 
@@ -106,7 +106,7 @@ class PanelFaceAtlasTest {
             List<AtlasTexture> out = new ArrayList<>();
             for (int i = 0; i < SET.faces().size(); i++) {
                 AtlasPixels p = atlas.apply(i);
-                out.add(new AtlasTexture(device, p.width(), p.height(), p.rgba()));
+                out.add(new AtlasTexture(device, p.width(), p.height(), p.channels(), p.texels()));
             }
             return out;
         });

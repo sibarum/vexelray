@@ -8,9 +8,10 @@ import java.io.UncheckedIOException;
 import java.util.zip.InflaterInputStream;
 
 /**
- * An atlas's pixels as the runtime loads them: straight RGBA8, tightly packed, top row first, the layout a
- * {@code VK_FORMAT_R8G8B8A8_UNORM} image is uploaded from. Read from {@code <name>.rgba}, which
- * vexelray-msdf-maven-plugin writes beside {@code <name>.png} from the same pixels.
+ * An atlas's pixels as the runtime loads them: {@code channels} bytes per texel, tightly packed, top row first, the
+ * layout a {@code VK_FORMAT_R8G8B8A8_UNORM} (four) or {@code VK_FORMAT_R8_UNORM} (one) image is uploaded from. Read
+ * from the {@code <name>.rgba} or {@code <name>.r8} that vexelray-msdf-maven-plugin writes beside {@code <name>.png}
+ * from the same pixels.
  *
  * <p>The PNG is the atlas's source of truth, and what people look at. This exists so that nothing at runtime has
  * to decode an image format. In Java that means ImageIO, and so AWT and its native libraries, which a GraalVM native
@@ -18,24 +19,31 @@ import java.util.zip.InflaterInputStream;
  * {@code java.util.zip}, which every native image links in.
  *
  * <pre>
- *   4 bytes   magic "VXPX"
- *   int32     width, big-endian
- *   int32     height, big-endian
- *   rest      a zlib stream of width · height · 4 bytes, R G B A per pixel, rows top to bottom
+ *   4 bytes   magic "VXPX"                      4 bytes   magic "VXPC"
+ *   int32     width, big-endian                 int32     width, big-endian
+ *   int32     height, big-endian                int32     height, big-endian
+ *   rest      a zlib stream of                  int32     channels, 1 or 4, big-endian
+ *             width · height · 4 bytes,         rest      a zlib stream of width · height · channels bytes,
+ *             R G B A per pixel                           R first, rows top to bottom
  * </pre>
  */
-public record AtlasPixels(int width, int height, byte[] rgba) {
+public record AtlasPixels(int width, int height, int channels, byte[] texels) {
 
-    /** "VXPX". */
+    /** "VXPX": four channels, no channel count. */
     static final int MAGIC = 0x56585058;
+    /** "VXPC": a channel count after the height. */
+    static final int MAGIC_CHANNELS = 0x56585043;
 
     /** Where the primary atlas's pixels are on the class path, beside its PNG and JSON. */
     public static final String PRIMARY = "/dev/vexelray/text/atlas/primary.rgba";
 
     public AtlasPixels {
-        if (width < 1 || height < 1 || rgba.length != (long) width * height * 4) {
-            throw new IllegalArgumentException("an atlas of " + width + " x " + height + " needs "
-                    + (long) width * height * 4 + " bytes of RGBA, got " + rgba.length);
+        if (channels != 1 && channels != 4) {
+            throw new IllegalArgumentException("atlas pixels are 1 or 4 channels, not " + channels);
+        }
+        if (width < 1 || height < 1 || texels.length != (long) width * height * channels) {
+            throw new IllegalArgumentException("an atlas of " + width + " x " + height + " at " + channels
+                    + " channels needs " + (long) width * height * channels + " bytes, got " + texels.length);
         }
     }
 
@@ -51,28 +59,33 @@ public record AtlasPixels(int width, int height, byte[] rgba) {
         }
     }
 
-    /** Reads the layout above from {@code in}, and does not close it. */
+    /** Reads either layout above from {@code in}, and does not close it. */
     public static AtlasPixels read(InputStream in) throws IOException {
         DataInputStream header = new DataInputStream(in);
         int magic = header.readInt();
-        if (magic != MAGIC) {
-            throw new IOException(String.format("not atlas pixels: magic %08x, expected %08x", magic, MAGIC));
+        if (magic != MAGIC && magic != MAGIC_CHANNELS) {
+            throw new IOException(String.format("not atlas pixels: magic %08x, expected %08x or %08x", magic, MAGIC,
+                    MAGIC_CHANNELS));
         }
         int width = header.readInt();
         int height = header.readInt();
-        if (width < 1 || height < 1 || (long) width * height * 4 > Integer.MAX_VALUE - 8) {
+        int channels = magic == MAGIC ? 4 : header.readInt();
+        if (channels != 1 && channels != 4) {
+            throw new IOException("atlas pixels of " + channels + " channels; this reads 1 or 4");
+        }
+        if (width < 1 || height < 1 || (long) width * height * channels > Integer.MAX_VALUE - 8) {
             throw new IOException("atlas pixels of an impossible size, " + width + " x " + height);
         }
-        byte[] rgba = new byte[width * height * 4];
+        byte[] texels = new byte[width * height * channels];
         InflaterInputStream body = new InflaterInputStream(in);
         int at = 0;
-        while (at < rgba.length) {
-            int n = body.read(rgba, at, rgba.length - at);
+        while (at < texels.length) {
+            int n = body.read(texels, at, texels.length - at);
             if (n < 0) {
-                throw new EOFException("atlas pixels end after " + at + " of " + rgba.length + " bytes");
+                throw new EOFException("atlas pixels end after " + at + " of " + texels.length + " bytes");
             }
             at += n;
         }
-        return new AtlasPixels(width, height, rgba);
+        return new AtlasPixels(width, height, channels, texels);
     }
 }

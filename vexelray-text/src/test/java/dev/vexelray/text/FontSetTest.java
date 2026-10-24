@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -158,6 +159,32 @@ class FontSetTest {
             assertEquals(f.atlas().info().width(), p.width(), f.family());
             assertEquals(f.atlas().info().height(), p.height(), f.family());
         }
+    }
+
+    /** A manifest written before atlas types existed names none, and every face of it was MSDF. */
+    @Test
+    void aFaceWithNoTypeIsMsdf() {
+        for (Face f : handMade().faces()) {
+            assertEquals(FieldType.MSDF, f.type(), f.style());
+        }
+    }
+
+    @Test
+    void anSdfFaceReadsOneChannel() throws Exception {
+        Map<String, byte[]> files = new HashMap<>();
+        files.put("", ("""
+                {"version": 1, "bytes": 0, "families": [{"name": "ui", "fontFamily": "UI", "faces": [
+                  {"style": "regular", "weight": 400, "stretch": 5, "slope": "normal", "type": "sdf", "metrics": "r.json", "pixels": "r.r8"}
+                ]}]}""").getBytes(StandardCharsets.UTF_8));
+        files.put("r.json", atlas(0.5f, true).getBytes(StandardCharsets.UTF_8));
+        files.put("r.r8", AtlasPixelsTest.oneChannel(2, 1, new byte[] {7, 9}));
+        FontSet set = FontSet.read(path -> files.containsKey(path) ? new ByteArrayInputStream(files.get(path)) : null);
+
+        Face face = set.face("ui");
+        assertEquals(FieldType.SDF, face.type());
+        AtlasPixels p = set.pixels(face);
+        assertEquals(1, p.channels());
+        assertArrayEquals(new byte[] {7, 9}, p.texels());
     }
 
     @Test

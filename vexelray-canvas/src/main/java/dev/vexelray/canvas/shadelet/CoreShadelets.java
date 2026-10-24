@@ -68,7 +68,8 @@ public final class CoreShadelets {
 
     /**
      * MSDF text: the median of the atlas texel, in canvas units by the glyph's {@code screenPxRange} ({@code shape.x}).
-     * True to about half the pixel range. It does not yet look elsewhere: the vertex carries no atlas texels per unit
+     * True to about half the pixel range. It draws a one-channel SDF face unchanged: that atlas's view reads its one
+     * channel into r, g and b, whose median is then that distance, so faces of either type share this source. It does not yet look elsewhere: the vertex carries no atlas texels per unit
      * to move by, so {@code offset} is ignored until text has effects that need it.
      */
     public static final Shadelet.Source MSDF = new Shadelet.Source() {

@@ -192,7 +192,8 @@ public class GenerateAtlasMojo extends AbstractMojo {
         String label = plan.family + "/" + face.key();
         File pngOut = new File(dir, face.key() + ".png");
         File jsonOut = new File(dir, face.key() + ".json");
-        File rgbaOut = new File(dir, face.key() + ".rgba");
+        FieldType type = FieldType.of(cfg.type);
+        File pixelsOut = new File(dir, face.key() + "." + type.extension);
         File stampOut = new File(dir, face.key() + ".stamp");
 
         if (prebuilt) {
@@ -203,7 +204,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
         } else {
             String charset = FamilyPlan.charsetOf(face, cfg.charset);
             List<String> generate = new ArrayList<>(face.fontArguments());
-            generate.addAll(List.of("-type", "msdf", "-format", "png",
+            generate.addAll(List.of("-type", type.key, "-format", "png",
                     "-size", Integer.toString(cfg.fontSize), "-pxrange", Integer.toString(cfg.pxRange), "-square4"));
             String stamp = stamp(face, generate, charset);
             if (pngOut.isFile() && jsonOut.isFile() && stamp.equals(readStamp(stampOut))) {
@@ -234,9 +235,9 @@ public class GenerateAtlasMojo extends AbstractMojo {
                 reportFaceCoverage(label, cfg, jsonOut);
             }
         }
-        AtlasPixels.ensure(pngOut, rgbaOut);
-        return FontManifest.entry(face, plan.family + "/" + jsonOut.getName(), plan.family + "/" + rgbaOut.getName(),
-                jsonOut);
+        AtlasPixels.ensure(pngOut, pixelsOut, type.channels);
+        return FontManifest.entry(face, type, plan.family + "/" + jsonOut.getName(),
+                plan.family + "/" + pixelsOut.getName(), jsonOut);
     }
 
     /**
@@ -258,7 +259,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
             String n = f.getName();
             int dot = n.lastIndexOf('.');
             String ext = dot < 0 ? "" : n.substring(dot + 1);
-            if (dot > 0 && List.of("png", "json", "rgba", "stamp").contains(ext) && !keys.contains(n.substring(0, dot))) {
+            if (dot > 0 && List.of("png", "json", "rgba", "r8", "stamp").contains(ext) && !keys.contains(n.substring(0, dot))) {
                 getLog().warn("Family '" + plan.family + "': " + f + " belongs to no face it bakes now. It is not in"
                         + " fonts.json and nothing loads it; delete it to keep it out of the jar.");
             }
@@ -494,7 +495,7 @@ public class GenerateAtlasMojo extends AbstractMojo {
      */
     private void writePixels(AtlasConfig cfg, File pngOut) throws MojoExecutionException {
         File rgbaOut = new File(outputDir, cfg.name + ".rgba");
-        if (AtlasPixels.ensure(pngOut, rgbaOut)) {
+        if (AtlasPixels.ensure(pngOut, rgbaOut, FieldType.MSDF.channels)) {
             getLog().info("Atlas '" + cfg.name + "': wrote " + rgbaOut.getName() + ", " + rgbaOut.length()
                     + " bytes of deflated RGBA.");
         }

@@ -150,8 +150,12 @@ final class NotdefGlyph {
                 double frame = Math.min(dOuter, -dInner);
                 double sample = 0.5 + frame / range;
                 int v = clamp255((int) Math.round(sample * 255.0));
-                int rgb = 0xFF000000 | (v << 16) | (v << 8) | v;
-                img.setRGB(cell.x + ix, cell.y + iy, rgb);
+                if (img.getRaster().getNumBands() == 1) {
+                    // An SDF atlas is grayscale, and setRGB on one would store v converted from sRGB to linear.
+                    img.getRaster().setSample(cell.x + ix, cell.y + iy, 0, v);
+                } else {
+                    img.setRGB(cell.x + ix, cell.y + iy, 0xFF000000 | (v << 16) | (v << 8) | v);
+                }
             }
         }
     }
@@ -175,6 +179,13 @@ final class NotdefGlyph {
      * Empty is black: as far outside every channel's distance as the field goes.
      */
     private static BufferedImage grow(BufferedImage img, int strip, boolean yOriginBottom) {
+        if (img.getRaster().getNumBands() == 1) {
+            // Grayscale (an SDF atlas): copied sample for sample, since drawing it would pass through a colour space.
+            // A new raster is all zeros, which is black.
+            BufferedImage out = new BufferedImage(img.getWidth(), img.getHeight() + strip, img.getType());
+            out.getRaster().setRect(0, yOriginBottom ? strip : 0, img.getRaster());
+            return out;
+        }
         int type = img.getType() == BufferedImage.TYPE_CUSTOM ? BufferedImage.TYPE_INT_ARGB : img.getType();
         BufferedImage out = new BufferedImage(img.getWidth(), img.getHeight() + strip, type);
         java.awt.Graphics2D g = out.createGraphics();

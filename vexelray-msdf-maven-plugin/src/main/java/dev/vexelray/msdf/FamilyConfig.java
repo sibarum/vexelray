@@ -42,6 +42,13 @@ public class FamilyConfig {
      */
     public String charset;
 
+    /**
+     * What each texel holds: {@code msdf} (the default), three channels whose median is the edge, sharp at any size;
+     * or {@code sdf}, one channel, a quarter of the texture and of the file, with corners that round off when text is
+     * drawn well above {@link #fontSize}. See {@link FieldType}.
+     */
+    public String type;
+
     /** Glyph em size in pixels within the atlas. */
     public int fontSize = 32;
 

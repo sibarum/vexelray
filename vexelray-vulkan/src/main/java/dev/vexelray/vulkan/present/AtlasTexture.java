@@ -26,7 +26,7 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
- * A sampled R8G8B8A8 texture with everything the fragment stage needs to read it: the {@code VkImage} + memory +
+ * A sampled R8G8B8A8 texture (or R8, for a one-channel distance field) with everything the fragment stage needs to read it: the {@code VkImage} + memory +
  * view, a linear-clamp {@code VkSampler}, and a one-binding descriptor set (combined image sampler at set 0,
  * binding 0). The RGBA pixels are uploaded once at construction via a staging buffer and a one-time command buffer
  * (barrier {@code UNDEFINED → TRANSFER_DST}, copy, barrier {@code TRANSFER_DST → SHADER_READ_ONLY}), queued on the
@@ -202,7 +202,16 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
     }
 
     public AtlasTexture(VulkanDevice device, int width, int height, byte[] rgba) {
-        this(device, width, height, new byte[][] {rgba}, false);
+        this(device, width, height, new byte[][] {rgba}, false, 4);
+    }
+
+    /**
+     * A distance-field atlas of {@code channels} bytes per texel: 4 is RGBA, as {@link #AtlasTexture(VulkanDevice, int,
+     * int, byte[])}; 1 is an {@code R8_UNORM} image whose view reads its one channel into all four, so a shader taking
+     * {@code median(r, g, b)} of an MSDF gets the same distance from a one-channel SDF, and both share a pipeline.
+     */
+    public AtlasTexture(VulkanDevice device, int width, int height, int channels, byte[] texels) {
+        this(device, width, height, new byte[][] {texels}, false, channels);
     }
 
     /**
@@ -212,19 +221,31 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
      * one gets linear light and encodes it again ({@link #linear()}).
      */
     public AtlasTexture(VulkanDevice device, int width, int height, byte[][] levels, boolean srgb) {
+        this(device, width, height, levels, srgb, 4);
+    }
+
+    private AtlasTexture(VulkanDevice device, int width, int height, byte[][] levels, boolean srgb, int channels) {
         Probe.opened(Lane.GPU, "AtlasTexture", this);
+        if (channels != 1 && channels != 4) {
+            throw new IllegalArgumentException("an atlas texture is 1 or 4 channels, not " + channels);
+        }
+        if (channels == 1 && srgb) {
+            throw new IllegalArgumentException("a one-channel atlas is a distance, not a colour; it has no sRGB form");
+        }
         this.device = device;
         this.srgb = srgb;
         MemorySegment dev = device.handle();
         int mipLevels = levels.length;
-        if (mipLevels < 1 || levels[0].length < (long) width * height * 4) {
-            throw new IllegalArgumentException("rgba too small for " + width + "x" + height);
+        if (mipLevels < 1 || levels[0].length < (long) width * height * channels) {
+            throw new IllegalArgumentException("texels too few for " + width + "x" + height + " at " + channels
+                    + " channels");
         }
         long pixelBytes = 0;
         for (int l = 0; l < mipLevels; l++) {
-            pixelBytes += (long) MipChain.size(width, l) * MipChain.size(height, l) * 4;
+            pixelBytes += (long) MipChain.size(width, l) * MipChain.size(height, l) * channels;
         }
-        int format = srgb ? Vk.FORMAT_R8G8B8A8_SRGB : Vk.FORMAT_R8G8B8A8_UNORM;
+        int format = channels == 1 ? Vk.FORMAT_R8_UNORM
+                : srgb ? Vk.FORMAT_R8G8B8A8_SRGB : Vk.FORMAT_R8G8B8A8_UNORM;
 
         MethodHandle vkCreateBuffer = device.command("vkCreateBuffer", C4);
         MethodHandle vkDestroyBuffer = device.command("vkDestroyBuffer", D_LONG);
@@ -290,7 +311,7 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
             long[] offsets = new long[mipLevels];
             long at = 0;
             for (int l = 0; l < mipLevels; l++) {
-                int bytes = MipChain.size(width, l) * MipChain.size(height, l) * 4;
+                int bytes = MipChain.size(width, l) * MipChain.size(height, l) * channels;
                 offsets[l] = at;
                 MemorySegment.copy(levels[l], 0, mapped, JAVA_BYTE, at, bytes);
                 at += bytes;
@@ -374,6 +395,13 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
             sl(viewInfo, IMAGE_VIEW_CREATE_INFO, "image", image);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "viewType", Vk.IMAGE_VIEW_TYPE_2D);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "format", format);
+            if (channels == 1) {
+                // R into every channel: median(r, g, b) of this is the one distance, and alpha is it too.
+                si(viewInfo, IMAGE_VIEW_CREATE_INFO, "c_r", Vk.COMPONENT_SWIZZLE_R);
+                si(viewInfo, IMAGE_VIEW_CREATE_INFO, "c_g", Vk.COMPONENT_SWIZZLE_R);
+                si(viewInfo, IMAGE_VIEW_CREATE_INFO, "c_b", Vk.COMPONENT_SWIZZLE_R);
+                si(viewInfo, IMAGE_VIEW_CREATE_INFO, "c_a", Vk.COMPONENT_SWIZZLE_R);
+            }
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_levelCount", mipLevels);
             si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_layerCount", 1);

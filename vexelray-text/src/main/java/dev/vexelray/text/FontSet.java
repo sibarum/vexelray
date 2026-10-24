@@ -70,10 +70,11 @@ public final class FontSet {
      * @param style   the style key the build named its files by ({@code bold-italic})
      * @param weight  100–1000
      * @param stretch 1–9, 5 is normal
+     * @param type    what its atlas holds per texel, and so how many channels {@link #pixels(Face)} returns
      * @param pixels  where its pixels are, relative to the manifest
      */
-    public record Face(int id, String family, String style, int weight, int stretch, Slope slope, AtlasData atlas,
-                       String pixels) {
+    public record Face(int id, String family, String style, int weight, int stretch, Slope slope, FieldType type,
+                       AtlasData atlas, String pixels) {
     }
 
     private final List<Face> faces;
@@ -125,7 +126,8 @@ public final class FontSet {
                 faces.add(new Face(faces.size(), name, (String) face.get("style"),
                         ((Number) face.get("weight")).intValue(), ((Number) face.get("stretch")).intValue(),
                         Slope.valueOf(((String) face.get("slope")).toUpperCase(Locale.ROOT)),
-                        AtlasData.parse(text(open, metrics)), (String) face.get("pixels")));
+                        FieldType.of((String) face.get("type")), AtlasData.parse(text(open, metrics)),
+                        (String) face.get("pixels")));
             }
         }
         if (faces.isEmpty()) {
@@ -198,13 +200,19 @@ public final class FontSet {
         return new GlyphLayout(chain(face));
     }
 
-    /** The face's pixels, read now. */
+    /** The face's pixels, read now: {@link FieldType#channels()} of its type per texel. */
     public AtlasPixels pixels(Face face) {
         try (InputStream in = open.apply(face.pixels())) {
             if (in == null) {
                 throw new IllegalStateException("atlas pixels not found: " + face.pixels());
             }
-            return AtlasPixels.read(in);
+            AtlasPixels p = AtlasPixels.read(in);
+            if (p.channels() != face.type().channels()) {
+                throw new IllegalStateException("atlas pixels " + face.pixels() + " have " + p.channels()
+                        + " channels, and the manifest says the face is " + face.type() + " ("
+                        + face.type().channels() + ")");
+            }
+            return p;
         } catch (IOException e) {
             throw new UncheckedIOException("failed reading atlas pixels " + face.pixels(), e);
         }

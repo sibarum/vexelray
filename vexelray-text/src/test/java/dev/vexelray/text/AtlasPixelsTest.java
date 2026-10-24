@@ -5,9 +5,13 @@ import org.junit.jupiter.api.Test;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.zip.DeflaterOutputStream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -26,7 +30,8 @@ class AtlasPixelsTest {
         }
         assertEquals(png.getWidth(), pixels.width(), "width");
         assertEquals(png.getHeight(), pixels.height(), "height");
-        byte[] rgba = pixels.rgba();
+        assertEquals(4, pixels.channels(), "channels");
+        byte[] rgba = pixels.texels();
         for (int y = 0; y < png.getHeight(); y++) {
             for (int x = 0; x < png.getWidth(); x++) {
                 int argb = png.getRGB(x, y);
@@ -41,6 +46,15 @@ class AtlasPixelsTest {
     }
 
     @Test
+    void oneChannelIsReadAsWritten() throws IOException {
+        AtlasPixels p = AtlasPixels.read(new ByteArrayInputStream(oneChannel(3, 2, new byte[] {0, 1, 2, 3, 4, 5})));
+        assertEquals(3, p.width());
+        assertEquals(2, p.height());
+        assertEquals(1, p.channels());
+        assertArrayEquals(new byte[] {0, 1, 2, 3, 4, 5}, p.texels());
+    }
+
+    @Test
     void somethingElseIsRefused() {
         assertThrows(IOException.class, () -> AtlasPixels.read(new ByteArrayInputStream(new byte[] {
                 (byte) 0x89, 'P', 'N', 'G', 0, 0, 0, 1, 0, 0, 0, 1})));
@@ -50,5 +64,26 @@ class AtlasPixelsTest {
     void aShortFileIsRefused() {
         byte[] header = {'V', 'X', 'P', 'X', 0, 0, 0, 2, 0, 0, 0, 2};
         assertThrows(IOException.class, () -> AtlasPixels.read(new ByteArrayInputStream(header)));
+    }
+
+    @Test
+    void aChannelCountThisDoesNotReadIsRefused() {
+        byte[] header = {'V', 'X', 'P', 'C', 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 3};
+        assertThrows(IOException.class, () -> AtlasPixels.read(new ByteArrayInputStream(header)));
+    }
+
+    /** A {@code VXPC} file of one channel, as vexelray-msdf-maven-plugin writes for an SDF face. */
+    static byte[] oneChannel(int width, int height, byte[] texels) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream header = new DataOutputStream(bytes);
+        header.writeInt(AtlasPixels.MAGIC_CHANNELS);
+        header.writeInt(width);
+        header.writeInt(height);
+        header.writeInt(1);
+        header.flush();
+        try (DeflaterOutputStream body = new DeflaterOutputStream(bytes)) {
+            body.write(texels);
+        }
+        return bytes.toByteArray();
     }
 }
