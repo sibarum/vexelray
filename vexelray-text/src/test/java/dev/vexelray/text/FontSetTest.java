@@ -182,6 +182,7 @@ class FontSetTest {
 
         Face face = set.face("ui");
         assertEquals(FieldType.SDF, face.type());
+        assertEquals(java.util.Set.of(FieldType.SDF), set.types());
         AtlasPixels p = set.pixels(face);
         assertEquals(1, p.channels());
         assertArrayEquals(new byte[] {7, 9}, p.texels());

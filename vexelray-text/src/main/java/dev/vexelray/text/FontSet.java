@@ -6,10 +6,12 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -153,6 +155,15 @@ public final class FontSet {
 
     public Face face(int id) {
         return faces.get(id);
+    }
+
+    /** The atlas types its faces have, in {@link FieldType} order: one for a set a canvas shader can draw. */
+    public Set<FieldType> types() {
+        EnumSet<FieldType> types = EnumSet.noneOf(FieldType.class);
+        for (Face f : faces) {
+            types.add(f.type());
+        }
+        return types;
     }
 
     /** The family keys, in manifest order. */

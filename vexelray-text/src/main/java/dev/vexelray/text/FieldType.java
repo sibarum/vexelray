@@ -6,9 +6,8 @@ import java.util.Locale;
  * What a face's atlas holds per texel, as {@code fonts.json} records it ({@code "type"}); vexelray-msdf-maven-plugin's
  * {@code FieldType} is the build's side of the same list.
  *
- * <p>Every type is uploaded so that the text shader's {@code median(r, g, b)} is the edge distance, which is why faces
- * of different types can share one canvas and one pipeline: an MSDF's three channels are its three distances, and an
- * SDF's one channel is read into all of them.
+ * <p>Each type has its own text source in the canvas shader (vexelray-canvas's {@code CoreShadelets.text}), and a
+ * shader holds one: an application's fonts are all of one type, and its shader is composed for that type.
  */
 public enum FieldType {
 

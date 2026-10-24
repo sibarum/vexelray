@@ -48,6 +48,11 @@ public final class LookTable {
         }
     }
 
+    /** What the shader this table is for was compiled with. */
+    public Manifest manifest() {
+        return manifest;
+    }
+
     /** The look's offset in the table, adding it (and its styles) the first time it is seen. */
     public int look(Look look) {
         return written(look).offset;

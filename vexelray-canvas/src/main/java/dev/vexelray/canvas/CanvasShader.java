@@ -17,6 +17,7 @@ import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.canvas.shadelet.CoreShadelets;
 import dev.vexelray.diag.Diagnostics;
 import dev.vexelray.shader.ComposedShader;
+import dev.vexelray.text.FieldType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -52,8 +53,9 @@ import static dev.vexelray.ir.Ir.z;
  * <ul>
  *   <li><b>box</b> — the analytic rounded box of {@code shape} {@code (halfW, halfH, rTop, rBottom)} at
  *       {@code local}, filled. A border, a lit fill or a shadow is a look of node painters over the same box.</li>
- *   <li><b>text</b> — MSDF: the median of the atlas texel, by a per-vertex {@code screenPxRange} ({@code shape.x}).
- *       Colour and range are per-vertex, so mixed text sizes and colours coexist in one draw.</li>
+ *   <li><b>text</b> — the distance in the atlas texel (the median of an MSDF's three channels, or an SDF's one, as the
+ *       composition's text source says), by a per-vertex {@code screenPxRange} ({@code shape.x}). Colour and range
+ *       are per-vertex, so mixed text sizes and colours coexist in one draw.</li>
  *   <li><b>image</b> — the box's coverage multiplied by a texel from the image sampler, tinted by the vertex colour.
  *       This is how a marched viewport, a decoded PNG, or a picture enters the batch: as a rounded box that
  *       samples.</li>
@@ -159,11 +161,26 @@ public final class CanvasShader {
         }
     }
 
-    /** The canvas fragment stage of the core set ({@code canvas.frag.<hash>.spv} in the jar). */
+    /** The canvas fragment stage of the core set, for MSDF fonts ({@code canvas.frag.<hash>.spv} in the jar). */
     public static final class Fragment extends Composed {
         public Fragment() {
             super(CoreShadelets.composition());
         }
+    }
+
+    /** The canvas fragment stage of the core set for SDF fonts: text from one channel, with no median. */
+    public static final class SdfFragment extends Composed {
+        public SdfFragment() {
+            super(CoreShadelets.composition(FieldType.SDF));
+        }
+    }
+
+    /** The core set's fragment stage for fonts of {@code text}: {@link Fragment} or {@link SdfFragment}. */
+    public static Composed core(FieldType text) {
+        return switch (text) {
+            case MSDF -> new Fragment();
+            case SDF -> new SdfFragment();
+        };
     }
 
     private static CoreModule vertexModule() {

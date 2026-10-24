@@ -9,6 +9,7 @@ import dev.supirvast.vastir.lower.CoreToSpirv;
 import dev.supirvast.vastir.tools.NativeTools;
 import dev.vexelray.canvas.CanvasShader;
 import dev.vexelray.diag.Diagnostics;
+import dev.vexelray.text.FieldType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -143,6 +144,34 @@ class CompositionTest {
             assertEquals(primitive.look().source().shadelet(),
                     nameOf(withMore, Manifest.Role.SOURCE, (int) t[look]), primitive.name());
         }
+    }
+
+    /**
+     * The core set for SDF fonts holds the sdf source and not msdf, and text draws with it, at the record text has in
+     * every table: a canvas writes that record without knowing which kind of shader it will be drawn with.
+     */
+    @Test
+    void anSdfShaderDrawsTextWithTheSdfSourceAtTheSameRecord() {
+        Manifest sdf = CoreShadelets.composition(FieldType.SDF).with(List.of(WEIGHT)).manifest();
+        assertTrue(sdf.find("sdf").isPresent());
+        assertTrue(sdf.find("msdf").isEmpty(), "a shader for SDF fonts carries no median");
+        assertEquals(FieldType.SDF, CoreShadelets.textType(sdf));
+        assertEquals(FieldType.MSDF, CoreShadelets.textType(CoreShadelets.composition().manifest()));
+
+        float[] t = CoreLooks.table(sdf).floats();
+        for (CoreLooks.Primitive primitive : CoreLooks.Primitive.values()) {
+            int look = (int) t[CoreLooks.record(primitive)];
+            assertEquals(primitive.look(FieldType.SDF).source().shadelet(),
+                    nameOf(sdf, Manifest.Role.SOURCE, (int) t[look]), primitive.name());
+        }
+        assertEquals("sdf", CoreLooks.Primitive.TEXT.look(FieldType.SDF).source().shadelet());
+    }
+
+    @Test
+    void aShaderWithNoTextSourceIsRefusedATable() {
+        List<Shadelet> noText = new java.util.ArrayList<>(CoreShadelets.ALL);
+        noText.remove(CoreShadelets.MSDF);
+        assertThrows(IllegalArgumentException.class, () -> CoreLooks.table(Composition.of(noText).manifest()));
     }
 
     @Test

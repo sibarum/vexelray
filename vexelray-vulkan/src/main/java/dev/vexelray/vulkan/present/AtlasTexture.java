@@ -207,8 +207,8 @@ public final class AtlasTexture implements SampledImage, AutoCloseable {
 
     /**
      * A distance-field atlas of {@code channels} bytes per texel: 4 is RGBA, as {@link #AtlasTexture(VulkanDevice, int,
-     * int, byte[])}; 1 is an {@code R8_UNORM} image whose view reads its one channel into all four, so a shader taking
-     * {@code median(r, g, b)} of an MSDF gets the same distance from a one-channel SDF, and both share a pipeline.
+     * int, byte[])}; 1 is an {@code R8_UNORM} image whose view reads its one channel into all four, so whichever
+     * channel a shader reads, or the median of three, it gets the distance.
      */
     public AtlasTexture(VulkanDevice device, int width, int height, int channels, byte[] texels) {
         this(device, width, height, new byte[][] {texels}, false, channels);

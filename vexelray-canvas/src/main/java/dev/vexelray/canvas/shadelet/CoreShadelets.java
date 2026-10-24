@@ -7,6 +7,7 @@ import dev.supirvast.vastir.core.Statement;
 import dev.supirvast.vastir.core.Texture;
 import dev.vexelray.canvas.CanvasShader;
 import dev.vexelray.canvas.ImageFilters;
+import dev.vexelray.text.FieldType;
 
 import java.util.List;
 
@@ -35,7 +36,7 @@ import static dev.vexelray.ir.Ir.z;
 
 /**
  * The core set: what every canvas shader is composed of, whatever an application adds. Three sources (the analytic
- * box, MSDF text, a distance field); the painters of the canvas's own primitives, which read what they need from the
+ * box, text in whichever {@link FieldType} the fonts are, a distance field); the painters of the canvas's own primitives, which read what they need from the
  * vertex ({@link Fragment#filter()} carries an image's filter and a field's scale) and so have no style; a glow and a
  * drop shadow of any source; and the node painters a GUI draws a box's border, fill and shadow with, every value its
  * element's own. Effects an application chooses are added on top of it.
@@ -68,8 +69,7 @@ public final class CoreShadelets {
 
     /**
      * MSDF text: the median of the atlas texel, in canvas units by the glyph's {@code screenPxRange} ({@code shape.x}).
-     * True to about half the pixel range. It draws a one-channel SDF face unchanged: that atlas's view reads its one
-     * channel into r, g and b, whose median is then that distance, so faces of either type share this source. It does not yet look elsewhere: the vertex carries no atlas texels per unit
+     * True to about half the pixel range. The core set's text source when the fonts are {@link FieldType#MSDF}. It does not yet look elsewhere: the vertex carries no atlas texels per unit
      * to move by, so {@code offset} is ignored until text has effects that need it.
      */
     public static final Shadelet.Source MSDF = new Shadelet.Source() {
@@ -84,6 +84,25 @@ public final class CoreShadelets {
             Expr median = max(min(x(msd), y(msd)), min(max(x(msd), y(msd)), z(msd)));
             Expr range = x(fragment.shape());
             return v2(mul(range, sub(median, f(0.5))), mul(f(0.5), range));
+        }
+    };
+
+    /**
+     * SDF text: the atlas texel's one channel, which is the distance, in canvas units as {@link #MSDF} makes its median.
+     * The core set's text source when the fonts are {@link FieldType#SDF}: one channel read and no median, so a shader
+     * composed for them carries no three-channel field anywhere.
+     */
+    public static final Shadelet.Source SDF = new Shadelet.Source() {
+        @Override
+        public String name() {
+            return "sdf";
+        }
+
+        @Override
+        public Expr distance(Fragment fragment, Expr offset, StyleView style) {
+            Expr sd = x(new Expr.SampleTexture(ATLAS, fragment.uv()));
+            Expr range = x(fragment.shape());
+            return v2(mul(range, sub(sd, f(0.5))), mul(f(0.5), range));
         }
     };
 
@@ -362,14 +381,54 @@ public final class CoreShadelets {
         }
     };
 
-    /** The core set, in the order that fixes their ids: an application's composition starts with these. */
-    public static final List<Shadelet> ALL = List.of(BOX, MSDF, FIELD,
-            FILL, GLYPH, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
-            NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW);
+    /**
+     * The core set for MSDF fonts, in the order that fixes their ids: an application's composition starts with these.
+     * {@link #all(FieldType)} is the same set for either type of font.
+     */
+    public static final List<Shadelet> ALL = all(FieldType.MSDF);
 
-    /** The core composition. */
+    /** The core set for fonts of {@code text}: {@link #ALL} with {@link #text(FieldType) its text source} in place. */
+    public static List<Shadelet> all(FieldType text) {
+        return List.of(BOX, text(text), FIELD,
+                FILL, GLYPH, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
+                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW);
+    }
+
+    /** The core composition, for MSDF fonts. */
     public static Composition composition() {
-        return Composition.of(ALL);
+        return composition(FieldType.MSDF);
+    }
+
+    /**
+     * The core composition for fonts of {@code text}. One type per shader: its text source is the only one in it, so
+     * an application's fonts are all of one type ({@code GuiApp} refuses a set that mixes them).
+     */
+    public static Composition composition(FieldType text) {
+        return Composition.of(all(text));
+    }
+
+    /** The source that draws text from atlases of {@code type}. */
+    public static Shadelet.Source text(FieldType type) {
+        return switch (type) {
+            case MSDF -> MSDF;
+            case SDF -> SDF;
+        };
+    }
+
+    /**
+     * The type of font the shader with {@code manifest} draws text for: the one whose source it holds, MSDF where it
+     * holds both (an application that added the other to the core set).
+     *
+     * @throws IllegalArgumentException if it holds neither, and so cannot draw the canvas's text at all
+     */
+    public static FieldType textType(Manifest manifest) {
+        for (FieldType type : FieldType.values()) {
+            if (manifest.find(text(type).name()).isPresent()) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("this shader has no text source (" + MSDF.name() + " or " + SDF.name()
+                + "), so the canvas's text cannot be drawn. Compose it as CoreShadelets.composition(type).with(...)");
     }
 
     // --- helpers ---
