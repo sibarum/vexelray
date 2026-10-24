@@ -142,6 +142,21 @@ public interface NativePlatform {
     }
 
     /**
+     * Hand {@code target} to the desktop, as a click on a link in its own file browser would: a web address to the
+     * browser, a file to whatever opens files of its kind. The person's programs, not this one's, so it is for a link
+     * someone clicked (an About window's licences, an issues page), never for something the application decided.
+     *
+     * <p>Starts the desktop's opener and returns; it does not wait for what that opens. Blocking only for as long as
+     * the opener takes to start, so call it off the frame loop. Defaults to {@code false}, for a platform that cannot
+     * yet.
+     *
+     * @return whether the opener was started, which says nothing about whether the target opened
+     */
+    default boolean open(String target) {
+        return false;
+    }
+
+    /**
      * The arguments {@code main} was handed, as the operating system actually holds them.
      *
      * <p>Exists for one platform's sake: a GraalVM native image on Windows decodes its arguments through the ANSI

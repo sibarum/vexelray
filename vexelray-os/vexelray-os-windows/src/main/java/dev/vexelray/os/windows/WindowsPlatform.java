@@ -33,6 +33,24 @@ public final class WindowsPlatform implements NativePlatform {
         return Platform.WINDOWS;
     }
 
+    /**
+     * {@code url.dll}'s handler, which is what a link in Explorer runs: the default browser for an address, the
+     * associated program for a file. Started directly with the target as one argument, so an address with an
+     * ampersand in it is never a command line.
+     */
+    @Override
+    public boolean open(String target) {
+        try {
+            new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", target)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
     /** DXGI, always: see {@link NativePlatform#presenter()}. {@code vexelray-present-dxgi} provides it. */
     @Override
     public Optional<String> presenter() {

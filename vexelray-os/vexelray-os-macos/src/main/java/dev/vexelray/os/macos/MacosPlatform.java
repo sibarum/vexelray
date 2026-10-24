@@ -25,6 +25,20 @@ public final class MacosPlatform implements NativePlatform {
         return Platform.MACOS;
     }
 
+    /** {@code open}, which is Launch Services from the command line. Needs no binding, so it is here before they are. */
+    @Override
+    public boolean open(String target) {
+        try {
+            new ProcessBuilder("open", target)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            return true;
+        } catch (java.io.IOException e) {
+            return false;
+        }
+    }
+
     @Override
     public List<String> requiredVulkanInstanceExtensions() {
         return List.of("VK_KHR_surface", "VK_EXT_metal_surface");

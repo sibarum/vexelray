@@ -25,6 +25,20 @@ public final class LinuxPlatform implements NativePlatform {
         return Platform.LINUX;
     }
 
+    /** {@code xdg-open}, the desktop-neutral opener every freedesktop desktop answers. */
+    @Override
+    public boolean open(String target) {
+        try {
+            new ProcessBuilder("xdg-open", target)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            return true;
+        } catch (java.io.IOException e) {
+            return false;
+        }
+    }
+
     @Override
     public List<String> requiredVulkanInstanceExtensions() {
         return List.of("VK_KHR_surface", "VK_KHR_xlib_surface");
