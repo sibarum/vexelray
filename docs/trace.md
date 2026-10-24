@@ -1,6 +1,6 @@
 # Trace sites: `@Trace`
 
-Status: **proposed 2026-10-24.** Written for `vexelray-gui/docs/plans/export.md` (its M2), beside atchung's
+Status: **proposed 2026-10-24; steps 1 and 2 done 2026-10-24** (see "As built", below). Written for `vexelray-gui/docs/plans/export.md` (its M2), beside atchung's
 [correlation.md](../../atchung/docs/correlation.md), which carries a cause through every message. A cause says what
 set a chain of work off; a trace site says which code the chain passed through.
 
@@ -70,6 +70,34 @@ worth the few cycles.
 | --- | --- |
 | `vexelray-trace` | `@Trace`, the guarded entry the weaver calls (which writes through atchung's `Probe`), the `TraceSites` service and the merged table readers use |
 | `vexelray-trace-maven-plugin` | The weaver: rewrites annotated methods, checks `args`, assigns ids, generates the module's `TraceSites` |
+
+## As built
+
+What the first two steps settled that the sections above left open:
+
+- **Rows go on atchung's `trace` lane** (`Lane.TRACE`), so a recording asks for them with `-Dprobe=trace,...`.
+- **A row's kind is `trace.<label>`**, a constant the weaver bakes in, so `csvview --sources --lane trace` reads by
+  site name and nothing is built per call. Its detail is the site id in hex and the arguments' raw values.
+- **Raw means a `long`**: integers widened, a `float` or `double` as its bits, an enum as its ordinal, a string as
+  its length, `-1` for null. The only text made while running is the decimal digits; `Site.Arg.format` reads a value
+  back by the type its table records.
+- **A recording names its own sites.** When tracing starts, `Tracing` writes a `trace.site` row for every site the
+  class path holds (id, label, `Class.method(File:line)`, arguments), in no cause, as `cause.source` does for
+  sources. A CSV reads without the table beside it.
+- **`content = true`** writes each string argument in full on a `trace.text` row after the entry; **`timed = true`**
+  adds a `trace.exit` row at every return and, through a catch-all that rethrows, at a throw (`... threw`).
+- **`args` are named by parameter name**, from `MethodParameters` or the local variable table (Maven compiles with
+  `-g`), **at most four**. The weaver refuses an object, a name that is no parameter, a fifth argument,
+  `content = true` with no string, and two sites with one id, every one in one build error.
+- **Re-weaving is harmless**: an incremental build leaves woven classes in place, and a method that already reads
+  the guard is not woven again, though its site is still tabled.
+- **The table class** is `<package of the first site>.TraceSites_<artifactId>`, whose `table()` returns the sites as
+  tab-separated lines (`Site.parse`). `Sites` finds the tables through the thread's context class loader.
+- **The plugin targets JDK 25**, for `java.lang.classfile`, so its pom gives `maven-plugin-plugin` ASM 9.9.1: the
+  3.15.1 default (9.7.1) cannot read a JDK 25 class. `vexelray-msdf-maven-plugin` stayed on 21 for the same reason.
+
+Not yet: a native image (step 3; no GraalVM on the machine this was built on), and any sites in an application
+(step 4).
 
 ## Steps
 

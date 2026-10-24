@@ -22,6 +22,10 @@
         <!-- One class: how a seam tells a consumer it has silently dropped something the consumer asked for.
              Depends on nothing at all, so any module can reach it. -->
         <module>vexelray-diagnostics</module>
+        <!-- Trace sites (docs/trace.md): @Trace and the entry woven code calls, and the weaver that writes those
+             calls after javac. Depend on atchung-probe alone, and on nothing at all. -->
+        <module>vexelray-trace</module>
+        <module>vexelray-trace-maven-plugin</module>
         <!-- The terse vocabulary for authoring SupirVast core IR by hand. Depends on nothing but vastir; the
              layer below every module that emits a shader. -->
         <module>vexelray-ir</module>
