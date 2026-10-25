@@ -7,7 +7,7 @@
     <parent>
         <groupId>dev.vexelray</groupId>
         <artifactId>vexelray</artifactId>
-        <version>0.1.2-SNAPSHOT</version>
+        <version>0.1.2</version>
     </parent>
 
     <artifactId>vexelray-trace</artifactId>
