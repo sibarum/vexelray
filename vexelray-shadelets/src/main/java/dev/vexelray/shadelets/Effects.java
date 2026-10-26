@@ -288,6 +288,5 @@ public final class Effects {
 
     /** All of them, to add to the core set, {@link Condense}'s among them. */
     public static final List<Shadelet> ALL = List.of(WEIGHT, OUTLINE, BOX_MORPH, FIELD_MORPH, RIPPLE, RING,
-            LINEAR_GRADIENT, RADIAL_GRADIENT, Condense.MTSDF, Condense.MTSDF_UNBOUNDED, Condense.CONDENSE,
-            Condense.CONTOURS, Condense.ORB);
+            LINEAR_GRADIENT, RADIAL_GRADIENT, Condense.MTSDF, Condense.CONDENSE, Condense.ORB);
 }
