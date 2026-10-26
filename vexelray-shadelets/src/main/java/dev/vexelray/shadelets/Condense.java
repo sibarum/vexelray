@@ -47,7 +47,9 @@ import static dev.vexelray.ir.Ir.z;
 
 /**
  * A mark that precipitates out of its own distance field: the {@link #MTSDF} source a baked art pair is read through,
- * the {@link #CONDENSE} painter that grows the shape behind a front, and the {@link #ORB} that lands to start it.
+ * the {@link #CONDENSE} painter that grows the shape behind a front, and the {@link #ORB} that lands to start it; and,
+ * for the page round a mark, the same field read anywhere ({@link #MTSDF_UNBOUNDED}) and its contours carried out
+ * across it ({@link #CONTOURS}).
  *
  * <p>Each is a function of a distance and of values the application writes per frame; none reads a clock. The design
  * lengths below (a 22-unit growth, contours 6 apart, a 110-unit ramp behind the front) are for a mark 104 units
@@ -78,19 +80,69 @@ public final class Condense {
 
         @Override
         public Expr distance(Fragment fragment, Expr offset, StyleView style) {
-            Expr fx = fragment.filter();
-            Expr uv = fragment.uv();
-            Expr moved = v2(add(x(uv), mul(x(offset), y(fx))), add(y(uv), mul(y(offset), y(fx))));
-            Expr t = new Expr.SampleTexture(CoreShadelets.IMAGE, moved);
-            Expr median = max(min(x(t), y(t)), min(max(x(t), y(t)), z(t)));
-            Expr range = x(fx);
-            Expr far = mul(sub(w(t), f(0.5)), range);
-            Expr near = mul(sub(median, f(0.5)), mul(range, style.scalar("near")));
-            // The near channels saturate at 0 and 1: hand over to alpha before they do.
-            Expr toFar = Expr.MathCall.smoothstep(f(0.36), f(0.46), abs(sub(median, f(0.5))));
-            return v2(mix(near, far, toFar), mul(f(0.5), range));
+            Expr range = x(fragment.filter());
+            return v2(mtsdf(moved(fragment, offset), range, style.scalar("near")), mul(f(0.5), range));
         }
     };
+
+    /**
+     * {@link UnboundedMtsdfStyle}: {@link #MTSDF} answered anywhere on the plane, so an element far larger than the
+     * field's cell reads a true distance across all of it. Past the trusted disc the sample is pulled in along
+     * {@code knee + soft * (1 - exp(-over / soft))}, which leaves the field untouched up to the knee, bends off it with
+     * the same slope, and never reaches past the disc however far out the fragment is; the radius the pull took is
+     * added back. The reach is the cell's, as {@link #MTSDF} says it, so a painter that fades by it fades as there.
+     */
+    public static final Shadelet.Source MTSDF_UNBOUNDED = new Shadelet.Source() {
+        @Override
+        public String name() {
+            return "mtsdfUnbounded";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return UnboundedMtsdfStyleLayout.LAYOUT;
+        }
+
+        @Override
+        public Expr distance(Fragment fragment, Expr offset, StyleView style) {
+            Expr range = x(fragment.filter());
+            Expr uv = moved(fragment, offset);
+            Expr u0 = style.scalar("cellU0");
+            Expr v0 = style.scalar("cellV0");
+            Expr cw = sub(style.scalar("cellU1"), u0);
+            Expr ch = sub(style.scalar("cellV1"), v0);
+            // From the cell's middle, in shares of its side: the same length along either axis.
+            Expr c = v2(sub(div(sub(x(uv), u0), cw), f(0.5)), sub(div(sub(y(uv), v0), ch), f(0.5)));
+            Expr r = length(c);
+            Expr knee = style.scalar("knee");
+            Expr soft = max(style.scalar("soft"), f(1e-4));
+            Expr over = max(sub(r, knee), f(0.0));
+            Expr pulled = add(min(r, knee), mul(soft, sub(f(1.0), Expr.MathCall.exp(div(neg(over), soft)))));
+            Expr k = div(pulled, max(r, f(1e-6)));
+            Expr q = v2(add(u0, mul(add(mul(x(c), k), f(0.5)), cw)), add(v0, mul(add(mul(y(c), k), f(0.5)), ch)));
+            // Outside, the distance is negative: the radius taken away is taken from it.
+            Expr taken = mul(mul(sub(r, pulled), style.scalar("cellRange")), range);
+            return v2(sub(mtsdf(q, range, style.scalar("near")), taken), mul(f(0.5), range));
+        }
+    };
+
+    /** The fragment's UV moved by {@code offset} canvas units. */
+    private static Expr moved(Fragment fragment, Expr offset) {
+        Expr fx = fragment.filter();
+        Expr uv = fragment.uv();
+        return v2(add(x(uv), mul(x(offset), y(fx))), add(y(uv), mul(y(offset), y(fx))));
+    }
+
+    /** The distance the MTSDF texel at {@code uv} holds: {@code range} the field's units per value, {@code nearShare} its split. */
+    private static Expr mtsdf(Expr uv, Expr range, Expr nearShare) {
+        Expr t = new Expr.SampleTexture(CoreShadelets.IMAGE, uv);
+        Expr median = max(min(x(t), y(t)), min(max(x(t), y(t)), z(t)));
+        Expr far = mul(sub(w(t), f(0.5)), range);
+        Expr near = mul(sub(median, f(0.5)), mul(range, nearShare));
+        // The near channels saturate at 0 and 1: hand over to alpha before they do.
+        Expr toFar = Expr.MathCall.smoothstep(f(0.36), f(0.46), abs(sub(median, f(0.5))));
+        return mix(near, far, toFar);
+    }
 
     /** {@link CondenseStyle}: see there. Over {@link #MTSDF} for a baked pair; over any field source in principle. */
     public static final Shadelet.Painter CONDENSE = new Shadelet.Painter() {
@@ -248,8 +300,52 @@ public final class Condense {
         }
     };
 
-    /** All three, to compose with. */
-    public static final List<Shadelet> ALL = List.of(MTSDF, CONDENSE, ORB);
+    /**
+     * {@link ContoursStyle}: see there. The share of the lines {@link #CONDENSE} draws round its shape is worked out the
+     * way it does (the same weight, the same fade by the reach), and only the rest is drawn here, so under that element
+     * the two add up to {@code 0.8 * exp(-d / falloff)} of a line, and past it this goes on alone. Over
+     * {@link #MTSDF_UNBOUNDED}, whose distance holds everywhere the element is.
+     */
+    public static final Shadelet.Painter CONTOURS = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "contours";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return ContoursStyleLayout.LAYOUT;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView s, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Locals b = new Locals("contours");
+            Expr heat = xyz(s.vector("heat"));
+            Expr u = b.let("u", F32, max(s.scalar("unit"), f(1e-3)));
+            Expr dist = b.let("dist", V2, c.distance());
+            Expr dm = b.let("dm", F32, div(neg(x(dist)), u));
+            Expr orb = v2(s.scalar("orbX"), s.scalar("orbY"));
+            Expr toOrb = div(length(sub(fr.local(), orb)), u);
+            Expr lit = mul(Expr.MathCall.exp(neg(div(toOrb, add(mul(div(s.scalar("orbRadius"), u), f(1.4)),
+                    f(30.0))))), s.scalar("preview"));
+            // What CONDENSE gives these lines at this distance, its fade and all.
+            Expr reach = y(dist);
+            Expr fade = smoothE(mul(f(-0.95), reach), mul(f(-0.6), reach), x(dist));
+            Expr nearEdge = mul(step(f(-1.0), dm), step(dm, f(54.0)));
+            Expr shapes = mul(mul(mul(sub(f(1.0), div(dm, f(54.0))), f(0.8)), nearEdge), fade);
+            Expr all = mul(f(0.8), Expr.MathCall.exp(div(neg(max(dm, f(0.0))), max(s.scalar("falloff"), f(1.0)))));
+            Expr weight = mul(max(sub(all, shapes), f(0.0)), step(f(0.0), dm));
+            Expr light = b.let("light", F32, clamp(mul(mul(lit, iso(dm, 6, 0.8, u)), weight), f(0.0), f(1.0)));
+            Expr tint = w(fr.color());
+            Expr a = mul(light, tint);
+            b.add(new Statement.Assign(layer, v4(mul(x(heat), a), mul(y(heat), a), mul(z(heat), a), a)));
+            return b.region();
+        }
+    };
+
+    /** All of them, to compose with. */
+    public static final List<Shadelet> ALL = List.of(MTSDF, MTSDF_UNBOUNDED, CONDENSE, CONTOURS, ORB);
 
     /** {@code 1 - smoothstep(w/2, w/2 + one canvas unit, k)}: a line every {@code spacing} along {@code v}. */
     private static Expr iso(Expr v, double spacing, double width, Expr unit) {
