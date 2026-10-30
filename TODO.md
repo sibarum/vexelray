@@ -279,6 +279,14 @@ file is about the engine and its API. Decisions are logged in
 
 ## P2 — Consistency and polish
 
+- [ ] **`WindowedPresenter` cannot say it is not ready.** `WindowPresenter.ready()`/`whenReady()` (2026-10-29,
+      vexelray-framework's fork 8) let the thread that draws keep taking input while the GPU finishes, instead of
+      sleeping in the fence wait. `DxgiPresenter`, the only presenter on Windows, implements them; the Vulkan
+      swapchain path keeps the defaults (always ready, `render` waits as before), so on Linux a slow GPU still holds
+      the loop. The fence half is `vkGetFenceStatus` on the slot's fence plus a waiter thread on it; the acquire half
+      is harder, because a zero-timeout `vkAcquireNextImageKHR` that succeeds has taken the image, so `render` must
+      then use that one rather than acquire again.
+
 - [ ] **The pipeline-state struct layouts are still declared twice.** `VkStructs` (D23) absorbed the layouts
       the four presenter/readback classes shared, but `OffscreenRenderer` still carries its own
       `VkPipelineShaderStageCreateInfo`, `VkPipelineVertexInputStateCreateInfo`, the viewport/rasterisation/

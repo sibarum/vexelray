@@ -17,6 +17,7 @@ import sibarum.dxgi.DxgiContext;
 import sibarum.dxgi.DxgiSwapchain;
 import sibarum.dxgi.SharedImage;
 import sibarum.dxgi.VkInterop;
+import sibarum.dxgi.Win32;
 import sibarum.probe.Lane;
 import sibarum.probe.Probe;
 import sibarum.probe.Zone;
@@ -54,6 +55,11 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * ({@link DxgiSwapchain#lastCopyValue}) before drawing over it, and signals a fresh value; the D3D12 queue waits for
  * that value before copying. One frame in flight: the fence at the top waits for the previous Vulkan submit, so its
  * command buffer and the mapped vertex buffer are never rewritten under the GPU.
+ *
+ * <p>Nothing here has to make the drawing thread wait. {@link #ready} says whether a frame could start without waiting,
+ * and when it could not, {@link #whenReady} waits on a thread of its own (the waiter) and tells the drawing thread when
+ * to look again, so that thread goes on taking input while the GPU finishes. {@link #render} keeps every wait it had,
+ * for a caller that does not ask.
  */
 final class DxgiPresenter implements WindowPresenter {
 
@@ -72,6 +78,7 @@ final class DxgiPresenter implements WindowPresenter {
     private final GraphicsPipeline pipeline;
     private final Arena arena = Arena.ofShared();
 
+    private final MethodHandle getFenceStatus;
     private final MethodHandle waitFences, resetFences, submit, beginCmd, endCmd, beginRp, endRp, bindPipe;
     private final MethodHandle pushConstants, bindVertexBuffers, setViewport, setScissor;
     /** Records the runs: their sets and draws, by the same rules as every other path that draws them. */
@@ -103,6 +110,16 @@ final class DxgiPresenter implements WindowPresenter {
     private boolean shown;
     private boolean closed;
 
+    /** Guards {@link #wake} and {@link #stopping} between the drawing thread and the waiter. */
+    private final Object waiting = new Object();
+    /** What the waiter runs when the swapchain is next ready, or null when nothing asked. */
+    private Runnable wake;
+    private boolean stopping;
+    /** Started by the first {@link #whenReady}, so a presenter nobody asks keeps no thread. */
+    private Thread waiter;
+    /** The waiter's own event for the shared fence; the context's is the drawing thread's. */
+    private MemorySegment waiterEvent;
+
     DxgiPresenter(VulkanDevice device, DxgiContext context, NativeWindow window, long renderPass,
                   GraphicsPipeline pipeline) {
         Probe.opened(Lane.GPU, "DxgiPresenter", this);
@@ -117,6 +134,7 @@ final class DxgiPresenter implements WindowPresenter {
 
         this.waitFences = device.command("vkWaitForFences",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG));
+        this.getFenceStatus = device.command("vkGetFenceStatus", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         this.resetFences = device.command("vkResetFences", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
         this.submit = device.command("vkQueueSubmit", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
         this.beginCmd = device.command("vkBeginCommandBuffer", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
@@ -214,6 +232,69 @@ final class DxgiPresenter implements WindowPresenter {
             return renderFrame(pushConstantBytes, perFrame);
         } finally {
             rendering = false;
+        }
+    }
+
+    @Override
+    public boolean ready() {
+        if (closed || window.isMinimized() || window.width() <= 0 || window.height() <= 0) {
+            return true;   // render returns at once
+        }
+        // vkGetFenceStatus: VK_SUCCESS (0) once the last submit is done, VK_NOT_READY while it is in flight.
+        return swapchain.ready() && (int) invoke(getFenceStatus, dev, inFlight) == 0;
+    }
+
+    @Override
+    public void whenReady(Runnable wake) {
+        synchronized (waiting) {
+            if (closed) {
+                return;
+            }
+            this.wake = wake;
+            if (waiter == null) {
+                waiterEvent = Win32.createEvent();
+                waiter = new Thread(this::waitForFrames, "vexel-dxgi-ready");
+                waiter.setDaemon(true);
+                waiter.start();
+            }
+            waiting.notifyAll();
+        }
+    }
+
+    /**
+     * The waiter: for each {@link #whenReady}, wait until the swapchain could take a frame, then run its wake. Every
+     * wait is bounded, so {@link #close} is never kept waiting longer than one of them.
+     */
+    private void waitForFrames() {
+        while (true) {
+            synchronized (waiting) {
+                while (wake == null && !stopping) {
+                    try {
+                        waiting.wait();
+                    } catch (InterruptedException e) {
+                        stopping = true;
+                    }
+                }
+                if (stopping) {
+                    return;
+                }
+            }
+            while (!swapchain.awaitReady(LATENCY_WAIT_MILLIS, waiterEvent)) {
+                synchronized (waiting) {
+                    if (stopping) {
+                        return;
+                    }
+                }
+            }
+            Runnable run;
+            synchronized (waiting) {
+                if (stopping) {
+                    return;
+                }
+                run = wake;
+                wake = null;
+            }
+            run.run();
         }
     }
 
@@ -432,7 +513,22 @@ final class DxgiPresenter implements WindowPresenter {
         if (closed) {
             return;
         }
-        closed = true;
+        Thread stop;
+        synchronized (waiting) {
+            closed = true;
+            stopping = true;
+            stop = waiter;
+            waiting.notifyAll();
+        }
+        if (stop != null) {
+            // Before the swapchain closes the waitable it may be waiting on; its waits are bounded.
+            try {
+                stop.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            Win32.close(waiterEvent);
+        }
         Probe.closed(Lane.GPU, "DxgiPresenter", this);
         device.waitIdle();
         try {

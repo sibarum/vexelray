@@ -24,6 +24,34 @@ public interface WindowPresenter extends AutoCloseable {
      */
     boolean render(int pushConstantBytes, FrameUpdate perFrame);
 
+    /**
+     * Whether {@link #render} would draw now without the CPU waiting on the GPU or the compositor: the frame before is
+     * done with what the next one rewrites, and there is somewhere to present it. Never blocks. A thread that takes
+     * input as well as drawing asks this first, and when it is false keeps taking input and is told by
+     * {@link #whenReady} when to draw, instead of sleeping inside {@link #render} while the GPU finishes.
+     *
+     * <p>{@link #render} still waits for whatever it needs, so a caller that does not ask (a screenshot) is correct, only
+     * slower. A presenter that cannot tell says true, and its {@link #render} waits as it always did.
+     *
+     * <p>On the thread that renders.
+     */
+    default boolean ready() {
+        return true;
+    }
+
+    /**
+     * Run {@code wake}, once, on any thread, when {@link #ready} next turns true, or when the presenter would draw
+     * anyway (a compositor that stops answering, as one does for a hidden window, is waited for a bounded time, as
+     * {@link #render} waits for it). For after {@link #ready} said false: {@code wake} only tells the drawing thread to
+     * look again, and should post to it rather than draw. Asked again before the last one ran, it replaces it.
+     *
+     * <p>On the thread that renders. The default runs {@code wake} at once, which is right for a presenter that is
+     * always ready.
+     */
+    default void whenReady(Runnable wake) {
+        wake.run();
+    }
+
     /** The vertex buffer and set-0 descriptor set every frame binds; see {@link WindowedPresenter#configureDraw}. */
     void configureDraw(long vertexBuffer, long descriptorSet, int vertexCount);
 
