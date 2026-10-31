@@ -50,22 +50,23 @@ final class MengerShellTechnique implements RenderTechnique {
     private MemorySegment push;
     private final float[] pushFloats = new float[MengerShellShader.PUSH_FLOATS];
 
-    /** Baked exit triangles for {@link MengerShellShader#fragment(Shading, ClipDepth, float[])}, or null. */
-    private final float[] exitTriangles;
+    /** The one mesh whose exits are baked in, or null for shells a ray marches on through. */
+    private final Mesh exitMesh;
 
     MengerShellTechnique(Lens lens, Shading shading) {
         this(lens, shading, null);
     }
 
     /**
-     * Shells that are transparent where a ray leaves them, for the one shell whose world-space triangles are
-     * {@code exitTriangles}. Add only that shell, at the placement they were taken at.
+     * Shells that are transparent where a ray leaves them, eye's or reflected: no re-entry. Every shell added must
+     * be {@code exitMesh}, whose triangles the shader tests in the mesh's own coordinates, so each may stand, move
+     * and turn anywhere.
      */
-    MengerShellTechnique(Lens lens, Shading shading, float[] exitTriangles) {
+    MengerShellTechnique(Lens lens, Shading shading, Mesh exitMesh) {
         this.focalLength = lens.focalLength();
         this.clipDepth = lens.clipDepth();
         this.shading = shading;
-        this.exitTriangles = exitTriangles;
+        this.exitMesh = exitMesh;
     }
 
     private MengerShellShader.Fade fade = MengerShellShader.Fade.STEPS;
@@ -79,6 +80,17 @@ final class MengerShellTechnique implements RenderTechnique {
         return this;
     }
 
+    private MengerShellShader.Mirror mirror;
+
+    /** Polish the shells, reflecting {@code mirror}'s ground and sky; before realise, like {@link #fade}. */
+    MengerShellTechnique mirror(MengerShellShader.Mirror mirror) {
+        if (pipeline != null) {
+            throw new IllegalStateException("the mirror is compiled in at realise; set it before");
+        }
+        this.mirror = mirror;
+        return this;
+    }
+
     /** A shell whose field moves with it ({@link FieldSpace#OBJECT}), by index for {@link #place}. */
     int add(Mesh mesh, Placement placement) {
         return add(mesh, placement, FieldSpace.OBJECT);
@@ -86,6 +98,9 @@ final class MengerShellTechnique implements RenderTechnique {
 
     /** A shell, its field standing in {@code field}; by index for {@link #place} and {@link #field}. */
     int add(Mesh mesh, Placement placement, FieldSpace field) {
+        if (exitMesh != null && mesh != exitMesh) {
+            throw new IllegalArgumentException("this technique's exits are baked from one mesh; add only that one");
+        }
         meshes.add(mesh);
         placements.add(placement);
         fields.add(field);
@@ -144,7 +159,8 @@ final class MengerShellTechnique implements RenderTechnique {
                 .withDepth(GraphicsPipeline.Config.Depth.TEST_AND_WRITE);
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 MeshShader.vertex(clipDepth).spirv(), "main",
-                MengerShellShader.fragment(shading, clipDepth, exitTriangles, fade).spirv(), "main", config);
+                MengerShellShader.fragment(shading, clipDepth,
+                        exitMesh == null ? null : MengerShellShader.localTriangles(exitMesh), fade, mirror).spirv(), "main", config);
         this.cmds = new DrawCommands(device);
         this.push = cmds.allocatePushConstants(MengerShellShader.PUSH_BYTES);
     }

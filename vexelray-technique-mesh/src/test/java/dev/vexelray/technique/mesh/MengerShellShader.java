@@ -79,11 +79,32 @@ final class MengerShellShader {
          * The distance travelled from the entry, in field units so it scales with the field:
          * {@code exp(-distance / FADE_LENGTH)}. Depth reads as depth, however hard the march worked for it.
          */
-        DISTANCE
+        DISTANCE,
+        /** Nothing: every hit at full strength. For {@link Mirror}, where depth is told by what is reflected. */
+        NONE
     }
 
     /** Field distance over which {@link Fade#DISTANCE} falls to 1/e: one lattice half-period. */
     static final double FADE_LENGTH = CELL;
+
+    /**
+     * Polished surfaces, and the world they reflect beyond the lattice: the {@link Sky}, and a ground plane at
+     * {@code y = 0} of albedo {@code ground} ({@code {r, g, b}}), lit by the scene's shading.
+     *
+     * <p>The fractal is metal: a reflected ray marches the lattice again, in field space, for
+     * {@link #REFLECT_STEPS}, and takes the ground or the sky if it gets clear, or, with exits baked in, if it
+     * leaves the shell. A cut face is polished copper that reflects only the ground and the sky: its reflected ray
+     * leaves the shell at once, and outside the shell the fractal is clipped away.
+     */
+    record Mirror(double[] ground) {
+    }
+
+    /** The reflected ray's own budget. */
+    static final int REFLECT_STEPS = 32;
+
+    /** Reflectance head-on (Schlick's F0): the metal lattice, and the copper of a cut face. */
+    private static final double METAL_F0 = 0.5;
+    private static final double COPPER_F0 = 0.3;
 
     static ComposedShader fragment(Shading shading, ClipDepth depth) {
         return fragment(shading, depth, null);
@@ -91,9 +112,11 @@ final class MengerShellShader {
 
     /**
      * The same, except that a ray which leaves the shell is <b>transparent</b> rather than marching on: no re-entry,
-     * so nothing is drawn beyond the first back face. {@code exitTriangles} is the one shell's triangles where it
-     * stands in the world ({@link Mesh#worldPositions}), outward-wound, and each fragment finds its exit by testing
-     * every one of them, unrolled. Exact for any concave shell, and only for comparison: the cost is per triangle.
+     * so nothing is drawn beyond the first back face. {@code exitTriangles} is the mesh's triangles in its own
+     * coordinates, three floats a corner ({@link #localTriangles}), outward-wound. Each fragment carries its ray into
+     * the mesh's coordinates by the model matrix it already has, and finds its exit by testing every triangle,
+     * unrolled: exact for any concave shell at any placement, so a shell can move and turn, but every shell drawn
+     * with this shader must be that mesh. The cost is per triangle, which is why this is a prototype's way.
      */
     static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles) {
         return fragment(shading, depth, exitTriangles, Fade.STEPS);
@@ -101,8 +124,24 @@ final class MengerShellShader {
 
     /** Either of the above, darkened by {@code fade}. */
     static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade) {
-        return ComposedShader.lower(ShaderStage.FRAGMENT, fragmentModule(shading, depth, exitTriangles, fade),
-                "main");
+        return fragment(shading, depth, exitTriangles, fade, null);
+    }
+
+    /** Any of the above, polished if {@code mirror} is not null. */
+    static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade,
+                                   Mirror mirror) {
+        return ComposedShader.lower(ShaderStage.FRAGMENT,
+                fragmentModule(shading, depth, exitTriangles, fade, mirror), "main");
+    }
+
+    /** {@code mesh}'s corners in its own coordinates, three floats each: what {@code exitTriangles} takes. */
+    static float[] localTriangles(Mesh mesh) {
+        float[] vertices = mesh.vertices();
+        float[] xyz = new float[mesh.vertexCount() * 3];
+        for (int i = 0; i < mesh.vertexCount(); i++) {
+            System.arraycopy(vertices, i * Mesh.FLOATS_PER_VERTEX + Mesh.POSITION, xyz, i * 3, 3);
+        }
+        return xyz;
     }
 
     /**
@@ -169,8 +208,9 @@ final class MengerShellShader {
     }
 
     private static CoreModule fragmentModule(Shading shading, ClipDepth depth, float[] exitTriangles,
-                                             Fade fadeBy) {
+                                             Fade fadeBy, Mirror mirror) {
         PushConstants pc = block();
+        Function exit = exitTriangles == null ? null : exitFunction(exitTriangles);
         InterfaceVar vWorld = InterfaceVar.input("vWorld", MeshShader.LOC_WORLD, Ir.V3);
         InterfaceVar vNormal = InterfaceVar.input("vNormal", MeshShader.LOC_WORLD_NORMAL, Ir.V3);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, Ir.V4);
@@ -225,9 +265,21 @@ final class MengerShellShader {
         Expr depthInside = Ir.clamp(Ir.div(Ir.neg(new Expr.Read(d0)), Ir.f(CELL * 0.12)), Ir.f(0.0), Ir.f(1.0));
         Expr cutAlbedo = cut.bind("cutAlbedo", Ir.mix(Ir.v3(0.95, 0.62, 0.32), Ir.v3(0.45, 0.16, 0.10),
                 Ir.v3(depthInside, depthInside, depthInside)));
-        Expr cutShaded = shading.shade(ShadingPoint.diffuse(new Expr.Read(entry),
-                Ir.scale(polygonNormal, facing), view, cutAlbedo), cut);
-        cut.statements.add(new Statement.Assign(colour, cutShaded));
+        Expr cutNormal = cut.bind("cutNormal", Ir.scale(polygonNormal, facing));
+        Expr cutShaded = cut.bind("cutShaded", shading.shade(ShadingPoint.diffuse(new Expr.Read(entry),
+                cutNormal, view, cutAlbedo), cut));
+        if (mirror == null) {
+            cut.statements.add(new Statement.Assign(colour, cutShaded));
+        } else {
+            // Polished copper: the ground and the sky, tinted by the copper, as much as Fresnel says.
+            LocalVar cutReflected = new LocalVar("cutReflected", Ir.V3);
+            Expr cutRay = cut.bind("cutRay", Expr.MathCall.reflect(new Expr.Read(dir), cutNormal));
+            cut.statements.add(new Statement.DeclareVar(cutReflected, Ir.v3(0, 0, 0)));
+            cut.statements.addAll(environment(names, shading, mirror, new Expr.Read(entry), cutRay, cutReflected));
+            Expr f = cut.bind("cutFresnel", fresnel(COPPER_F0, cutNormal, view));
+            cut.statements.add(new Statement.Assign(colour, Ir.mix(cutShaded,
+                    Ir.mul(new Expr.Read(cutReflected), cutAlbedo), Ir.v3(f, f, f))));
+        }
         cut.statements.add(new Statement.Assign(depthT, new Expr.Read(tEntry)));
 
         // A hit on the fractal: its gradient, by the tetrahedral four-tap in field space, turned back into the
@@ -245,8 +297,19 @@ final class MengerShellShader {
             // t is a world distance; times k it is the field's.
             case DISTANCE -> Expr.MathCall.exp(Ir.mul(Ir.f(-1.0 / FADE_LENGTH),
                     Ir.mul(new Expr.Read(t), new Expr.Read(k))));
+            case NONE -> Ir.f(1.0);
         });
-        surface.statements.add(new Statement.Assign(colour, Ir.mix(Ir.v3(0.015, 0.015, 0.03), shaded,
+        Expr lit = shaded;
+        if (mirror != null) {
+            LocalVar reflected = new LocalVar("reflected", Ir.V3);
+            surface.statements.add(new Statement.DeclareVar(reflected, Ir.v3(0, 0, 0)));
+            surface.statements.addAll(reflection(names, shading, mirror, k, fieldQ, fieldW, hit, fieldHit,
+                    fieldNormal, normal, new Expr.Read(dir), Ir.add(new Expr.Read(tEntry), new Expr.Read(t)),
+                    exit, pc, reflected));
+            Expr f = surface.bind("fresnel", fresnel(METAL_F0, normal, view));
+            lit = surface.bind("polished", Ir.mix(shaded, new Expr.Read(reflected), Ir.v3(f, f, f)));
+        }
+        surface.statements.add(new Statement.Assign(colour, Ir.mix(Ir.v3(0.015, 0.015, 0.03), lit,
                 Ir.v3(fade, fade, fade))));
         surface.statements.add(new Statement.Assign(depthT,
                 Ir.add(new Expr.Read(tEntry), new Expr.Read(t))));
@@ -280,10 +343,9 @@ final class MengerShellShader {
         body.add(new Statement.DeclareVar(depthT, Ir.f(0.0)));
         body.add(new Statement.DeclareVar(exitT, Ir.f(1.0e7)));
         if (exitTriangles != null) {
-            // A back face is where an escaped ray would come back in: with no re-entry, it is already outside.
-            Expr backFace = Ir.lt(Ir.f(0.0), Ir.dot(new Expr.InterfaceRead(vNormal), new Expr.Read(dir)));
-            Region exits = new Region(exitTests(exitTriangles, entry, dir, exitT));
-            body.add(new Statement.If(backFace, Region.of(new Statement.Assign(exitT, Ir.f(0.0))), exits));
+            // On a back face the ray is heading out, and exit says zero: with no re-entry, it is already outside.
+            body.add(new Statement.Assign(exitT, new Expr.Call(exit, List.of(
+                    toMesh(pc, new Expr.Read(entry), true), toMesh(pc, new Expr.Read(dir), false)))));
         }
         body.add(new Statement.While(marching, step));
         body.add(new Statement.If(and(new Expr.Unary(UnaryOp.LOGICAL_NOT, Ir.lt(threshold, new Expr.Read(d))),
@@ -296,15 +358,152 @@ final class MengerShellShader {
         body.add(new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
-        return new CoreModule().addFunction(MENGER).addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+        CoreModule module = new CoreModule().addFunction(MENGER);
+        if (exit != null) {
+            module = module.addFunction(exit);
+        }
+        if (mirror != null) {
+            module = module.addFunction(Sky.FUNCTION);
+        }
+        return module.addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
+    }
+
+    /** Schlick's Fresnel: {@code f0} head-on, rising to one at grazing. */
+    private static Expr fresnel(double f0, Expr normal, Expr view) {
+        Expr grazing = Ir.sub(Ir.f(1.0), Ir.clamp(Ir.dot(normal, view), Ir.f(0.0), Ir.f(1.0)));
+        return Ir.add(Ir.f(f0), Ir.mul(Ir.f(1.0 - f0), Expr.MathCall.pow(grazing, Ir.f(5.0))));
+    }
+
+    /** What a ray from {@code origin} along {@code ray} sees past the lattice: the ground, or else the sky. */
+    private static List<Statement> environment(Counter names, Shading shading, Mirror mirror, Expr origin,
+                                               Expr ray, LocalVar into) {
+        Branch ground = new Branch(names);
+        Expr tGround = ground.bind("tGround", Ir.div(Ir.neg(Ir.y(origin)), Ir.y(ray)));
+        Expr onGround = ground.bind("onGround", Ir.add(origin, Ir.scale(ray, tGround)));
+        double[] g = mirror.ground();
+        ground.statements.add(new Statement.Assign(into, shading.shade(ShadingPoint.diffuse(onGround,
+                Ir.v3(0, 1, 0), Ir.neg(ray), Ir.v3(g[0], g[1], g[2])), ground)));
+        return List.of(new Statement.If(Ir.lt(Ir.y(ray), Ir.f(-1.0e-4)), new Region(ground.statements),
+                Region.of(new Statement.Assign(into, Sky.colour(ray)))));
     }
 
     /**
-     * Möller–Trumbore against every triangle, keeping the nearest hit past the entry's own: from inside a closed
-     * shell, the first surface the ray meets is where it leaves. A triangle edge-on to the ray divides by zero, and
-     * the NaNs that follow fail every comparison, which drops it.
+     * The lattice as a mirror at {@code hit}: the reflected ray marched in field space from just off the surface,
+     * no further than the ground, nor, with {@code exit}, than where it leaves the shell, for
+     * {@link #REFLECT_STEPS}. A hit there is lit, not reflected again; a ray that gets clear takes
+     * {@link #environment}; one that spends its budget in a tunnel takes the dark.
+     *
+     * @param travelled the world distance from the eye to {@code hit}, which the hit threshold grows with
+     * @param exit      {@link #exitFunction}, or null for a ray that may leave the shell and march on
      */
-    private static List<Statement> exitTests(float[] xyz, LocalVar origin, LocalVar dir, LocalVar exitT) {
+    private static List<Statement> reflection(Counter names, Shading shading, Mirror mirror, LocalVar k,
+                                              Expr fieldQ, Expr fieldW, Expr hit, Expr fieldHit,
+                                              Expr fieldNormal, Expr normal, Expr dir, Expr travelled,
+                                              Function exit, PushConstants pc, LocalVar into) {
+        LocalVar ray = new LocalVar("rRay", Ir.V3);
+        LocalVar fieldRay = new LocalVar("rFieldRay", Ir.V3);
+        LocalVar start = new LocalVar("rStart", Ir.V3);
+        LocalVar limit = new LocalVar("rLimit", Ir.F32);
+        LocalVar t = new LocalVar("rT", Ir.F32);
+        LocalVar d = new LocalVar("rD", Ir.F32);
+        LocalVar steps = new LocalVar("rSteps", Ir.F32);
+
+        Expr threshold = Ir.mul(Ir.f(EPSILON), Ir.add(travelled, new Expr.Read(t)));
+        List<Statement> out = new ArrayList<>();
+        out.add(new Statement.DeclareVar(ray, Expr.MathCall.reflect(dir, normal)));
+        out.add(new Statement.DeclareVar(fieldRay, Ir.scale(rotate(fieldQ, fieldW, new Expr.Read(ray)),
+                new Expr.Read(k))));
+        // Off the surface by a few hit thresholds, in field units, so the march does not start on its own hit.
+        out.add(new Statement.DeclareVar(start, Ir.add(fieldHit, Ir.scale(fieldNormal,
+                Ir.mul(Ir.mul(Ir.f(4 * EPSILON), travelled), new Expr.Read(k))))));
+        out.add(new Statement.DeclareVar(limit, Ir.f(T_MAX)));
+        out.add(new Statement.If(Ir.lt(Ir.y(new Expr.Read(ray)), Ir.f(-1.0e-4)),
+                Region.of(new Statement.Assign(limit, Expr.MathCall.min(Ir.f(T_MAX),
+                        Ir.div(Ir.neg(Ir.y(hit)), Ir.y(new Expr.Read(ray)))))),
+                Region.of()));
+        if (exit != null) {
+            // Clipped like the eye's ray: past the shell's surface the fractal is not there to reflect.
+            out.add(new Statement.Assign(limit, Expr.MathCall.min(new Expr.Read(limit), new Expr.Call(exit,
+                    List.of(toMesh(pc, hit, true), toMesh(pc, new Expr.Read(ray), false))))));
+        }
+        out.add(new Statement.DeclareVar(t, Ir.f(0.0)));
+        out.add(new Statement.DeclareVar(d, worldDistance(new Expr.Read(start), k)));
+        out.add(new Statement.DeclareVar(steps, Ir.f(0.0)));
+        out.add(new Statement.While(and(and(
+                Ir.lt(new Expr.Read(steps), Ir.f(REFLECT_STEPS)),
+                Ir.lt(threshold, new Expr.Read(d))),
+                Ir.lt(new Expr.Read(t), new Expr.Read(limit))),
+                Region.of(
+                        new Statement.Assign(t, Ir.add(new Expr.Read(t), new Expr.Read(d))),
+                        new Statement.Assign(d, worldDistance(at(start, fieldRay, new Expr.Read(t)), k)),
+                        new Statement.Assign(steps, Ir.add(new Expr.Read(steps), Ir.f(1.0))))));
+
+        // A hit: lit by the scene, with the gradient turned back into the world.
+        Branch lattice = new Branch(names);
+        Expr where = lattice.bind("rHit", Ir.add(hit, Ir.scale(new Expr.Read(ray), new Expr.Read(t))));
+        Expr fieldWhere = lattice.bind("rFieldHit", at(start, fieldRay, new Expr.Read(t)));
+        Expr seen = lattice.bind("rNormal", rotate(Ir.neg(fieldQ), fieldW,
+                gradient(fieldWhere, Ir.mul(Ir.f(0.0008), new Expr.Read(k)))));
+        lattice.statements.add(new Statement.Assign(into, shading.shade(ShadingPoint.diffuse(where, seen,
+                Ir.neg(new Expr.Read(ray)), Ir.v3(0.80, 0.82, 0.86)), lattice)));
+
+        Region clear = new Region(environment(names, shading, mirror, hit, new Expr.Read(ray), into));
+        Region spent = Region.of(new Statement.Assign(into, Ir.v3(0.07, 0.08, 0.10)));
+        out.add(new Statement.If(new Expr.Unary(UnaryOp.LOGICAL_NOT, Ir.lt(threshold, new Expr.Read(d))),
+                new Region(lattice.statements),
+                Region.of(new Statement.If(Ir.lt(new Expr.Read(t), new Expr.Read(limit)), spent, clear))));
+        return out;
+    }
+
+    /**
+     * {@code float exit(vec3 origin, vec3 dir)}, both in the mesh's own coordinates: Möller–Trumbore against every
+     * triangle, keeping the nearest hit past the origin's own, and counting them all. The distance is in units of
+     * {@code dir}'s length, so a ray carried into the mesh by {@link #toMesh} keeps measuring world distance.
+     *
+     * <p>Whether the ray is going in or out is the count's parity, not any face's winding: a ray from a point on or
+     * in a closed shell crosses it an odd number of times ahead if it is heading inside, an even number (none
+     * included) if it is heading out. Heading in, the first crossing is the exit; heading out, the ray is already
+     * outside and the exit is zero. So a mesh need not be wound consistently, and {@link Mesh#box} is not.
+     *
+     * <p>A triangle edge-on to the ray divides by zero, and the NaNs that follow fail every comparison, which drops
+     * it. A ray through an edge or a corner shared by two triangles can count it twice and get the parity wrong;
+     * for one pixel in a great many, that is a speck.
+     */
+    private static Function exitFunction(float[] xyz) {
+        LocalVar origin = new LocalVar("origin", Ir.V3);
+        LocalVar dir = new LocalVar("dir", Ir.V3);
+        LocalVar exitT = new LocalVar("exitT", Ir.F32);
+        LocalVar crossings = new LocalVar("crossings", Ir.F32);
+        List<Statement> body = new ArrayList<>();
+        body.add(new Statement.DeclareVar(origin, new Expr.Param(0, Ir.V3)));
+        body.add(new Statement.DeclareVar(dir, new Expr.Param(1, Ir.V3)));
+        body.add(new Statement.DeclareVar(exitT, Ir.f(1.0e7)));
+        body.add(new Statement.DeclareVar(crossings, Ir.f(0.0)));
+        body.addAll(exitTests(xyz, origin, dir, exitT, crossings));
+        Expr odd = Ir.lt(Ir.f(0.25), Expr.MathCall.fract(Ir.mul(new Expr.Read(crossings), Ir.f(0.5))));
+        body.add(new Statement.If(odd, Region.of(new Statement.Return(new Expr.Read(exitT))),
+                Region.of(new Statement.Return(Ir.f(0.0)))));
+        return new Function("exit", new Type.FunctionType(Ir.F32, List.of(Ir.V3, Ir.V3)), new Region(body));
+    }
+
+    /**
+     * A world point, or with {@code point} false a world direction, in the drawn mesh's own coordinates: the model
+     * matrix in the push block inverted, as {@code A^T (w - o) / s^2} for a rotation scaled by {@code s}.
+     */
+    private static Expr toMesh(PushConstants pc, Expr world, boolean point) {
+        Expr a = Ir.v3(pc.read(MeshShader.PUSH_MODEL), pc.read(MeshShader.PUSH_MODEL + 1),
+                pc.read(MeshShader.PUSH_MODEL + 2));
+        Expr b = Ir.v3(pc.read(MeshShader.PUSH_MODEL + 3), pc.read(MeshShader.PUSH_MODEL + 4),
+                pc.read(MeshShader.PUSH_MODEL + 5));
+        Expr c = Ir.v3(pc.read(MeshShader.PUSH_MODEL + 6), pc.read(MeshShader.PUSH_MODEL + 7),
+                pc.read(MeshShader.PUSH_MODEL + 8));
+        Expr rel = point ? Ir.sub(world, Ir.v3(pc.read(MeshShader.PUSH_MODEL + 9),
+                pc.read(MeshShader.PUSH_MODEL + 10), pc.read(MeshShader.PUSH_MODEL + 11))) : world;
+        return Ir.scale(Ir.v3(Ir.dot(a, rel), Ir.dot(b, rel), Ir.dot(c, rel)), Ir.div(Ir.f(1.0), Ir.dot(a, a)));
+    }
+
+    private static List<Statement> exitTests(float[] xyz, LocalVar origin, LocalVar dir, LocalVar exitT,
+                                             LocalVar crossings) {
         List<Statement> tests = new ArrayList<>();
         for (int at = 0; at + 9 <= xyz.length; at += 9) {
             int n = at / 9;
@@ -329,12 +528,15 @@ final class MengerShellShader {
             tests.add(new Statement.DeclareVar(v, Ir.mul(Ir.dot(new Expr.Read(dir), new Expr.Read(q)),
                     new Expr.Read(inv))));
             tests.add(new Statement.DeclareVar(h, Ir.mul(Ir.dot(edge2, new Expr.Read(q)), new Expr.Read(inv))));
-            Expr onTriangle = and(and(and(
-                    Ir.lt(Ir.f(-1.0e-5), new Expr.Read(u)),
-                    Ir.lt(Ir.f(-1.0e-5), new Expr.Read(v))),
-                    Ir.lt(Ir.add(new Expr.Read(u), new Expr.Read(v)), Ir.f(1.00001))),
-                    and(Ir.lt(Ir.f(1.0e-4), new Expr.Read(h)), Ir.lt(new Expr.Read(h), new Expr.Read(exitT))));
-            tests.add(new Statement.If(onTriangle, Region.of(new Statement.Assign(exitT, new Expr.Read(h))),
+            // Half-open bounds, so a ray through an edge two triangles share is less often counted by both.
+            Expr ahead = and(and(and(
+                    Ir.lt(Ir.f(0.0), new Expr.Read(u)),
+                    new Expr.Unary(UnaryOp.LOGICAL_NOT, Ir.lt(new Expr.Read(v), Ir.f(0.0)))),
+                    Ir.lt(Ir.add(new Expr.Read(u), new Expr.Read(v)), Ir.f(1.0))),
+                    Ir.lt(Ir.f(1.0e-4), new Expr.Read(h)));
+            tests.add(new Statement.If(ahead, Region.of(
+                    new Statement.Assign(crossings, Ir.add(new Expr.Read(crossings), Ir.f(1.0))),
+                    new Statement.Assign(exitT, Expr.MathCall.min(new Expr.Read(exitT), new Expr.Read(h)))),
                     Region.of()));
         }
         return tests;

@@ -21,14 +21,14 @@ import java.util.Random;
 
 /**
  * Manual demo (not a unit test): an endless Menger lattice seen only through polygon shells
- * ({@link MengerShellShader}). The lattice is fixed in the world, so each shell shows the slice of it that falls
- * inside the shell: a cube on the lattice's axes, the same cube stood on its corner (the diagonal cut), and a
- * random lumpy blob with concave pits, turning.
+ * ({@link MengerShellShader}) under a procedural {@link Sky}: a cube on the lattice's axes, the same cube stood on
+ * its corner (its field left square to the world, so the diagonal cut), and a random lumpy blob with concave pits,
+ * turning with its field.
  *
- * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; {@code --capture <dir>}
- * writes one offscreen frame per view in {@link #VIEWS} to {@code <dir>/menger-<n>.png}, and
- * {@code --capture <dir> distance} the same darkened by distance travelled rather than steps taken
- * ({@link MengerShellShader.Fade}) to {@code <dir>/menger-distance-<n>.png}; {@code --compare <dir>}
+ * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; a look ({@code distance},
+ * {@code reflect}, {@code reflect-exit}: see {@link #scene(String)}) opens it in that look.
+ * {@code --capture <dir> [look]} writes one offscreen frame per view in {@link #VIEWS} to
+ * {@code <dir>/menger-[look-]<n>.png}; {@code --compare <dir>}
  * writes {@link #comparison()}, the blob marching on through its back face beside the blob transparent there, to
  * {@code <dir>/compare-<n>.png}; {@code --motion <dir>} writes {@link #motion()} at each of {@link #MOTION_TIMES}
  * to {@code <dir>/motion-<n>.png}.
@@ -54,12 +54,26 @@ public final class MengerShellDemo {
             {-0.35, 1.4, 3.2, 0.0},
     };
 
-    private record Scene(SdfRaymarchTechnique march, MengerShellTechnique shells, int blob,
-                         MengerShellTechnique transparent) {
+    /**
+     * What a frame draws, in order: the {@link Sky}, the ground, then the shells, one technique per kind (a
+     * technique with exits baked in draws one mesh). {@code blob} is the turning blob, as an index into
+     * {@code blobShells}.
+     */
+    private record Scene(SkyTechnique sky, SdfRaymarchTechnique march, List<MengerShellTechnique> shells,
+                         MengerShellTechnique blobShells, int blob) {
 
-        Scene(SdfRaymarchTechnique march, MengerShellTechnique shells, int blob) {
-            this(march, shells, blob, null);
+        MengerShellTechnique first() {
+            return shells.getFirst();
         }
+
+        void eachShells(java.util.function.Consumer<MengerShellTechnique> action) {
+            shells.forEach(action);
+        }
+    }
+
+    /** The ground, marched. Its own sky never shows (the {@link SkyTechnique} is the backdrop). */
+    private static SdfRaymarchTechnique ground() {
+        return new SdfRaymarchTechnique(SdfScene.of(Surface.Plane.ground()).withAlbedo(GROUND));
     }
 
     /** Seconds into {@link #motion()} at which {@code --motion} captures. */
@@ -71,8 +85,7 @@ public final class MengerShellDemo {
      * slice it shows changes as it turns. Right, a still cube whose field slides and turns inside it.
      */
     private static Scene motion() {
-        SdfRaymarchTechnique march = new SdfRaymarchTechnique(SdfScene.of(Surface.Plane.ground())
-                .withAlbedo(new Surface.Rgb(0.55, 0.57, 0.62)));
+        SdfRaymarchTechnique march = ground();
         SdfScene sdf = march.scene();
         MengerShellTechnique shells = new MengerShellTechnique(sdf.lens(), sdf.shading());
         Mesh blob = blob(new Random(7), 0.95);
@@ -81,11 +94,11 @@ public final class MengerShellDemo {
         shells.add(blob, Placement.at(0, LOOK_Y, 0), FieldSpace.inWorld(Placement.ORIGIN));
         double side = 2 * MengerShellShader.CELL;
         shells.add(Mesh.box(side, side, side), Placement.at(apart, LOOK_Y, 0), FieldSpace.OBJECT);
-        return new Scene(march, shells, 0);
+        return new Scene(new SkyTechnique(sdf.lens()), march, List.of(shells), shells, 0);
     }
 
     private static void animateMotion(Scene scene, double t) {
-        MengerShellTechnique shells = scene.shells();
+        MengerShellTechnique shells = scene.first();
         for (int shell = 0; shell < 2; shell++) {
             Placement at = shells.placement(shell);
             shells.place(shell, new Placement(at.x(), at.y(), at.z(), t * 0.9, t * 0.35, 0, 1));
@@ -95,11 +108,11 @@ public final class MengerShellDemo {
 
     /**
      * The blob twice, side by side: on the left as the main scene draws it (a ray marches on through the back
-     * face), on the right transparent where a ray leaves it. Two lattice periods apart, so both cut the same slice.
+     * face), on the right transparent where a ray leaves it. Each carries its field, at the same turn, so both cut
+     * the same slice.
      */
     private static Scene comparison() {
-        SdfRaymarchTechnique march = new SdfRaymarchTechnique(SdfScene.of(Surface.Plane.ground())
-                .withAlbedo(new Surface.Rgb(0.55, 0.57, 0.62)));
+        SdfRaymarchTechnique march = ground();
         SdfScene sdf = march.scene();
         Mesh blob = blob(new Random(7), 0.95);
         double apart = 2 * MengerShellShader.CELL;
@@ -107,24 +120,19 @@ public final class MengerShellDemo {
         Placement right = new Placement(apart, LOOK_Y, 0, 0.3, 0.2, 0, 1);
         MengerShellTechnique shells = new MengerShellTechnique(sdf.lens(), sdf.shading());
         int index = shells.add(blob, left);
-        MengerShellTechnique transparent = new MengerShellTechnique(sdf.lens(), sdf.shading(),
-                blob.worldPositions(right));
+        MengerShellTechnique transparent = new MengerShellTechnique(sdf.lens(), sdf.shading(), blob);
         transparent.add(blob, right);
-        return new Scene(march, shells, index, transparent);
+        return new Scene(new SkyTechnique(sdf.lens()), march, List.of(shells, transparent), shells, index);
     }
 
     public static void main(String[] args) throws IOException {
         if (args.length >= 1 && args[0].equals("--capture")) {
             File dir = new File(args.length >= 2 ? args[1] : ".");
             dir.mkdirs();
-            MengerShellShader.Fade fade = args.length >= 3
-                    ? MengerShellShader.Fade.valueOf(args[2].toUpperCase(java.util.Locale.ROOT))
-                    : MengerShellShader.Fade.STEPS;
-            String prefix = fade == MengerShellShader.Fade.STEPS ? "menger-" : "menger-" + args[2] + "-";
+            String look = args.length >= 3 ? args[2] : "steps";
+            String prefix = look.equals("steps") ? "menger-" : "menger-" + look + "-";
             for (int v = 0; v < VIEWS.length; v++) {
-                Scene scene = scene();
-                scene.shells().fade(fade);
-                capture(new File(dir, prefix + (v + 1) + ".png"), scene, VIEWS[v]);
+                capture(new File(dir, prefix + (v + 1) + ".png"), scene(look), VIEWS[v]);
             }
         } else if (args.length >= 1 && args[0].equals("--motion")) {
             File dir = new File(args.length >= 2 ? args[1] : ".");
@@ -141,27 +149,36 @@ public final class MengerShellDemo {
                 capture(new File(dir, "compare-" + (v + 1) + ".png"), comparison(), COMPARE_VIEWS[v]);
             }
         } else {
-            run();
+            run(args.length >= 1 ? args[0] : "steps");
         }
     }
 
-    private static Scene scene() {
-        SdfRaymarchTechnique march = new SdfRaymarchTechnique(SdfScene.of(Surface.Plane.ground())
-                .withAlbedo(new Surface.Rgb(0.55, 0.57, 0.62)));
-        SdfScene sdf = march.scene();
-        MengerShellTechnique shells = new MengerShellTechnique(sdf.lens(), sdf.shading());
+    private static final Surface.Rgb GROUND = new Surface.Rgb(0.55, 0.57, 0.62);
 
+    /**
+     * The three shells: a cube on the lattice's axes, the same cube on its corner, the blob. With {@code exit},
+     * every ray is clipped where it leaves its shell, which takes a technique per mesh; without, one draws all.
+     */
+    private static Scene scene(boolean exit) {
+        SdfRaymarchTechnique march = ground();
+        SdfScene sdf = march.scene();
         // The sponge's own cube: 2*CELL on a side, centred on a lattice centre.
         double side = 2 * MengerShellShader.CELL;
         Mesh cube = Mesh.box(side, side, side);
-        shells.add(cube, Placement.at(-4 * MengerShellShader.CELL, LOOK_Y, 0));
+        Mesh blobMesh = blob(new Random(7), 0.95);
+        MengerShellTechnique cubes = new MengerShellTechnique(sdf.lens(), sdf.shading(), exit ? cube : null);
+        MengerShellTechnique blobs = exit
+                ? new MengerShellTechnique(sdf.lens(), sdf.shading(), blobMesh)
+                : cubes;
+
+        cubes.add(cube, Placement.at(-4 * MengerShellShader.CELL, LOOK_Y, 0));
         // The same cube on its corner, its field left square to the world: its faces cut the lattice on the
         // diagonal.
-        shells.add(cube, new Placement(0, LOOK_Y, 0, Math.PI / 4, Math.atan(1 / Math.sqrt(2)), 0, 1),
+        cubes.add(cube, new Placement(0, LOOK_Y, 0, Math.PI / 4, Math.atan(1 / Math.sqrt(2)), 0, 1),
                 FieldSpace.inWorld(Placement.ORIGIN));
-        int blob = shells.add(blob(new Random(7), 0.95), new Placement(4 * MengerShellShader.CELL, LOOK_Y, 0,
-                0.3, 0.2, 0, 1));
-        return new Scene(march, shells, blob);
+        int blob = blobs.add(blobMesh, new Placement(4 * MengerShellShader.CELL, LOOK_Y, 0, 0.3, 0.2, 0, 1));
+        List<MengerShellTechnique> shells = blobs == cubes ? List.of(cubes) : List.of(cubes, blobs);
+        return new Scene(new SkyTechnique(sdf.lens()), march, shells, blobs, blob);
     }
 
     /**
@@ -237,29 +254,50 @@ public final class MengerShellDemo {
     }
 
     private static RenderPipeline pipeline(Scene scene, Target target) {
+        // The sky after the march, over the march's own flat sky and nothing else (see SkyTechnique).
         RenderPipeline.Builder builder = RenderPipeline.builder()
                 .target(target)
                 .technique(scene.march())
-                .technique(scene.shells());
-        if (scene.transparent() != null) {
-            builder.technique(scene.transparent());
-        }
+                .technique(scene.sky());
+        scene.eachShells(builder::technique);
         return builder.build();
     }
 
-    private static void run() {
-        Scene scene = scene();
+    /**
+     * The main scene in a look: {@code steps} or {@code distance} (a {@link MengerShellShader.Fade}),
+     * {@code reflect} (polished, no fade), or {@code reflect-exit} (polished, and every ray, the eye's and the
+     * reflected, transparent where it leaves its shell).
+     */
+    private static Scene scene(String look) {
+        boolean exit = look.endsWith("-exit");
+        String base = exit ? look.substring(0, look.length() - "-exit".length()) : look;
+        Scene scene = scene(exit);
+        if (base.equals("reflect")) {
+            MengerShellShader.Mirror mirror = new MengerShellShader.Mirror(
+                    new double[]{GROUND.r(), GROUND.g(), GROUND.b()});
+            scene.eachShells(s -> s.fade(MengerShellShader.Fade.NONE).mirror(mirror));
+        } else {
+            MengerShellShader.Fade fade = MengerShellShader.Fade.valueOf(base.toUpperCase(java.util.Locale.ROOT));
+            scene.eachShells(s -> s.fade(fade));
+        }
+        return scene;
+    }
+
+    private static void run(String look) {
+        Scene scene = scene(look);
         RenderPipeline pipeline = pipeline(scene, Target.windowed("VexelRay — a Menger lattice through shells",
                         1100, 700)
                 .color(AttachmentFormat.SWAPCHAIN)
                 .depth(AttachmentFormat.DEPTH32F)
                 .build());
-        Placement start = scene.shells().placement(scene.blob());
+        Placement start = scene.blobShells().placement(scene.blob());
         try (VexelEngine engine = VexelEngine.create(EngineConfig.of("MengerShellDemo"))) {
             engine.run(pipeline, frame -> {
                 double t = frame.timeSeconds();
-                aim(scene, new double[]{-0.6 + t * 0.15, 2.4, 7.0, 0.0});
-                scene.shells().place(scene.blob(), start.turned(start.yaw() + t * 0.3, start.pitch()));
+                // A slow orbit that swings in close and back out, rising and falling, so reflections slide.
+                double radius = 5.6 - 1.4 * Math.sin(t * 0.21);
+                aim(scene, new double[]{-0.6 + t * 0.15, 1.6 + 0.8 * Math.sin(t * 0.13), radius, 0.0});
+                scene.blobShells().place(scene.blob(), start.turned(start.yaw() + t * 0.3, start.pitch()));
                 return true;
             });
         }
@@ -289,7 +327,7 @@ public final class MengerShellDemo {
         System.out.println("wrote " + file);
     }
 
-    /** One camera, told to both techniques: on an orbit around {@code (lookX, LOOK_Y, 0)}, looking at it. */
+    /** One camera, told to every technique: on an orbit around {@code (lookX, LOOK_Y, 0)}, looking at it. */
     private static void aim(Scene scene, double[] view) {
         double angle = view[0];
         double eyeY = view[1];
@@ -299,10 +337,8 @@ public final class MengerShellDemo {
         double eyeX = lookX - Math.sin(angle) * flat;
         double eyeZ = -Math.cos(angle) * flat;
         double pitch = Math.asin((eyeY - LOOK_Y) / radius);
+        scene.sky().camera(angle, pitch);
         scene.march().camera(eyeX, eyeY, eyeZ, angle, pitch);
-        scene.shells().camera(eyeX, eyeY, eyeZ, angle, pitch);
-        if (scene.transparent() != null) {
-            scene.transparent().camera(eyeX, eyeY, eyeZ, angle, pitch);
-        }
+        scene.eachShells(s -> s.camera(eyeX, eyeY, eyeZ, angle, pitch));
     }
 }
