@@ -26,7 +26,7 @@ import java.util.Random;
  * turning with its field.
  *
  * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; a look ({@code distance},
- * {@code reflect}, {@code reflect-exit}, {@code reflect-exit-inverse}: see {@link #scene(String)}) opens it in
+ * {@code reflect}, {@code reflect-exit}, {@code reflect-exit-hash}: see {@link #scene(String)}) opens it in
  * that look.
  * {@code --capture <dir> [look]} writes one offscreen frame per view in {@link #VIEWS} to
  * {@code <dir>/menger-[look-]<n>.png}; {@code --compare <dir>}
@@ -267,16 +267,23 @@ public final class MengerShellDemo {
     /**
      * The main scene in a look: {@code steps} or {@code distance} (a {@link MengerShellShader.Fade}) or
      * {@code reflect} (polished, no fade), then any of {@code -exit} (every ray, the eye's and the reflected,
-     * transparent where it leaves its shell) and {@code -inverse} (the sponge's solid and empty swapped). So
-     * {@code reflect-exit-inverse}.
+     * transparent where it leaves its shell) and one fill: {@code -inverse} (the sponge's solid and empty
+     * swapped), {@code -checker} or {@code -hash} (sponge and inverse mixed cell by cell, alternating or at random;
+     * see {@link MengerShellShader.Fill}). So {@code reflect-exit-hash}.
      */
     private static Scene scene(String look) {
         List<String> words = List.of(look.split("-"));
         String base = words.getFirst();
         boolean exit = words.contains("exit");
-        boolean inverse = words.contains("inverse");
+        MengerShellShader.Fill fill = MengerShellShader.Fill.SPONGE;
+        for (MengerShellShader.Fill f : MengerShellShader.Fill.values()) {
+            if (words.contains(f.name().toLowerCase(java.util.Locale.ROOT))) {
+                fill = f;
+            }
+        }
+        MengerShellShader.Fill chosen = fill;
         Scene scene = scene(exit);
-        scene.eachShells(s -> s.inverse(inverse));
+        scene.eachShells(s -> s.fill(chosen));
         if (base.equals("reflect")) {
             MengerShellShader.Mirror mirror = new MengerShellShader.Mirror(
                     new double[]{GROUND.r(), GROUND.g(), GROUND.b()});

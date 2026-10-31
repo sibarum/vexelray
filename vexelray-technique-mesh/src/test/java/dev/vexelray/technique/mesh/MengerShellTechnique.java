@@ -91,14 +91,14 @@ final class MengerShellTechnique implements RenderTechnique {
         return this;
     }
 
-    private boolean inverse;
+    private MengerShellShader.Fill fill = MengerShellShader.Fill.SPONGE;
 
-    /** Swap the sponge's solid and empty; before realise, like {@link #fade}. */
-    MengerShellTechnique inverse(boolean inverse) {
+    /** What fills the lattice: the sponge, its inverse, or the two mixed cell by cell; before realise. */
+    MengerShellTechnique fill(MengerShellShader.Fill fill) {
         if (pipeline != null) {
-            throw new IllegalStateException("inverse fill is compiled in at realise; set it before");
+            throw new IllegalStateException("the fill is compiled in at realise; set it before");
         }
-        this.inverse = inverse;
+        this.fill = fill;
         return this;
     }
 
@@ -171,7 +171,7 @@ final class MengerShellTechnique implements RenderTechnique {
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 MeshShader.vertex(clipDepth).spirv(), "main",
                 MengerShellShader.fragment(shading, clipDepth,
-                        exitMesh == null ? null : MengerShellShader.localTriangles(exitMesh), fade, mirror, inverse)
+                        exitMesh == null ? null : MengerShellShader.localTriangles(exitMesh), fade, mirror, fill)
                         .spirv(), "main", config);
         this.cmds = new DrawCommands(device);
         this.push = cmds.allocatePushConstants(MengerShellShader.PUSH_BYTES);

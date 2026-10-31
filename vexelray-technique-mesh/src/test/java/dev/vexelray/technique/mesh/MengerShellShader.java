@@ -74,6 +74,130 @@ final class MengerShellShader {
      */
     private static final Function INVERSE = inverse();
 
+    /**
+     * What fills the lattice. A <em>cell</em> is a cube the size of the sponge's own unit cube, {@code 2*CELL} on a
+     * side, placed as {@link #cellOf} says; the mixed fills choose sponge or {@link #INVERSE} cell by cell.
+     */
+    enum Fill {
+        /** The sponge, everywhere. */
+        SPONGE,
+        /** Its inverse, everywhere. */
+        INVERSE,
+        /** Sponge and inverse alternating like a 3D checkerboard: the cell index's sum, mod 2. */
+        CHECKER,
+        /** Sponge or inverse at random, a hash of the cell index deciding each cell, half and half. */
+        HASH
+    }
+
+    /**
+     * Past a cell wall by this much, in field units, before the march reads the next cell: what lets a step that is
+     * clamped to the wall cross it. Also how deep a hit on a wall can land: a hair, at this scale.
+     */
+    private static final double WALL_STEP = 0.001;
+
+    /**
+     * The field as the shader uses it. {@code at(p)} is the distance at field point {@code p}. A mixed fill also has
+     * {@code inCell(p, c)}, the same pinned to the cell centred at {@code c}, for a gradient that must not straddle
+     * a wall; and {@code room(p)}, how far a step may go before it must look again (to the wall, and
+     * {@link #WALL_STEP} past). A plain fill has neither, and steps by the distance alone.
+     */
+    private record Field(Function at, Function inCell, Function room) {
+
+        List<Function> functions() {
+            List<Function> all = new ArrayList<>(List.of(MENGER));
+            // Callees before callers: inCell calls the sponge, at calls inCell.
+            for (Function f : new Function[]{inCell, at, room}) {
+                if (f != null && f != MENGER) {
+                    all.add(f);
+                }
+            }
+            return all;
+        }
+    }
+
+    private static Field field(Fill fill) {
+        return switch (fill) {
+            case SPONGE -> new Field(MENGER, null, null);
+            case INVERSE -> new Field(INVERSE, null, null);
+            case CHECKER, HASH -> {
+                Function inCell = inCell(fill);
+                yield new Field(cellAt(inCell), inCell, room());
+            }
+        };
+    }
+
+    /**
+     * The centre of the cell field point {@code p} is in. Cells are offset half a period from the sponge's unit
+     * cubes: centred on the cubes' corners, so their walls run through the cubes' middles. A shell built on a unit
+     * cube (the demo's) then holds eight cells, each an octant of it, rather than having its faces lie exactly on
+     * the walls, where which cell a point belongs to would flip from pixel to pixel by rounding.
+     */
+    private static Expr cellOf(Expr p) {
+        double side = 2 * CELL;
+        return Ir.add(Ir.scale(Expr.MathCall.floor(Ir.scale(p, Ir.f(1.0 / side))), Ir.f(side)),
+                Ir.v3(CELL, CELL, CELL));
+    }
+
+    /** How far field point {@code p} is from the walls of the cell centred at {@code c}: zero on them. */
+    private static Expr toWall(Expr p, Expr c) {
+        Expr local = Ir.abs(Ir.sub(p, c));
+        return Ir.sub(Ir.f(CELL), Ir.max(Ir.x(local), Ir.max(Ir.y(local), Ir.z(local))));
+    }
+
+    /**
+     * {@code float inCell(vec3 p, vec3 c)}: the cell's fill, sponge or inverse as {@code fill}'s pattern says,
+     * intersected with the cell's own box. The box is what makes a wall: where this cell is solid and its
+     * neighbour is not, the solid ends at the wall, and the box's gradient there is the wall's normal.
+     */
+    private static Function inCell(Fill fill) {
+        Expr p = new Expr.Param(0, Ir.V3);
+        Expr c = new Expr.Param(1, Ir.V3);
+        LocalVar index = new LocalVar("index", Ir.V3);
+        LocalVar flip = new LocalVar("flip", Ir.F32);
+        List<Statement> body = new ArrayList<>();
+        body.add(new Statement.DeclareVar(index, Expr.MathCall.floor(Ir.scale(c, Ir.f(1.0 / (2 * CELL))))));
+        Expr i = new Expr.Read(index);
+        Expr chosen = switch (fill) {
+            // (ix + iy + iz) mod 2, as 2*fract(sum/2): fract is never negative, so negative cells alternate too.
+            case CHECKER -> Ir.mul(Ir.f(2.0), Expr.MathCall.fract(Ir.mul(
+                    Ir.add(Ir.x(i), Ir.add(Ir.y(i), Ir.z(i))), Ir.f(0.5))));
+            case HASH -> Ir.step(Ir.f(0.5), hash(i));
+            default -> throw new IllegalArgumentException(fill + " is not mixed");
+        };
+        body.add(new Statement.DeclareVar(flip, chosen));
+        // 1 for the sponge, -1 for its inverse.
+        Expr sign = Ir.sub(Ir.f(1.0), Ir.mul(Ir.f(2.0), new Expr.Read(flip)));
+        body.add(new Statement.Return(Ir.max(Ir.mul(sign, new Expr.Call(MENGER, List.of(p))),
+                Ir.neg(toWall(p, c)))));
+        return new Function("inCell" + fill, new Type.FunctionType(Ir.F32, List.of(Ir.V3, Ir.V3)),
+                new Region(body));
+    }
+
+    /** {@code float at(vec3 p)}: {@code inCell(p, cellOf(p))}. */
+    private static Function cellAt(Function inCell) {
+        Expr p = new Expr.Param(0, Ir.V3);
+        return new Function("cellAt", new Type.FunctionType(Ir.F32, List.of(Ir.V3)),
+                Region.of(new Statement.Return(new Expr.Call(inCell, List.of(p, cellOf(p))))));
+    }
+
+    /** {@code float room(vec3 p)}: to the wall of {@code p}'s cell, and {@link #WALL_STEP} past it. */
+    private static Function room() {
+        Expr p = new Expr.Param(0, Ir.V3);
+        return new Function("room", new Type.FunctionType(Ir.F32, List.of(Ir.V3)),
+                Region.of(new Statement.Return(Ir.add(toWall(p, cellOf(p)), Ir.f(WALL_STEP)))));
+    }
+
+    /**
+     * A value in {@code [0, 1)} for a whole-numbered cell index: Dave Hoskins's hash, multiplies, adds and fracts
+     * of small numbers only, so the GPU and the CPU agree on it (see {@code Fathom.hash}).
+     */
+    private static Expr hash(Expr i) {
+        Expr p3 = Expr.MathCall.fract(Ir.mul(i, Ir.v3(0.1031, 0.1030, 0.0973)));
+        Expr yzx = Ir.add(Ir.v3(Ir.y(p3), Ir.z(p3), Ir.x(p3)), Ir.v3(33.33, 33.33, 33.33));
+        Expr q = Ir.add(p3, Ir.v3(Ir.dot(p3, yzx), Ir.dot(p3, yzx), Ir.dot(p3, yzx)));
+        return Expr.MathCall.fract(Ir.mul(Ir.add(Ir.x(q), Ir.y(q)), Ir.z(q)));
+    }
+
     private MengerShellShader() {
     }
 
@@ -136,14 +260,14 @@ final class MengerShellShader {
     /** Any of the above, polished if {@code mirror} is not null. */
     static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade,
                                    Mirror mirror) {
-        return fragment(shading, depth, exitTriangles, fade, mirror, false);
+        return fragment(shading, depth, exitTriangles, fade, mirror, Fill.SPONGE);
     }
 
-    /** Any of the above, and with {@code inverse} the sponge's solid and empty swapped ({@link #INVERSE}). */
+    /** Any of the above, the lattice filled as {@code fill} says. */
     static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade,
-                                   Mirror mirror, boolean inverse) {
+                                   Mirror mirror, Fill fill) {
         return ComposedShader.lower(ShaderStage.FRAGMENT,
-                fragmentModule(shading, depth, exitTriangles, fade, mirror, inverse ? INVERSE : MENGER), "main");
+                fragmentModule(shading, depth, exitTriangles, fade, mirror, field(fill)), "main");
     }
 
     private static Function inverse() {
@@ -207,12 +331,23 @@ final class MengerShellShader {
         return new Function("menger", new Type.FunctionType(Ir.F32, List.of(Ir.V3)), new Region(body));
     }
 
-    private static Expr field(Function fieldFn, Expr point) {
-        return new Expr.Call(fieldFn, List.of(point));
+    private static Expr field(Field fieldFn, Expr point) {
+        return new Expr.Call(fieldFn.at(), List.of(point));
+    }
+
+    /**
+     * How far a march at field point {@code here}, with world distance {@code d} to the field, may step: {@code d},
+     * and for a mixed fill no further than just past its cell's wall, whatever the next cell holds.
+     */
+    private static Expr stride(Field fieldFn, Expr here, Expr d, LocalVar k) {
+        if (fieldFn.room() == null) {
+            return d;
+        }
+        return Expr.MathCall.min(d, Ir.div(new Expr.Call(fieldFn.room(), List.of(here)), new Expr.Read(k)));
     }
 
     /** The field's distance at a field point, as a world distance: field distances are world ones times k. */
-    private static Expr worldDistance(Function fieldFn, Expr fieldPoint, LocalVar k) {
+    private static Expr worldDistance(Field fieldFn, Expr fieldPoint, LocalVar k) {
         return Ir.div(field(fieldFn, fieldPoint), new Expr.Read(k));
     }
 
@@ -226,7 +361,7 @@ final class MengerShellShader {
     }
 
     private static CoreModule fragmentModule(Shading shading, ClipDepth depth, float[] exitTriangles,
-                                             Fade fadeBy, Mirror mirror, Function fieldFn) {
+                                             Fade fadeBy, Mirror mirror, Field fieldFn) {
         PushConstants pc = block();
         Function exit = exitTriangles == null ? null : exitFunction(exitTriangles);
         InterfaceVar vWorld = InterfaceVar.input("vWorld", MeshShader.LOC_WORLD, Ir.V3);
@@ -269,7 +404,8 @@ final class MengerShellShader {
                 Ir.lt(new Expr.Read(t), Ir.f(T_MAX))),
                 inside);
         Region step = Region.of(
-                new Statement.Assign(t, Ir.add(new Expr.Read(t), new Expr.Read(d))),
+                new Statement.Assign(t, Ir.add(new Expr.Read(t),
+                        stride(fieldFn, at(fieldEntry, fieldDir, new Expr.Read(t)), new Expr.Read(d), k))),
                 new Statement.Assign(d, worldDistance(fieldFn, at(fieldEntry, fieldDir, new Expr.Read(t)), k)),
                 new Statement.Assign(steps, Ir.add(new Expr.Read(steps), Ir.f(1.0))));
 
@@ -376,9 +512,9 @@ final class MengerShellShader {
         body.add(new Statement.ReturnVoid());
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
-        CoreModule module = new CoreModule().addFunction(MENGER);
-        if (fieldFn != MENGER) {
-            module = module.addFunction(fieldFn);
+        CoreModule module = new CoreModule();
+        for (Function f : fieldFn.functions()) {
+            module = module.addFunction(f);
         }
         if (exit != null) {
             module = module.addFunction(exit);
@@ -417,7 +553,7 @@ final class MengerShellShader {
      * @param travelled the world distance from the eye to {@code hit}, which the hit threshold grows with
      * @param exit      {@link #exitFunction}, or null for a ray that may leave the shell and march on
      */
-    private static List<Statement> reflection(Function fieldFn, Counter names, Shading shading, Mirror mirror, LocalVar k,
+    private static List<Statement> reflection(Field fieldFn, Counter names, Shading shading, Mirror mirror, LocalVar k,
                                               Expr fieldQ, Expr fieldW, Expr hit, Expr fieldHit,
                                               Expr fieldNormal, Expr normal, Expr dir, Expr travelled,
                                               Function exit, PushConstants pc, LocalVar into) {
@@ -455,7 +591,8 @@ final class MengerShellShader {
                 Ir.lt(threshold, new Expr.Read(d))),
                 Ir.lt(new Expr.Read(t), new Expr.Read(limit))),
                 Region.of(
-                        new Statement.Assign(t, Ir.add(new Expr.Read(t), new Expr.Read(d))),
+                        new Statement.Assign(t, Ir.add(new Expr.Read(t),
+                                stride(fieldFn, at(start, fieldRay, new Expr.Read(t)), new Expr.Read(d), k))),
                         new Statement.Assign(d, worldDistance(fieldFn, at(start, fieldRay, new Expr.Read(t)), k)),
                         new Statement.Assign(steps, Ir.add(new Expr.Read(steps), Ir.f(1.0))))));
 
@@ -567,12 +704,16 @@ final class MengerShellShader {
         return Ir.add(new Expr.Read(origin), Ir.scale(new Expr.Read(dir), t));
     }
 
-    private static Expr gradient(Function fieldFn, Expr p, Expr e) {
+    /** The field's gradient at {@code p}; for a mixed fill, within {@code p}'s own cell, every tap. */
+    private static Expr gradient(Field fieldFn, Expr p, Expr e) {
         Expr sum = null;
         double[][] taps = {{1, -1, -1}, {-1, -1, 1}, {-1, 1, -1}, {1, 1, 1}};
         for (double[] k : taps) {
-            Expr tap = Ir.scale(Ir.v3(k[0], k[1], k[2]),
-                    field(fieldFn, Ir.add(p, Ir.scale(Ir.v3(k[0], k[1], k[2]), e))));
+            Expr q = Ir.add(p, Ir.scale(Ir.v3(k[0], k[1], k[2]), e));
+            Expr value = fieldFn.inCell() == null
+                    ? field(fieldFn, q)
+                    : new Expr.Call(fieldFn.inCell(), List.of(q, cellOf(p)));
+            Expr tap = Ir.scale(Ir.v3(k[0], k[1], k[2]), value);
             sum = sum == null ? tap : Ir.add(sum, tap);
         }
         return Expr.MathCall.normalize(sum);
