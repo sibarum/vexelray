@@ -65,8 +65,31 @@ public record ClipDepth(double near, double far) {
      */
     public static final ClipDepth DEFAULT = new ClipDepth(0.05, 120.0);
 
-    /** The clip depth of the far plane, and so what a ray that hit nothing writes. */
+    /**
+     * The clip depth of the far plane — and of a pixel nothing has been drawn on, since
+     * {@code DepthAttachment.CLEAR_DEPTH} is this same 1.0. Which is why nothing a fragment means to show may
+     * write it: see {@link #DEEPEST_DRAWN}.
+     */
     public static final double FAR_DEPTH = 1.0;
+
+    /**
+     * The deepest clip depth a fragment can write and still be drawn: the largest {@code float} below
+     * {@link #FAR_DEPTH}, which is what a fullscreen march writes where its ray hit nothing.
+     *
+     * <p><b>Not the far plane itself, and this is the whole reason the constant exists.</b> The attachment is
+     * cleared to 1.0 and tested with {@code COMPARE_OP_LESS} — "nothing has been drawn here, and anything is
+     * nearer than nothing". The sky is something: it has a colour. Written at exactly 1.0 it is <em>not</em>
+     * nearer than nothing, so every sky fragment failed the depth test and every pixel a march missed showed the
+     * clear colour, black, instead of {@code SdfScene.sky()} — on any target with a depth attachment, and never
+     * on one without, which is what made it look like a sky bug rather than a depth one.
+     *
+     * <p>One ulp inside the far plane fixes that without touching either half of the attachment's convention,
+     * and costs nothing in ordering: any raster fragment nearer than the far plane is still nearer than the sky,
+     * and a second march's sky ties with the first's and leaves it be. A {@code LESS_OR_EQUAL} compare would
+     * have drawn the sky too, but it is a change to every pipeline to fix one value one technique writes — and
+     * it would have taken away the other miss, {@link #missedUnseen}, which needs 1.0 to lose.
+     */
+    public static final double DEEPEST_DRAWN = Math.nextDown(1.0f);
 
     public ClipDepth {
         if (!(near > 0) || !Double.isFinite(near)) {
@@ -115,18 +138,19 @@ public record ClipDepth(double near, double far) {
      * Clip depth for a <b>planar</b> distance: the view-space z of a point, measured along the camera's
      * forward axis. What a rasteriser's interpolated depth already is.
      *
-     * <p>Clamped to {@code [0,1]}. Vulkan would clamp the written value to the viewport's depth range anyway,
+     * <p>Clamped to {@code [0,1)}. Vulkan would clamp the written value to the viewport's depth range anyway,
      * so this is not correctness against the hardware — it is correctness against the <em>reader</em>: a
      * caller comparing this expression's value against a threshold of its own, or a future CPU evaluation of
      * the same function, would otherwise see a negative depth for a point in front of the near plane and have
-     * to know that the GPU silently fixes it.
+     * to know that the GPU silently fixes it. The top of the range is {@link #DEEPEST_DRAWN} rather than 1, so
+     * a surface the march found right at the far plane is drawn, not lost to the clear like the sky once was.
      *
      * @param viewZ distance from the camera along its forward axis; must be positive (a point behind the eye
      *              has no depth in this convention, and nothing in a forward march can produce one)
      */
     public Expr ofViewZ(Expr viewZ) {
         Expr depth = Ir.sub(Ir.f(a()), Ir.div(Ir.f(b()), viewZ));
-        return Ir.clamp(depth, Ir.f(0.0), Ir.f(FAR_DEPTH));
+        return Ir.clamp(depth, Ir.f(0.0), Ir.f(DEEPEST_DRAWN));
     }
 
     /**
@@ -160,13 +184,28 @@ public record ClipDepth(double near, double far) {
     }
 
     /**
-     * The write for a fragment that hit nothing: the far plane.
+     * The write for a fragment that hit nothing: the far plane, as near to it as a drawn fragment can be.
      *
      * <p>The far plane rather than skipping the write, for the reason {@link #write} gives. It is also the
      * honest value: a ray that reached {@link #far} without hitting anything has established that there is
-     * nothing between the eye and the far plane along it, which is exactly what a depth of 1 means.
+     * nothing between the eye and the far plane along it, which is what a depth of 1 means. Written as
+     * {@link #DEEPEST_DRAWN} rather than 1 itself, because at 1 the sky loses the depth test to the clear.
      */
     public Statement missed() {
+        return new Statement.BuiltinWrite(Builtin.FRAG_DEPTH, Ir.f(DEEPEST_DRAWN));
+    }
+
+    /**
+     * The write for a fragment that hit nothing <em>and has no sky to show</em>: the far plane itself, which
+     * loses the depth test to the clear, so neither its colour nor its depth lands and the pixel is left to
+     * whatever else is drawn there.
+     *
+     * <p>For a march that is one object in a frame rather than the whole frame — drawn through a mask, or culled
+     * to its own box. Its misses are the gaps around the object, not a backdrop, and painting them the sky would
+     * draw the mask's silhouette onto the picture. With no depth attachment there is no test to lose and the
+     * colour written beside this lands as usual.
+     */
+    public Statement missedUnseen() {
         return new Statement.BuiltinWrite(Builtin.FRAG_DEPTH, Ir.f(FAR_DEPTH));
     }
 }

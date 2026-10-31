@@ -851,7 +851,7 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
                 // anything a validator reports. See Builtin.FRAG_DEPTH.
                 new Statement.If(hitTest(march, read(d), read(t)),
                         hit(scene, sdf, albedoFn, payloadFn, fragColor, p, rd, t, cosForward),
-                        miss(scene, fragColor)),
+                        miss(scene, fragColor, screen)),
                 new Statement.ReturnVoid()));
         Region body = new Region(statements);
 
@@ -1069,14 +1069,18 @@ public final class SdfComposer implements ShaderComposer<SdfScene> {
         }
     }
 
-    private static Region miss(SdfScene scene, InterfaceVar fragColor) {
+    private static Region miss(SdfScene scene, InterfaceVar fragColor, Screen screen) {
         Surface.Rgb sky = scene.sky();
         return Region.of(
                 new Statement.InterfaceWrite(fragColor, opaque(Ir.v3(sky.r(), sky.g(), sky.b()))),
                 // The far plane, not a skipped write. A ray that reached farPlane without hitting anything
                 // has established that nothing occupies the space in front of it, which is what a depth of 1
                 // means — and a branch that wrote no depth at all would leave this pixel's depth undefined.
-                scene.clipDepth().missed());
+                // A fullscreen march owns the backdrop and writes just inside the far plane, so its sky passes
+                // LESS against the clear; at 1.0 it failed and the sky came out black (ClipDepth.DEEPEST_DRAWN).
+                // A masked or boxed march is one object in a frame: its misses write 1.0 and lose, leaving the
+                // pixel to whatever is behind rather than painting the mask's silhouette in sky.
+                screen == Screen.FULLSCREEN ? scene.clipDepth().missed() : scene.clipDepth().missedUnseen());
     }
 
     /** {@code sdf(p + offset) - sdf(p - offset)} — one axis of the gradient, by central difference. */

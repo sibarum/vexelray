@@ -48,6 +48,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <em>less than</em>. Whichever is drawn first therefore owns the background. That is correct, and it means
  * two marched scenes with different skies produce order-dependent backgrounds; giving both the same sky keeps
  * this test measuring depth rather than that.
+ *
+ * <h2>And that sky is not black</h2>
+ *
+ * <p>It was, and black is also the clear colour — so for as long as the sky's depth lost the test against the
+ * clear and no sky was drawn at all, this test could not tell. A green sky makes "the sky was drawn" a thing
+ * the frame has to show. See {@code ClipDepth.DEEPEST_DRAWN}.
  */
 class MarchDepthTest {
 
@@ -55,7 +61,7 @@ class MarchDepthTest {
 
     private static final Surface.Rgb NEAR_ALBEDO = new Surface.Rgb(0, 0, 1);
     private static final Surface.Rgb FAR_ALBEDO = new Surface.Rgb(1, 0, 0);
-    private static final Surface.Rgb SKY = new Surface.Rgb(0, 0, 0);
+    private static final Surface.Rgb SKY = new Surface.Rgb(0, 1, 0);
 
     private static boolean hasRuntime() {
         for (EngineProvider provider : ServiceLoader.load(EngineProvider.class)) {
@@ -114,6 +120,22 @@ class MarchDepthTest {
         int sky = count(both, SKY);
         assertEquals(SIZE * SIZE, nearBoth + farBoth + sky,
                 "some pixel is neither sphere nor sky");
+    }
+
+    /**
+     * Where the march hits nothing, the sky — not the clear colour — with a depth attachment as without one.
+     *
+     * <p>A miss once wrote depth 1.0, the clear value, and so failed {@code LESS} on every pixel: a depth target
+     * showed black wherever a target without depth showed the sky. Both frames must agree on every pixel.
+     */
+    @Test
+    void aMissShowsTheSkyWithDepthAsWithout() {
+        assumeTrue(hasRuntime(), "no available EngineProvider — this needs a Vulkan device");
+
+        int withDepth = count(capture(true, nearSphere()), SKY);
+        int withoutDepth = count(capture(false, nearSphere()), SKY);
+        assertTrue(withoutDepth > 0, "the sphere filled the frame, so there is no sky to compare");
+        assertEquals(withoutDepth, withDepth, "with a depth attachment, missed rays did not show the sky");
     }
 
     /**

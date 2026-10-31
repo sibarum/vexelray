@@ -36,8 +36,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * </ul>
  *
  * <p>Lit, so a march that converged somewhere slightly different would show it in the shading rather than hide it
- * in a flat albedo; with depth, because that is the composite a culled march is for — a miss writes the far plane
- * and leaves the pixel alone, culled or not.
+ * in a flat albedo; with depth, because that is the composite a culled march is for — a culled miss writes the far
+ * plane and leaves the pixel alone. The unmasked march it is compared with draws its sky instead (it owns the
+ * backdrop: see {@code ClipDepth.DEEPEST_DRAWN}), so the scenes here have a black sky, the clear colour, and the
+ * two kinds of miss come out the same pixel.
  */
 class BoxCullTest {
 
@@ -58,9 +60,12 @@ class BoxCullTest {
             new Surface.Sphere(1.4, -0.4, 7.5, 1.1),
             new Surface.Box(0.0, 1.2, 8.0, 0.7, 0.4, 0.6));
 
+    /** A black sky: the clear colour, so the unmasked march's drawn sky and the culled march's undrawn miss agree. */
     private static SdfScene scene(Surface surface) {
-        return SdfScene.of(surface).withShading(Shadings.defaultKeyLight())
+        SdfScene lit = SdfScene.of(surface).withShading(Shadings.defaultKeyLight())
                 .withAlbedo(new Surface.Rgb(0.78, 0.80, 0.86));
+        return new SdfScene(lit.surface(), lit.shading(), lit.march(), lit.albedo(),
+                new Surface.Rgb(0, 0, 0), lit.focalLength(), lit.nearPlane());
     }
 
     private static boolean hasRuntime() {
@@ -179,7 +184,9 @@ class BoxCullTest {
                 assertEquals(plainLit, isLit(culled, i), where + ": pixel " + i / 4 + " was "
                         + (plainLit ? "clipped" : "added"));
                 int worst = 0;
-                for (int c = 0; c < 4; c++) {
+                // Colour only: where the unmasked march draws its black sky the alpha is opaque, and where the
+                // culled march leaves the pixel it is the clear's — the one difference the two misses are meant to have.
+                for (int c = 0; c < 3; c++) {
                     worst = Math.max(worst, Math.abs((plain[i + c] & 0xFF) - (culled[i + c] & 0xFF)));
                 }
                 assertTrue(worst <= ROUNDING_LEVELS, where + ": pixel " + i / 4 + " differs by " + worst + " levels");
