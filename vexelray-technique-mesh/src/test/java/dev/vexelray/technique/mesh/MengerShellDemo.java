@@ -26,7 +26,9 @@ import java.util.Random;
  * random lumpy blob with concave pits, turning.
  *
  * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; {@code --capture <dir>}
- * writes one offscreen frame per view in {@link #VIEWS} to {@code <dir>/menger-<n>.png}; {@code --compare <dir>}
+ * writes one offscreen frame per view in {@link #VIEWS} to {@code <dir>/menger-<n>.png}, and
+ * {@code --capture <dir> distance} the same darkened by distance travelled rather than steps taken
+ * ({@link MengerShellShader.Fade}) to {@code <dir>/menger-distance-<n>.png}; {@code --compare <dir>}
  * writes {@link #comparison()}, the blob marching on through its back face beside the blob transparent there, to
  * {@code <dir>/compare-<n>.png}; {@code --motion <dir>} writes {@link #motion()} at each of {@link #MOTION_TIMES}
  * to {@code <dir>/motion-<n>.png}.
@@ -41,6 +43,8 @@ public final class MengerShellDemo {
             {0.75, 3.6, 6.5, 0.0},
             {-0.9, 1.5, 6.0, 0.0},
             {0.45, 1.9, 2.8, 2.4},
+            // Low and close on the cube on its corner, looking up at it.
+            {0.25, 0.75, 2.4, 0.0},
     };
 
     /** The pair from straight on, from above, and close up on the seam between them. */
@@ -113,8 +117,14 @@ public final class MengerShellDemo {
         if (args.length >= 1 && args[0].equals("--capture")) {
             File dir = new File(args.length >= 2 ? args[1] : ".");
             dir.mkdirs();
+            MengerShellShader.Fade fade = args.length >= 3
+                    ? MengerShellShader.Fade.valueOf(args[2].toUpperCase(java.util.Locale.ROOT))
+                    : MengerShellShader.Fade.STEPS;
+            String prefix = fade == MengerShellShader.Fade.STEPS ? "menger-" : "menger-" + args[2] + "-";
             for (int v = 0; v < VIEWS.length; v++) {
-                capture(new File(dir, "menger-" + (v + 1) + ".png"), scene(), VIEWS[v]);
+                Scene scene = scene();
+                scene.shells().fade(fade);
+                capture(new File(dir, prefix + (v + 1) + ".png"), scene, VIEWS[v]);
             }
         } else if (args.length >= 1 && args[0].equals("--motion")) {
             File dir = new File(args.length >= 2 ? args[1] : ".");

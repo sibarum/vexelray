@@ -71,6 +71,20 @@ final class MengerShellShader {
     private MengerShellShader() {
     }
 
+    /** What darkens a hit on the fractal toward the dark it fades into. */
+    enum Fade {
+        /** The steps the march took: {@code (1 - steps/STEPS)^1.5}. Brushing past an edge costs steps too. */
+        STEPS,
+        /**
+         * The distance travelled from the entry, in field units so it scales with the field:
+         * {@code exp(-distance / FADE_LENGTH)}. Depth reads as depth, however hard the march worked for it.
+         */
+        DISTANCE
+    }
+
+    /** Field distance over which {@link Fade#DISTANCE} falls to 1/e: one lattice half-period. */
+    static final double FADE_LENGTH = CELL;
+
     static ComposedShader fragment(Shading shading, ClipDepth depth) {
         return fragment(shading, depth, null);
     }
@@ -82,7 +96,13 @@ final class MengerShellShader {
      * every one of them, unrolled. Exact for any concave shell, and only for comparison: the cost is per triangle.
      */
     static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles) {
-        return ComposedShader.lower(ShaderStage.FRAGMENT, fragmentModule(shading, depth, exitTriangles), "main");
+        return fragment(shading, depth, exitTriangles, Fade.STEPS);
+    }
+
+    /** Either of the above, darkened by {@code fade}. */
+    static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade) {
+        return ComposedShader.lower(ShaderStage.FRAGMENT, fragmentModule(shading, depth, exitTriangles, fade),
+                "main");
     }
 
     /**
@@ -148,7 +168,8 @@ final class MengerShellShader {
         return Ir.add(v, Ir.scale(Ir.add(Ir.scale(uv, w), Expr.MathCall.cross(u, uv)), Ir.f(2.0)));
     }
 
-    private static CoreModule fragmentModule(Shading shading, ClipDepth depth, float[] exitTriangles) {
+    private static CoreModule fragmentModule(Shading shading, ClipDepth depth, float[] exitTriangles,
+                                             Fade fadeBy) {
         PushConstants pc = block();
         InterfaceVar vWorld = InterfaceVar.input("vWorld", MeshShader.LOC_WORLD, Ir.V3);
         InterfaceVar vNormal = InterfaceVar.input("vNormal", MeshShader.LOC_WORLD_NORMAL, Ir.V3);
@@ -210,7 +231,7 @@ final class MengerShellShader {
         cut.statements.add(new Statement.Assign(depthT, new Expr.Read(tEntry)));
 
         // A hit on the fractal: its gradient, by the tetrahedral four-tap in field space, turned back into the
-        // world; faded by the steps it took.
+        // world; faded by the steps it took or the distance it went, as fadeBy says.
         Branch surface = new Branch(names);
         Expr hit = surface.bind("hit", at(entry, dir, new Expr.Read(t)));
         Expr fieldHit = surface.bind("fieldHit", at(fieldEntry, fieldDir, new Expr.Read(t)));
@@ -218,7 +239,13 @@ final class MengerShellShader {
         Expr normal = surface.bind("normal", rotate(Ir.neg(fieldQ), fieldW, fieldNormal));
         Expr shaded = surface.bind("shaded", shading.shade(ShadingPoint.diffuse(hit, normal, view,
                 Ir.v3(0.80, 0.82, 0.86)), surface));
-        Expr fade = Expr.MathCall.pow(Ir.sub(Ir.f(1.0), Ir.div(new Expr.Read(steps), Ir.f(STEPS))), Ir.f(1.5));
+        Expr fade = surface.bind("fade", switch (fadeBy) {
+            case STEPS -> Expr.MathCall.pow(Ir.sub(Ir.f(1.0), Ir.div(new Expr.Read(steps), Ir.f(STEPS))),
+                    Ir.f(1.5));
+            // t is a world distance; times k it is the field's.
+            case DISTANCE -> Expr.MathCall.exp(Ir.mul(Ir.f(-1.0 / FADE_LENGTH),
+                    Ir.mul(new Expr.Read(t), new Expr.Read(k))));
+        });
         surface.statements.add(new Statement.Assign(colour, Ir.mix(Ir.v3(0.015, 0.015, 0.03), shaded,
                 Ir.v3(fade, fade, fade))));
         surface.statements.add(new Statement.Assign(depthT,

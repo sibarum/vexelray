@@ -68,6 +68,17 @@ final class MengerShellTechnique implements RenderTechnique {
         this.exitTriangles = exitTriangles;
     }
 
+    private MengerShellShader.Fade fade = MengerShellShader.Fade.STEPS;
+
+    /** What darkens a hit; before realise, since it is compiled into the shader. */
+    MengerShellTechnique fade(MengerShellShader.Fade fade) {
+        if (pipeline != null) {
+            throw new IllegalStateException("the fade is compiled in at realise; set it before");
+        }
+        this.fade = fade;
+        return this;
+    }
+
     /** A shell whose field moves with it ({@link FieldSpace#OBJECT}), by index for {@link #place}. */
     int add(Mesh mesh, Placement placement) {
         return add(mesh, placement, FieldSpace.OBJECT);
@@ -133,7 +144,7 @@ final class MengerShellTechnique implements RenderTechnique {
                 .withDepth(GraphicsPipeline.Config.Depth.TEST_AND_WRITE);
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 MeshShader.vertex(clipDepth).spirv(), "main",
-                MengerShellShader.fragment(shading, clipDepth, exitTriangles).spirv(), "main", config);
+                MengerShellShader.fragment(shading, clipDepth, exitTriangles, fade).spirv(), "main", config);
         this.cmds = new DrawCommands(device);
         this.push = cmds.allocatePushConstants(MengerShellShader.PUSH_BYTES);
     }
