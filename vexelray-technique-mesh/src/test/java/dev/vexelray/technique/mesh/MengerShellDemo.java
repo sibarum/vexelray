@@ -26,7 +26,8 @@ import java.util.Random;
  * turning with its field.
  *
  * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; a look ({@code distance},
- * {@code reflect}, {@code reflect-exit}: see {@link #scene(String)}) opens it in that look.
+ * {@code reflect}, {@code reflect-exit}, {@code reflect-exit-inverse}: see {@link #scene(String)}) opens it in
+ * that look.
  * {@code --capture <dir> [look]} writes one offscreen frame per view in {@link #VIEWS} to
  * {@code <dir>/menger-[look-]<n>.png}; {@code --compare <dir>}
  * writes {@link #comparison()}, the blob marching on through its back face beside the blob transparent there, to
@@ -264,14 +265,18 @@ public final class MengerShellDemo {
     }
 
     /**
-     * The main scene in a look: {@code steps} or {@code distance} (a {@link MengerShellShader.Fade}),
-     * {@code reflect} (polished, no fade), or {@code reflect-exit} (polished, and every ray, the eye's and the
-     * reflected, transparent where it leaves its shell).
+     * The main scene in a look: {@code steps} or {@code distance} (a {@link MengerShellShader.Fade}) or
+     * {@code reflect} (polished, no fade), then any of {@code -exit} (every ray, the eye's and the reflected,
+     * transparent where it leaves its shell) and {@code -inverse} (the sponge's solid and empty swapped). So
+     * {@code reflect-exit-inverse}.
      */
     private static Scene scene(String look) {
-        boolean exit = look.endsWith("-exit");
-        String base = exit ? look.substring(0, look.length() - "-exit".length()) : look;
+        List<String> words = List.of(look.split("-"));
+        String base = words.getFirst();
+        boolean exit = words.contains("exit");
+        boolean inverse = words.contains("inverse");
         Scene scene = scene(exit);
+        scene.eachShells(s -> s.inverse(inverse));
         if (base.equals("reflect")) {
             MengerShellShader.Mirror mirror = new MengerShellShader.Mirror(
                     new double[]{GROUND.r(), GROUND.g(), GROUND.b()});

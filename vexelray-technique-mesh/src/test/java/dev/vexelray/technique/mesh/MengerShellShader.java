@@ -68,6 +68,12 @@ final class MengerShellShader {
 
     private static final Function MENGER = menger();
 
+    /**
+     * The sponge turned inside out: {@code -menger(p)}, solid where the sponge has its holes and empty where it is
+     * solid, so its tunnels are beams. Negating a distance keeps it a distance, so the march is as safe as before.
+     */
+    private static final Function INVERSE = inverse();
+
     private MengerShellShader() {
     }
 
@@ -130,8 +136,20 @@ final class MengerShellShader {
     /** Any of the above, polished if {@code mirror} is not null. */
     static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade,
                                    Mirror mirror) {
+        return fragment(shading, depth, exitTriangles, fade, mirror, false);
+    }
+
+    /** Any of the above, and with {@code inverse} the sponge's solid and empty swapped ({@link #INVERSE}). */
+    static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles, Fade fade,
+                                   Mirror mirror, boolean inverse) {
         return ComposedShader.lower(ShaderStage.FRAGMENT,
-                fragmentModule(shading, depth, exitTriangles, fade, mirror), "main");
+                fragmentModule(shading, depth, exitTriangles, fade, mirror, inverse ? INVERSE : MENGER), "main");
+    }
+
+    private static Function inverse() {
+        Expr p = new Expr.Param(0, Ir.V3);
+        return new Function("inverseMenger", new Type.FunctionType(Ir.F32, List.of(Ir.V3)),
+                Region.of(new Statement.Return(Ir.neg(new Expr.Call(MENGER, List.of(p))))));
     }
 
     /** {@code mesh}'s corners in its own coordinates, three floats each: what {@code exitTriangles} takes. */
@@ -189,13 +207,13 @@ final class MengerShellShader {
         return new Function("menger", new Type.FunctionType(Ir.F32, List.of(Ir.V3)), new Region(body));
     }
 
-    private static Expr field(Expr point) {
-        return new Expr.Call(MENGER, List.of(point));
+    private static Expr field(Function fieldFn, Expr point) {
+        return new Expr.Call(fieldFn, List.of(point));
     }
 
     /** The field's distance at a field point, as a world distance: field distances are world ones times k. */
-    private static Expr worldDistance(Expr fieldPoint, LocalVar k) {
-        return Ir.div(field(fieldPoint), new Expr.Read(k));
+    private static Expr worldDistance(Function fieldFn, Expr fieldPoint, LocalVar k) {
+        return Ir.div(field(fieldFn, fieldPoint), new Expr.Read(k));
     }
 
     /**
@@ -208,7 +226,7 @@ final class MengerShellShader {
     }
 
     private static CoreModule fragmentModule(Shading shading, ClipDepth depth, float[] exitTriangles,
-                                             Fade fadeBy, Mirror mirror) {
+                                             Fade fadeBy, Mirror mirror, Function fieldFn) {
         PushConstants pc = block();
         Function exit = exitTriangles == null ? null : exitFunction(exitTriangles);
         InterfaceVar vWorld = InterfaceVar.input("vWorld", MeshShader.LOC_WORLD, Ir.V3);
@@ -252,7 +270,7 @@ final class MengerShellShader {
                 inside);
         Region step = Region.of(
                 new Statement.Assign(t, Ir.add(new Expr.Read(t), new Expr.Read(d))),
-                new Statement.Assign(d, worldDistance(at(fieldEntry, fieldDir, new Expr.Read(t)), k)),
+                new Statement.Assign(d, worldDistance(fieldFn, at(fieldEntry, fieldDir, new Expr.Read(t)), k)),
                 new Statement.Assign(steps, Ir.add(new Expr.Read(steps), Ir.f(1.0))));
 
         Counter names = new Counter();
@@ -287,7 +305,7 @@ final class MengerShellShader {
         Branch surface = new Branch(names);
         Expr hit = surface.bind("hit", at(entry, dir, new Expr.Read(t)));
         Expr fieldHit = surface.bind("fieldHit", at(fieldEntry, fieldDir, new Expr.Read(t)));
-        Expr fieldNormal = surface.bind("fieldNormal", gradient(fieldHit, Ir.mul(Ir.f(0.0008), new Expr.Read(k))));
+        Expr fieldNormal = surface.bind("fieldNormal", gradient(fieldFn, fieldHit, Ir.mul(Ir.f(0.0008), new Expr.Read(k))));
         Expr normal = surface.bind("normal", rotate(Ir.neg(fieldQ), fieldW, fieldNormal));
         Expr shaded = surface.bind("shaded", shading.shade(ShadingPoint.diffuse(hit, normal, view,
                 Ir.v3(0.80, 0.82, 0.86)), surface));
@@ -303,7 +321,7 @@ final class MengerShellShader {
         if (mirror != null) {
             LocalVar reflected = new LocalVar("reflected", Ir.V3);
             surface.statements.add(new Statement.DeclareVar(reflected, Ir.v3(0, 0, 0)));
-            surface.statements.addAll(reflection(names, shading, mirror, k, fieldQ, fieldW, hit, fieldHit,
+            surface.statements.addAll(reflection(fieldFn, names, shading, mirror, k, fieldQ, fieldW, hit, fieldHit,
                     fieldNormal, normal, new Expr.Read(dir), Ir.add(new Expr.Read(tEntry), new Expr.Read(t)),
                     exit, pc, reflected));
             Expr f = surface.bind("fresnel", fresnel(METAL_F0, normal, view));
@@ -335,7 +353,7 @@ final class MengerShellShader {
                 new Expr.Read(k)), fieldOffset)));
         body.add(new Statement.DeclareVar(fieldDir, Ir.scale(rotate(fieldQ, fieldW, new Expr.Read(dir)),
                 new Expr.Read(k))));
-        body.add(new Statement.DeclareVar(d0, worldDistance(new Expr.Read(fieldEntry), k)));
+        body.add(new Statement.DeclareVar(d0, worldDistance(fieldFn, new Expr.Read(fieldEntry), k)));
         body.add(new Statement.DeclareVar(t, Ir.f(0.0)));
         body.add(new Statement.DeclareVar(d, new Expr.Read(d0)));
         body.add(new Statement.DeclareVar(steps, Ir.f(0.0)));
@@ -359,6 +377,9 @@ final class MengerShellShader {
 
         Function main = new Function("main", new Type.FunctionType(Type.VOID, List.of()), new Region(body));
         CoreModule module = new CoreModule().addFunction(MENGER);
+        if (fieldFn != MENGER) {
+            module = module.addFunction(fieldFn);
+        }
         if (exit != null) {
             module = module.addFunction(exit);
         }
@@ -396,7 +417,7 @@ final class MengerShellShader {
      * @param travelled the world distance from the eye to {@code hit}, which the hit threshold grows with
      * @param exit      {@link #exitFunction}, or null for a ray that may leave the shell and march on
      */
-    private static List<Statement> reflection(Counter names, Shading shading, Mirror mirror, LocalVar k,
+    private static List<Statement> reflection(Function fieldFn, Counter names, Shading shading, Mirror mirror, LocalVar k,
                                               Expr fieldQ, Expr fieldW, Expr hit, Expr fieldHit,
                                               Expr fieldNormal, Expr normal, Expr dir, Expr travelled,
                                               Function exit, PushConstants pc, LocalVar into) {
@@ -427,7 +448,7 @@ final class MengerShellShader {
                     List.of(toMesh(pc, hit, true), toMesh(pc, new Expr.Read(ray), false))))));
         }
         out.add(new Statement.DeclareVar(t, Ir.f(0.0)));
-        out.add(new Statement.DeclareVar(d, worldDistance(new Expr.Read(start), k)));
+        out.add(new Statement.DeclareVar(d, worldDistance(fieldFn, new Expr.Read(start), k)));
         out.add(new Statement.DeclareVar(steps, Ir.f(0.0)));
         out.add(new Statement.While(and(and(
                 Ir.lt(new Expr.Read(steps), Ir.f(REFLECT_STEPS)),
@@ -435,7 +456,7 @@ final class MengerShellShader {
                 Ir.lt(new Expr.Read(t), new Expr.Read(limit))),
                 Region.of(
                         new Statement.Assign(t, Ir.add(new Expr.Read(t), new Expr.Read(d))),
-                        new Statement.Assign(d, worldDistance(at(start, fieldRay, new Expr.Read(t)), k)),
+                        new Statement.Assign(d, worldDistance(fieldFn, at(start, fieldRay, new Expr.Read(t)), k)),
                         new Statement.Assign(steps, Ir.add(new Expr.Read(steps), Ir.f(1.0))))));
 
         // A hit: lit by the scene, with the gradient turned back into the world.
@@ -443,7 +464,7 @@ final class MengerShellShader {
         Expr where = lattice.bind("rHit", Ir.add(hit, Ir.scale(new Expr.Read(ray), new Expr.Read(t))));
         Expr fieldWhere = lattice.bind("rFieldHit", at(start, fieldRay, new Expr.Read(t)));
         Expr seen = lattice.bind("rNormal", rotate(Ir.neg(fieldQ), fieldW,
-                gradient(fieldWhere, Ir.mul(Ir.f(0.0008), new Expr.Read(k)))));
+                gradient(fieldFn, fieldWhere, Ir.mul(Ir.f(0.0008), new Expr.Read(k)))));
         lattice.statements.add(new Statement.Assign(into, shading.shade(ShadingPoint.diffuse(where, seen,
                 Ir.neg(new Expr.Read(ray)), Ir.v3(0.80, 0.82, 0.86)), lattice)));
 
@@ -546,12 +567,12 @@ final class MengerShellShader {
         return Ir.add(new Expr.Read(origin), Ir.scale(new Expr.Read(dir), t));
     }
 
-    private static Expr gradient(Expr p, Expr e) {
+    private static Expr gradient(Function fieldFn, Expr p, Expr e) {
         Expr sum = null;
         double[][] taps = {{1, -1, -1}, {-1, -1, 1}, {-1, 1, -1}, {1, 1, 1}};
         for (double[] k : taps) {
             Expr tap = Ir.scale(Ir.v3(k[0], k[1], k[2]),
-                    field(Ir.add(p, Ir.scale(Ir.v3(k[0], k[1], k[2]), e))));
+                    field(fieldFn, Ir.add(p, Ir.scale(Ir.v3(k[0], k[1], k[2]), e))));
             sum = sum == null ? tap : Ir.add(sum, tap);
         }
         return Expr.MathCall.normalize(sum);

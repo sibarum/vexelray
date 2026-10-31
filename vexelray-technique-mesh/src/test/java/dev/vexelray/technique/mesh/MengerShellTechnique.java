@@ -91,6 +91,17 @@ final class MengerShellTechnique implements RenderTechnique {
         return this;
     }
 
+    private boolean inverse;
+
+    /** Swap the sponge's solid and empty; before realise, like {@link #fade}. */
+    MengerShellTechnique inverse(boolean inverse) {
+        if (pipeline != null) {
+            throw new IllegalStateException("inverse fill is compiled in at realise; set it before");
+        }
+        this.inverse = inverse;
+        return this;
+    }
+
     /** A shell whose field moves with it ({@link FieldSpace#OBJECT}), by index for {@link #place}. */
     int add(Mesh mesh, Placement placement) {
         return add(mesh, placement, FieldSpace.OBJECT);
@@ -160,7 +171,8 @@ final class MengerShellTechnique implements RenderTechnique {
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 MeshShader.vertex(clipDepth).spirv(), "main",
                 MengerShellShader.fragment(shading, clipDepth,
-                        exitMesh == null ? null : MengerShellShader.localTriangles(exitMesh), fade, mirror).spirv(), "main", config);
+                        exitMesh == null ? null : MengerShellShader.localTriangles(exitMesh), fade, mirror, inverse)
+                        .spirv(), "main", config);
         this.cmds = new DrawCommands(device);
         this.push = cmds.allocatePushConstants(MengerShellShader.PUSH_BYTES);
     }
