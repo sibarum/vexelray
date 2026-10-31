@@ -37,9 +37,20 @@ import java.util.List;
  *       depth it reached; a ray that runs past {@link #T_MAX} writes the far plane, which the depth test drops.</li>
  * </ul>
  *
- * <p>The lattice is fixed in world space, so a mesh moved or turned shows another slice of the same fractal.
+ * <p>The lattice lives in a {@link FieldSpace} of its own, placed per shell in the object or in the world. A
+ * fragment maps its entry point and ray into that space once, and marches there: a point at world distance
+ * {@code t} along the ray is {@code fieldEntry + fieldDir * t}, and a field distance is a world distance times the
+ * map's scale {@code k}, so each step is the field's distance over {@code k}.
  */
 final class MengerShellShader {
+
+    /** {@link MeshShader}'s push constants, then the shell's {@link FieldSpace#worldToField} map. 128 bytes. */
+    static final int PUSH_FLOATS = MeshShader.PUSH_FLOATS + FieldSpace.FLOATS;
+
+    static final int PUSH_BYTES = PUSH_FLOATS * Float.BYTES;
+
+    /** Index of the field map: quaternion (four), offset (three), scale. The fragment stage alone reads it. */
+    static final int PUSH_FIELD = MeshShader.PUSH_FLOATS;
 
     /** Half the lattice period: a sponge's unit cube is {@code 2*CELL} on a side, centred on multiples of it. */
     static final double CELL = 0.6;
@@ -61,11 +72,34 @@ final class MengerShellShader {
     }
 
     static ComposedShader fragment(Shading shading, ClipDepth depth) {
-        return ComposedShader.lower(ShaderStage.FRAGMENT, fragmentModule(shading, depth), "main");
+        return fragment(shading, depth, null);
     }
 
     /**
-     * The endless sponge's distance at a world point: Quilez's Menger field with the bounding box left out, so the
+     * The same, except that a ray which leaves the shell is <b>transparent</b> rather than marching on: no re-entry,
+     * so nothing is drawn beyond the first back face. {@code exitTriangles} is the one shell's triangles where it
+     * stands in the world ({@link Mesh#worldPositions}), outward-wound, and each fragment finds its exit by testing
+     * every one of them, unrolled. Exact for any concave shell, and only for comparison: the cost is per triangle.
+     */
+    static ComposedShader fragment(Shading shading, ClipDepth depth, float[] exitTriangles) {
+        return ComposedShader.lower(ShaderStage.FRAGMENT, fragmentModule(shading, depth, exitTriangles), "main");
+    }
+
+    /**
+     * The mesh's block with the field map after it. The vertex stage declares only the mesh's part, at the same
+     * offsets, which the one push range both stages share covers.
+     */
+    static PushConstants block() {
+        List<PushConstants.Member> members = new ArrayList<>(MeshShader.block().members());
+        for (String name : new String[]{"fieldQx", "fieldQy", "fieldQz", "fieldQw",
+                "fieldOx", "fieldOy", "fieldOz", "fieldScale"}) {
+            members.add(new PushConstants.Member(name, Ir.F32));
+        }
+        return new PushConstants(members);
+    }
+
+    /**
+     * The endless sponge's distance at a field point: Quilez's Menger field with the bounding box left out, so the
      * holes repeat forever. Unrolled, since the level count is a constant.
      */
     private static Function menger() {
@@ -100,8 +134,22 @@ final class MengerShellShader {
         return new Expr.Call(MENGER, List.of(point));
     }
 
-    private static CoreModule fragmentModule(Shading shading, ClipDepth depth) {
-        PushConstants pc = MeshShader.block();
+    /** The field's distance at a field point, as a world distance: field distances are world ones times k. */
+    private static Expr worldDistance(Expr fieldPoint, LocalVar k) {
+        return Ir.div(field(fieldPoint), new Expr.Read(k));
+    }
+
+    /**
+     * {@code v} turned by the unit quaternion {@code (u, w)}: {@code v + 2(w(u×v) + u×(u×v))}. Its inverse is the
+     * same with {@code u} negated.
+     */
+    private static Expr rotate(Expr u, Expr w, Expr v) {
+        Expr uv = Expr.MathCall.cross(u, v);
+        return Ir.add(v, Ir.scale(Ir.add(Ir.scale(uv, w), Expr.MathCall.cross(u, uv)), Ir.f(2.0)));
+    }
+
+    private static CoreModule fragmentModule(Shading shading, ClipDepth depth, float[] exitTriangles) {
+        PushConstants pc = block();
         InterfaceVar vWorld = InterfaceVar.input("vWorld", MeshShader.LOC_WORLD, Ir.V3);
         InterfaceVar vNormal = InterfaceVar.input("vNormal", MeshShader.LOC_WORLD_NORMAL, Ir.V3);
         InterfaceVar fragColor = InterfaceVar.output("fragColor", 0, Ir.V4);
@@ -117,6 +165,15 @@ final class MengerShellShader {
         LocalVar steps = new LocalVar("steps", Ir.F32);
         LocalVar colour = new LocalVar("colour", Ir.V3);
         LocalVar depthT = new LocalVar("depthT", Ir.F32);
+        // Where the ray leaves the shell, from the entry; unbounded unless the exit is baked in.
+        LocalVar exitT = new LocalVar("exitT", Ir.F32);
+        // The ray in field space: fieldEntry + fieldDir * t, for the same world distance t. fieldDir's length is k.
+        LocalVar k = new LocalVar("k", Ir.F32);
+        LocalVar fieldEntry = new LocalVar("fieldEntry", Ir.V3);
+        LocalVar fieldDir = new LocalVar("fieldDir", Ir.V3);
+        Expr fieldQ = Ir.v3(pc.read(PUSH_FIELD), pc.read(PUSH_FIELD + 1), pc.read(PUSH_FIELD + 2));
+        Expr fieldW = pc.read(PUSH_FIELD + 3);
+        Expr fieldOffset = Ir.v3(pc.read(PUSH_FIELD + 4), pc.read(PUSH_FIELD + 5), pc.read(PUSH_FIELD + 6));
 
         Expr cy = pc.read(MeshShader.PUSH_COS_YAW);
         Expr sy = pc.read(MeshShader.PUSH_SIN_YAW);
@@ -126,13 +183,15 @@ final class MengerShellShader {
         Expr forward = Ir.v3(Ir.mul(sy, cp), Ir.neg(sp), Ir.mul(cy, cp));
 
         Expr threshold = Ir.mul(Ir.f(EPSILON), Ir.add(new Expr.Read(tEntry), new Expr.Read(t)));
-        Expr marching = and(and(
+        Expr inside = Ir.lt(new Expr.Read(t), new Expr.Read(exitT));
+        Expr marching = and(and(and(
                 Ir.lt(new Expr.Read(steps), Ir.f(STEPS)),
                 Ir.lt(threshold, new Expr.Read(d))),
-                Ir.lt(new Expr.Read(t), Ir.f(T_MAX)));
+                Ir.lt(new Expr.Read(t), Ir.f(T_MAX))),
+                inside);
         Region step = Region.of(
                 new Statement.Assign(t, Ir.add(new Expr.Read(t), new Expr.Read(d))),
-                new Statement.Assign(d, field(at(entry, dir, new Expr.Read(t)))),
+                new Statement.Assign(d, worldDistance(at(fieldEntry, fieldDir, new Expr.Read(t)), k)),
                 new Statement.Assign(steps, Ir.add(new Expr.Read(steps), Ir.f(1.0))));
 
         Counter names = new Counter();
@@ -150,10 +209,13 @@ final class MengerShellShader {
         cut.statements.add(new Statement.Assign(colour, cutShaded));
         cut.statements.add(new Statement.Assign(depthT, new Expr.Read(tEntry)));
 
-        // A hit on the fractal: its gradient, by the tetrahedral four-tap; faded by the steps it took.
+        // A hit on the fractal: its gradient, by the tetrahedral four-tap in field space, turned back into the
+        // world; faded by the steps it took.
         Branch surface = new Branch(names);
         Expr hit = surface.bind("hit", at(entry, dir, new Expr.Read(t)));
-        Expr normal = surface.bind("normal", gradient(hit));
+        Expr fieldHit = surface.bind("fieldHit", at(fieldEntry, fieldDir, new Expr.Read(t)));
+        Expr fieldNormal = surface.bind("fieldNormal", gradient(fieldHit, Ir.mul(Ir.f(0.0008), new Expr.Read(k))));
+        Expr normal = surface.bind("normal", rotate(Ir.neg(fieldQ), fieldW, fieldNormal));
         Expr shaded = surface.bind("shaded", shading.shade(ShadingPoint.diffuse(hit, normal, view,
                 Ir.v3(0.80, 0.82, 0.86)), surface));
         Expr fade = Expr.MathCall.pow(Ir.sub(Ir.f(1.0), Ir.div(new Expr.Read(steps), Ir.f(STEPS))), Ir.f(1.5));
@@ -164,8 +226,9 @@ final class MengerShellShader {
 
         Region hitRegion = Region.of(new Statement.If(Ir.lt(new Expr.Read(steps), Ir.f(0.5)),
                 new Region(cut.statements), new Region(surface.statements)));
-        // No hit: past T_MAX the far plane (dropped by the depth test); budget spent, darkness where it stopped.
-        Region missRegion = Region.of(new Statement.If(Ir.lt(new Expr.Read(t), Ir.f(T_MAX)),
+        // No hit: past T_MAX or out of the shell, the far plane (dropped by the depth test); budget spent,
+        // darkness where it stopped.
+        Region missRegion = Region.of(new Statement.If(and(Ir.lt(new Expr.Read(t), Ir.f(T_MAX)), inside),
                 Region.of(new Statement.Assign(depthT, Ir.add(new Expr.Read(tEntry), new Expr.Read(t)))),
                 Region.of(new Statement.Assign(depthT, Ir.f(1.0e7)))));
 
@@ -177,15 +240,27 @@ final class MengerShellShader {
         body.add(new Statement.DeclareVar(dir, Ir.scale(Ir.sub(new Expr.Read(entry), new Expr.Read(eye)),
                 Ir.div(Ir.f(1.0), new Expr.Read(tEntry)))));
         body.add(new Statement.DeclareVar(cosForward, Ir.dot(new Expr.Read(dir), forward)));
-        body.add(new Statement.DeclareVar(d0, field(new Expr.Read(entry))));
+        body.add(new Statement.DeclareVar(k, pc.read(PUSH_FIELD + 7)));
+        body.add(new Statement.DeclareVar(fieldEntry, Ir.add(Ir.scale(rotate(fieldQ, fieldW, new Expr.Read(entry)),
+                new Expr.Read(k)), fieldOffset)));
+        body.add(new Statement.DeclareVar(fieldDir, Ir.scale(rotate(fieldQ, fieldW, new Expr.Read(dir)),
+                new Expr.Read(k))));
+        body.add(new Statement.DeclareVar(d0, worldDistance(new Expr.Read(fieldEntry), k)));
         body.add(new Statement.DeclareVar(t, Ir.f(0.0)));
         body.add(new Statement.DeclareVar(d, new Expr.Read(d0)));
         body.add(new Statement.DeclareVar(steps, Ir.f(0.0)));
         body.add(new Statement.DeclareVar(colour, Ir.v3(0.015, 0.015, 0.03)));
         body.add(new Statement.DeclareVar(depthT, Ir.f(0.0)));
+        body.add(new Statement.DeclareVar(exitT, Ir.f(1.0e7)));
+        if (exitTriangles != null) {
+            // A back face is where an escaped ray would come back in: with no re-entry, it is already outside.
+            Expr backFace = Ir.lt(Ir.f(0.0), Ir.dot(new Expr.InterfaceRead(vNormal), new Expr.Read(dir)));
+            Region exits = new Region(exitTests(exitTriangles, entry, dir, exitT));
+            body.add(new Statement.If(backFace, Region.of(new Statement.Assign(exitT, Ir.f(0.0))), exits));
+        }
         body.add(new Statement.While(marching, step));
-        body.add(new Statement.If(new Expr.Unary(UnaryOp.LOGICAL_NOT, Ir.lt(threshold, new Expr.Read(d))),
-                hitRegion, missRegion));
+        body.add(new Statement.If(and(new Expr.Unary(UnaryOp.LOGICAL_NOT, Ir.lt(threshold, new Expr.Read(d))),
+                inside), hitRegion, missRegion));
         // One write, on every path: a fragment that writes gl_FragDepth anywhere must write it everywhere.
         body.add(depth.write(new Expr.Read(depthT), new Expr.Read(cosForward)));
         body.add(new Statement.InterfaceWrite(fragColor, new Expr.VectorConstruct(Ir.V4, List.of(
@@ -197,17 +272,57 @@ final class MengerShellShader {
         return new CoreModule().addFunction(MENGER).addEntryPoint(EntryPoint.of(main, ShaderStage.FRAGMENT));
     }
 
+    /**
+     * Möller–Trumbore against every triangle, keeping the nearest hit past the entry's own: from inside a closed
+     * shell, the first surface the ray meets is where it leaves. A triangle edge-on to the ray divides by zero, and
+     * the NaNs that follow fail every comparison, which drops it.
+     */
+    private static List<Statement> exitTests(float[] xyz, LocalVar origin, LocalVar dir, LocalVar exitT) {
+        List<Statement> tests = new ArrayList<>();
+        for (int at = 0; at + 9 <= xyz.length; at += 9) {
+            int n = at / 9;
+            double[] e1 = {xyz[at + 3] - xyz[at], xyz[at + 4] - xyz[at + 1], xyz[at + 5] - xyz[at + 2]};
+            double[] e2 = {xyz[at + 6] - xyz[at], xyz[at + 7] - xyz[at + 1], xyz[at + 8] - xyz[at + 2]};
+            Expr edge1 = Ir.v3(e1[0], e1[1], e1[2]);
+            Expr edge2 = Ir.v3(e2[0], e2[1], e2[2]);
+            LocalVar p = new LocalVar("p" + n, Ir.V3);
+            LocalVar inv = new LocalVar("inv" + n, Ir.F32);
+            LocalVar s = new LocalVar("s" + n, Ir.V3);
+            LocalVar q = new LocalVar("q" + n, Ir.V3);
+            LocalVar u = new LocalVar("u" + n, Ir.F32);
+            LocalVar v = new LocalVar("v" + n, Ir.F32);
+            LocalVar h = new LocalVar("h" + n, Ir.F32);
+            tests.add(new Statement.DeclareVar(p, Expr.MathCall.cross(new Expr.Read(dir), edge2)));
+            tests.add(new Statement.DeclareVar(inv, Ir.div(Ir.f(1.0), Ir.dot(edge1, new Expr.Read(p)))));
+            tests.add(new Statement.DeclareVar(s, Ir.sub(new Expr.Read(origin), Ir.v3(xyz[at], xyz[at + 1],
+                    xyz[at + 2]))));
+            tests.add(new Statement.DeclareVar(q, Expr.MathCall.cross(new Expr.Read(s), edge1)));
+            tests.add(new Statement.DeclareVar(u, Ir.mul(Ir.dot(new Expr.Read(s), new Expr.Read(p)),
+                    new Expr.Read(inv))));
+            tests.add(new Statement.DeclareVar(v, Ir.mul(Ir.dot(new Expr.Read(dir), new Expr.Read(q)),
+                    new Expr.Read(inv))));
+            tests.add(new Statement.DeclareVar(h, Ir.mul(Ir.dot(edge2, new Expr.Read(q)), new Expr.Read(inv))));
+            Expr onTriangle = and(and(and(
+                    Ir.lt(Ir.f(-1.0e-5), new Expr.Read(u)),
+                    Ir.lt(Ir.f(-1.0e-5), new Expr.Read(v))),
+                    Ir.lt(Ir.add(new Expr.Read(u), new Expr.Read(v)), Ir.f(1.00001))),
+                    and(Ir.lt(Ir.f(1.0e-4), new Expr.Read(h)), Ir.lt(new Expr.Read(h), new Expr.Read(exitT))));
+            tests.add(new Statement.If(onTriangle, Region.of(new Statement.Assign(exitT, new Expr.Read(h))),
+                    Region.of()));
+        }
+        return tests;
+    }
+
     private static Expr at(LocalVar origin, LocalVar dir, Expr t) {
         return Ir.add(new Expr.Read(origin), Ir.scale(new Expr.Read(dir), t));
     }
 
-    private static Expr gradient(Expr p) {
-        double e = 0.0008;
+    private static Expr gradient(Expr p, Expr e) {
         Expr sum = null;
         double[][] taps = {{1, -1, -1}, {-1, -1, 1}, {-1, 1, -1}, {1, 1, 1}};
         for (double[] k : taps) {
             Expr tap = Ir.scale(Ir.v3(k[0], k[1], k[2]),
-                    field(Ir.add(p, Ir.v3(k[0] * e, k[1] * e, k[2] * e))));
+                    field(Ir.add(p, Ir.scale(Ir.v3(k[0], k[1], k[2]), e))));
             sum = sum == null ? tap : Ir.add(sum, tap);
         }
         return Expr.MathCall.normalize(sum);

@@ -26,7 +26,10 @@ import java.util.Random;
  * random lumpy blob with concave pits, turning.
  *
  * <p>Run with {@code --enable-native-access=ALL-UNNAMED}. No arguments opens a window; {@code --capture <dir>}
- * writes one offscreen frame per view in {@link #VIEWS} to {@code <dir>/menger-<n>.png}.
+ * writes one offscreen frame per view in {@link #VIEWS} to {@code <dir>/menger-<n>.png}; {@code --compare <dir>}
+ * writes {@link #comparison()}, the blob marching on through its back face beside the blob transparent there, to
+ * {@code <dir>/compare-<n>.png}; {@code --motion <dir>} writes {@link #motion()} at each of {@link #MOTION_TIMES}
+ * to {@code <dir>/motion-<n>.png}.
  */
 public final class MengerShellDemo {
 
@@ -40,7 +43,70 @@ public final class MengerShellDemo {
             {0.45, 1.9, 2.8, 2.4},
     };
 
-    private record Scene(SdfRaymarchTechnique march, MengerShellTechnique shells, int blob) {
+    /** The pair from straight on, from above, and close up on the seam between them. */
+    private static final double[][] COMPARE_VIEWS = {
+            {0.0, 1.8, 5.0, 0.0},
+            {0.5, 3.4, 4.6, 0.0},
+            {-0.35, 1.4, 3.2, 0.0},
+    };
+
+    private record Scene(SdfRaymarchTechnique march, MengerShellTechnique shells, int blob,
+                         MengerShellTechnique transparent) {
+
+        Scene(SdfRaymarchTechnique march, MengerShellTechnique shells, int blob) {
+            this(march, shells, blob, null);
+        }
+    }
+
+    /** Seconds into {@link #motion()} at which {@code --motion} captures. */
+    private static final double[] MOTION_TIMES = {0.0, 0.7, 1.4};
+
+    /**
+     * The three ways a field can move, side by side. Left, the blob turning with its field in it: one solid, its
+     * pattern carried round with it. Middle, the same blob turning through a field that stays in the world: the
+     * slice it shows changes as it turns. Right, a still cube whose field slides and turns inside it.
+     */
+    private static Scene motion() {
+        SdfRaymarchTechnique march = new SdfRaymarchTechnique(SdfScene.of(Surface.Plane.ground())
+                .withAlbedo(new Surface.Rgb(0.55, 0.57, 0.62)));
+        SdfScene sdf = march.scene();
+        MengerShellTechnique shells = new MengerShellTechnique(sdf.lens(), sdf.shading());
+        Mesh blob = blob(new Random(7), 0.95);
+        double apart = 4 * MengerShellShader.CELL;
+        shells.add(blob, Placement.at(-apart, LOOK_Y, 0), FieldSpace.OBJECT);
+        shells.add(blob, Placement.at(0, LOOK_Y, 0), FieldSpace.inWorld(Placement.ORIGIN));
+        double side = 2 * MengerShellShader.CELL;
+        shells.add(Mesh.box(side, side, side), Placement.at(apart, LOOK_Y, 0), FieldSpace.OBJECT);
+        return new Scene(march, shells, 0);
+    }
+
+    private static void animateMotion(Scene scene, double t) {
+        MengerShellTechnique shells = scene.shells();
+        for (int shell = 0; shell < 2; shell++) {
+            Placement at = shells.placement(shell);
+            shells.place(shell, new Placement(at.x(), at.y(), at.z(), t * 0.9, t * 0.35, 0, 1));
+        }
+        shells.field(2, shells.field(2).placed(new Placement(t * 0.25, t * 0.15, 0, t * 0.3, 0, 0, 1)));
+    }
+
+    /**
+     * The blob twice, side by side: on the left as the main scene draws it (a ray marches on through the back
+     * face), on the right transparent where a ray leaves it. Two lattice periods apart, so both cut the same slice.
+     */
+    private static Scene comparison() {
+        SdfRaymarchTechnique march = new SdfRaymarchTechnique(SdfScene.of(Surface.Plane.ground())
+                .withAlbedo(new Surface.Rgb(0.55, 0.57, 0.62)));
+        SdfScene sdf = march.scene();
+        Mesh blob = blob(new Random(7), 0.95);
+        double apart = 2 * MengerShellShader.CELL;
+        Placement left = new Placement(-apart, LOOK_Y, 0, 0.3, 0.2, 0, 1);
+        Placement right = new Placement(apart, LOOK_Y, 0, 0.3, 0.2, 0, 1);
+        MengerShellTechnique shells = new MengerShellTechnique(sdf.lens(), sdf.shading());
+        int index = shells.add(blob, left);
+        MengerShellTechnique transparent = new MengerShellTechnique(sdf.lens(), sdf.shading(),
+                blob.worldPositions(right));
+        transparent.add(blob, right);
+        return new Scene(march, shells, index, transparent);
     }
 
     public static void main(String[] args) throws IOException {
@@ -48,7 +114,21 @@ public final class MengerShellDemo {
             File dir = new File(args.length >= 2 ? args[1] : ".");
             dir.mkdirs();
             for (int v = 0; v < VIEWS.length; v++) {
-                capture(new File(dir, "menger-" + (v + 1) + ".png"), VIEWS[v]);
+                capture(new File(dir, "menger-" + (v + 1) + ".png"), scene(), VIEWS[v]);
+            }
+        } else if (args.length >= 1 && args[0].equals("--motion")) {
+            File dir = new File(args.length >= 2 ? args[1] : ".");
+            dir.mkdirs();
+            for (int n = 0; n < MOTION_TIMES.length; n++) {
+                Scene scene = motion();
+                animateMotion(scene, MOTION_TIMES[n]);
+                capture(new File(dir, "motion-" + (n + 1) + ".png"), scene, VIEWS[0]);
+            }
+        } else if (args.length >= 1 && args[0].equals("--compare")) {
+            File dir = new File(args.length >= 2 ? args[1] : ".");
+            dir.mkdirs();
+            for (int v = 0; v < COMPARE_VIEWS.length; v++) {
+                capture(new File(dir, "compare-" + (v + 1) + ".png"), comparison(), COMPARE_VIEWS[v]);
             }
         } else {
             run();
@@ -65,8 +145,10 @@ public final class MengerShellDemo {
         double side = 2 * MengerShellShader.CELL;
         Mesh cube = Mesh.box(side, side, side);
         shells.add(cube, Placement.at(-4 * MengerShellShader.CELL, LOOK_Y, 0));
-        // The same cube on its corner: its faces cut the lattice on the diagonal.
-        shells.add(cube, new Placement(0, LOOK_Y, 0, Math.PI / 4, Math.atan(1 / Math.sqrt(2)), 0, 1));
+        // The same cube on its corner, its field left square to the world: its faces cut the lattice on the
+        // diagonal.
+        shells.add(cube, new Placement(0, LOOK_Y, 0, Math.PI / 4, Math.atan(1 / Math.sqrt(2)), 0, 1),
+                FieldSpace.inWorld(Placement.ORIGIN));
         int blob = shells.add(blob(new Random(7), 0.95), new Placement(4 * MengerShellShader.CELL, LOOK_Y, 0,
                 0.3, 0.2, 0, 1));
         return new Scene(march, shells, blob);
@@ -101,6 +183,22 @@ public final class MengerShellDemo {
             }
             faces = next;
         }
+        // Outward winding, so a back face is one whose normal points along the ray. Every face is wound the same
+        // way and a radial push keeps it so; which way is read off one face of the sphere, before the push.
+        double[] a0 = points.get(faces[0][0]);
+        double[] b0 = points.get(faces[0][1]);
+        double[] c0 = points.get(faces[0][2]);
+        double[] ab = {b0[0] - a0[0], b0[1] - a0[1], b0[2] - a0[2]};
+        double[] ac = {c0[0] - a0[0], c0[1] - a0[1], c0[2] - a0[2]};
+        double outward = (ab[1] * ac[2] - ab[2] * ac[1]) * a0[0] + (ab[2] * ac[0] - ab[0] * ac[2]) * a0[1]
+                + (ab[0] * ac[1] - ab[1] * ac[0]) * a0[2];
+        if (outward < 0) {
+            for (int[] f : faces) {
+                int swap = f[1];
+                f[1] = f[2];
+                f[2] = swap;
+            }
+        }
         for (double[] p : points) {
             double length = Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
             double r = radius * (0.55 + 0.45 * random.nextDouble()) / length;
@@ -129,11 +227,14 @@ public final class MengerShellDemo {
     }
 
     private static RenderPipeline pipeline(Scene scene, Target target) {
-        return RenderPipeline.builder()
+        RenderPipeline.Builder builder = RenderPipeline.builder()
                 .target(target)
                 .technique(scene.march())
-                .technique(scene.shells())
-                .build();
+                .technique(scene.shells());
+        if (scene.transparent() != null) {
+            builder.technique(scene.transparent());
+        }
+        return builder.build();
     }
 
     private static void run() {
@@ -154,10 +255,9 @@ public final class MengerShellDemo {
         }
     }
 
-    private static void capture(File file, double[] view) throws IOException {
+    private static void capture(File file, Scene scene, double[] view) throws IOException {
         int w = 1100;
         int h = 700;
-        Scene scene = scene();
         RenderPipeline pipeline = pipeline(scene, Target.offscreen(w, h)
                 .color(AttachmentFormat.RGBA8_UNORM)
                 .depth(AttachmentFormat.DEPTH32F)
@@ -191,5 +291,8 @@ public final class MengerShellDemo {
         double pitch = Math.asin((eyeY - LOOK_Y) / radius);
         scene.march().camera(eyeX, eyeY, eyeZ, angle, pitch);
         scene.shells().camera(eyeX, eyeY, eyeZ, angle, pitch);
+        if (scene.transparent() != null) {
+            scene.transparent().camera(eyeX, eyeY, eyeZ, angle, pitch);
+        }
     }
 }

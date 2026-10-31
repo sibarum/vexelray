@@ -35,6 +35,7 @@ final class MengerShellTechnique implements RenderTechnique {
 
     private final List<Mesh> meshes = new ArrayList<>();
     private final List<Placement> placements = new ArrayList<>();
+    private final List<FieldSpace> fields = new ArrayList<>();
     private final Map<Mesh, Integer> firstVertex = new IdentityHashMap<>();
 
     private double camX;
@@ -47,18 +48,36 @@ final class MengerShellTechnique implements RenderTechnique {
     private VertexBuffer vertices;
     private DrawCommands cmds;
     private MemorySegment push;
-    private final float[] pushFloats = new float[MeshShader.PUSH_FLOATS];
+    private final float[] pushFloats = new float[MengerShellShader.PUSH_FLOATS];
+
+    /** Baked exit triangles for {@link MengerShellShader#fragment(Shading, ClipDepth, float[])}, or null. */
+    private final float[] exitTriangles;
 
     MengerShellTechnique(Lens lens, Shading shading) {
+        this(lens, shading, null);
+    }
+
+    /**
+     * Shells that are transparent where a ray leaves them, for the one shell whose world-space triangles are
+     * {@code exitTriangles}. Add only that shell, at the placement they were taken at.
+     */
+    MengerShellTechnique(Lens lens, Shading shading, float[] exitTriangles) {
         this.focalLength = lens.focalLength();
         this.clipDepth = lens.clipDepth();
         this.shading = shading;
+        this.exitTriangles = exitTriangles;
     }
 
-    /** A shell, by index for {@link #place}. */
+    /** A shell whose field moves with it ({@link FieldSpace#OBJECT}), by index for {@link #place}. */
     int add(Mesh mesh, Placement placement) {
+        return add(mesh, placement, FieldSpace.OBJECT);
+    }
+
+    /** A shell, its field standing in {@code field}; by index for {@link #place} and {@link #field}. */
+    int add(Mesh mesh, Placement placement, FieldSpace field) {
         meshes.add(mesh);
         placements.add(placement);
+        fields.add(field);
         return meshes.size() - 1;
     }
 
@@ -66,8 +85,18 @@ final class MengerShellTechnique implements RenderTechnique {
         return placements.get(shell);
     }
 
+    /** Move, turn or resize the shell; a field in the object goes with it, one in the world stays. */
     void place(int shell, Placement placement) {
         placements.set(shell, placement);
+    }
+
+    FieldSpace field(int shell) {
+        return fields.get(shell);
+    }
+
+    /** Move the shell's field on its own, in the object or in the world: the shell stays where it is. */
+    void field(int shell, FieldSpace field) {
+        fields.set(shell, field);
     }
 
     void camera(double x, double y, double z, double yaw, double pitch) {
@@ -100,13 +129,13 @@ final class MengerShellTechnique implements RenderTechnique {
                 GraphicsPipeline.VertexAttribute.floats(MeshShader.LOC_COLOUR, 4, Mesh.COLOUR * Float.BYTES));
         GraphicsPipeline.Config config = new GraphicsPipeline.Config(
                 Mesh.STRIDE_BYTES, attrs, new long[0], false,
-                Vk.SHADER_STAGE_VERTEX_BIT | Vk.SHADER_STAGE_FRAGMENT_BIT, MeshShader.PUSH_BYTES, true)
+                Vk.SHADER_STAGE_VERTEX_BIT | Vk.SHADER_STAGE_FRAGMENT_BIT, MengerShellShader.PUSH_BYTES, true)
                 .withDepth(GraphicsPipeline.Config.Depth.TEST_AND_WRITE);
         this.pipeline = new GraphicsPipeline(device, ctx.renderPass(), ctx.width(), ctx.height(),
                 MeshShader.vertex(clipDepth).spirv(), "main",
-                MengerShellShader.fragment(shading, clipDepth).spirv(), "main", config);
+                MengerShellShader.fragment(shading, clipDepth, exitTriangles).spirv(), "main", config);
         this.cmds = new DrawCommands(device);
-        this.push = cmds.allocatePushConstants(MeshShader.PUSH_BYTES);
+        this.push = cmds.allocatePushConstants(MengerShellShader.PUSH_BYTES);
     }
 
     @Override
@@ -131,8 +160,9 @@ final class MengerShellTechnique implements RenderTechnique {
         int stages = Vk.SHADER_STAGE_VERTEX_BIT | Vk.SHADER_STAGE_FRAGMENT_BIT;
         for (int i = 0; i < meshes.size(); i++) {
             placements.get(i).modelMatrix(p, MeshShader.PUSH_MODEL);
+            fields.get(i).worldToField(placements.get(i), p, MengerShellShader.PUSH_FIELD);
             MemorySegment.copy(p, 0, push, JAVA_FLOAT, 0, p.length);
-            cmds.push(cmd, pipeline, stages, push, MeshShader.PUSH_BYTES);
+            cmds.push(cmd, pipeline, stages, push, MengerShellShader.PUSH_BYTES);
             cmds.draw(cmd, meshes.get(i).vertexCount(), firstVertex.get(meshes.get(i)));
         }
     }
