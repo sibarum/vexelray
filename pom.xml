@@ -87,6 +87,8 @@
         <module>vexelray-technique-mesh</module>
         <!-- Fathom: the reference demo app (first-person SDF dungeon). Ships a -Pnative single-binary profile. -->
         <module>vexelray-demo</module>
+        <!-- A procedural exoplanet, flown from orbit to the grass: terrain marched through bounded shells. -->
+        <module>vexelray-demo-planet</module>
         <!-- Research harness: build/run/compare shape-definition + rendering techniques (perf, fidelity, scope). -->
         <module>vexelray-experimental</module>
     </modules>
