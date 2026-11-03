@@ -238,6 +238,8 @@ public interface NativeWindow extends AutoCloseable {
     enum Cursor {
         ARROW,
         TEXT,
+        /** The pointing hand: something clickable, a button or a link. */
+        POINTER,
         /** The two-headed horizontal arrow: something whose width is dragged, a divider between side-by-side panes. */
         RESIZE_HORIZONTAL,
         /** The two-headed vertical arrow: something whose height is dragged, a divider between stacked panes. */

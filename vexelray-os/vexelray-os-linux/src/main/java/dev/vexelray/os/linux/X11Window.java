@@ -749,6 +749,7 @@ final class X11Window implements NativeWindow {
 
     private static int fontGlyph(Cursor cursor) {
         return cursor == Cursor.TEXT ? X11.XC_xterm
+                : cursor == Cursor.POINTER ? X11.XC_hand2
                 : cursor == Cursor.RESIZE_HORIZONTAL ? X11.XC_sb_h_double_arrow
                 : cursor == Cursor.RESIZE_VERTICAL ? X11.XC_sb_v_double_arrow
                 : X11.XC_left_ptr;

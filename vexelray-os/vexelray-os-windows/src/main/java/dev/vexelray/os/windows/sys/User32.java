@@ -88,6 +88,8 @@ public final class User32 {
     public static final int IDC_ARROW = 32512;
     /** {@code IDC_IBEAM} — the text-placement (I-beam) cursor. */
     public static final int IDC_IBEAM = 32513;
+    /** {@code IDC_HAND} — the pointing hand, over a link or anything clickable. */
+    public static final int IDC_HAND = 32649;
     /** {@code IDC_SIZEWE} — the two-headed west-east arrow. */
     public static final int IDC_SIZEWE = 32644;
     /** {@code IDC_SIZENS} — the two-headed north-south arrow. */

@@ -260,6 +260,7 @@ public final class Win32Window implements NativeWindow {
                 WNDPROC_DESC, Ffi.GLOBAL);
         arrowCursor = User32.loadCursorW(MemorySegment.NULL, User32.IDC_ARROW);
         CURSORS.put(Cursor.TEXT, User32.loadCursorW(MemorySegment.NULL, User32.IDC_IBEAM));
+        CURSORS.put(Cursor.POINTER, User32.loadCursorW(MemorySegment.NULL, User32.IDC_HAND));
         CURSORS.put(Cursor.RESIZE_HORIZONTAL, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZEWE));
         CURSORS.put(Cursor.RESIZE_VERTICAL, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZENS));
         MemorySegment cursor = arrowCursor;

@@ -80,6 +80,7 @@ public final class X11 {
     public static final long PMinSize = 1L << 4;
 
     /** Cursor-font glyphs (cursorfont.h). */
+    public static final int XC_hand2 = 60;
     public static final int XC_left_ptr = 68;
     public static final int XC_sb_h_double_arrow = 108;
     public static final int XC_sb_v_double_arrow = 116;
