@@ -212,6 +212,13 @@ final class DxgiPresenter implements WindowPresenter {
         this.descriptorSet2 = descriptorSet;
     }
 
+    private volatile dev.vexelray.vulkan.present.Recorder prePass;
+
+    @Override
+    public void prePass(dev.vexelray.vulkan.present.Recorder recorder) {
+        this.prePass = recorder;
+    }
+
     @Override
     public void setRuns(List<WindowedPresenter.Run> runs) {
         this.runs = List.copyOf(runs);
@@ -358,6 +365,10 @@ final class DxgiPresenter implements WindowPresenter {
             MemorySegment begin = temp.allocate(VkStructs.COMMAND_BUFFER_BEGIN_INFO);
             si(begin, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
             check(invoke(beginCmd, cmd, begin), "vkBeginCommandBuffer");
+            dev.vexelray.vulkan.present.Recorder pre = prePass;
+            if (pre != null) {
+                pre.record(cmd, w, h);   // passes into targets this frame samples, before its own
+            }
 
             MemorySegment clear = temp.allocate(JAVA_FLOAT, 4);   // transparent black, as the swapchain path clears
             MemorySegment rp = temp.allocate(VkStructs.RENDER_PASS_BEGIN_INFO);

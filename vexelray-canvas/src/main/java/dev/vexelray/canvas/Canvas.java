@@ -61,7 +61,18 @@ public final class Canvas {
     private final java.util.ArrayDeque<float[]> translateStack = new java.util.ArrayDeque<>();
 
     // --- image runs (see #runs) ---
-    private final List<Run> runs = new java.util.ArrayList<>();
+    private final List<Run> mainRuns = new java.util.ArrayList<>();
+    private List<Run> runs = mainRuns;     // the runs being added to: the frame's, or an open group's
+    // Groups drawn apart (SDG 1.2): the targets of this frame, in the order they close (inner first); the open ones,
+    // outer below; and where the one open maps from screen pixels (its corner, its size; 0 for the canvas itself).
+    private final List<GroupTarget> groups = new java.util.ArrayList<>();
+    private final java.util.ArrayDeque<Open> open = new java.util.ArrayDeque<>();
+    private float originX, originY;
+    private int targetW, targetH;
+
+    private record Open(GroupTarget target, List<Run> parentRuns, ImageHandle parentRunImage, int parentFace,
+                        int parentLastFace, float originX, float originY, int targetW, int targetH) {
+    }
     private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
     private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
@@ -146,6 +157,14 @@ public final class Canvas {
 
     /** Reset the draw list for a new frame and clear any clip, translation or turn. */
     public Canvas begin() {
+        mainRuns.clear();
+        runs = mainRuns;
+        groups.clear();
+        open.clear();
+        originX = 0f;
+        originY = 0f;
+        targetW = 0;
+        targetH = 0;
         count = 0;
         recordCount = 0;
         clipStack.clear();
@@ -162,7 +181,6 @@ public final class Canvas {
         tx = 0f;
         ty = 0f;
         scale = 1f;
-        runs.clear();
         runImage = null;
         runStartVertex = 0;
         activeImage = null;
@@ -741,19 +759,181 @@ public final class Canvas {
             Look drawnBy = first ? look : null;
             first = false;
             if (layer.isGroup()) {
-                Diagnostics.dropped("canvas:sdg-group", "an SDG 1.2 group (a group opacity, clip or mask)",
-                        "this canvas does not draw groups yet, so the group was skipped as a reader of 1.1 skips it; "
-                                + "SdgRender draws it");
-                continue;
+                sdgGroup(drawing, pages, layer, x, y, scale, roles, opacity, 1);
+            } else {
+                sdgLayer(drawing, pages, layer, x, y, scale, roles, opacity, drawnBy, instance);
             }
+        }
+        return this;
+    }
+
+    /** {@code layers}, back to front, plain: a group's own, or its mask's. */
+    private void sdgLayers(SdgDrawing drawing, ImageHandle[] pages, java.util.List<Sdg.Layer> layers, float x,
+                           float y, float scale, Roles roles, float opacity, int depth) {
+        for (Sdg.Layer layer : layers) {
+            if (layer.isGroup()) {
+                sdgGroup(drawing, pages, layer, x, y, scale, roles, opacity, depth + 1);
+            } else {
+                sdgLayer(drawing, pages, layer, x, y, scale, roles, opacity, null, EMPTY);
+            }
+        }
+    }
+
+    private static final float[] EMPTY = new float[0];
+
+    /**
+     * An SDG 1.2 group (vexelray-fields {@code docs/sdg.md} §2). With no opacity, clip or mask it is only its layers,
+     * drawn here. Otherwise it is drawn apart: its layers into a {@link GroupTarget} the size of the group on screen,
+     * its mask (or its clip, as an alpha mask of the clip stencil drawn white) beside them in the same target, and one
+     * quad here lays the group over, by {@link CoreLooks.Primitive#GROUP}. A group with both a clip and a mask is a
+     * clip round a group with the mask. The host renders every target before the frame's own pass ({@link #groups}).
+     */
+    private void sdgGroup(SdgDrawing drawing, ImageHandle[] pages, Sdg.Layer layer, float x, float y, float scale,
+                          Roles roles, float opacity, int depth) {
+        Sdg.Group g = layer.group();
+        float alpha = layer.opacity() * opacity;
+        if (!(alpha > 0f) || depth > Sdg.Group.MAX_DEPTH || g.mask() != null && !g.mask().known()) {
+            return;   // nothing to see; or a mask of a kind this does not know, which hides its group (§2)
+        }
+        if (g.clip() == null && g.mask() == null && layer.opacity() >= 1f) {
+            sdgLayers(drawing, pages, g.layers(), x, y, scale, roles, opacity, depth);
+            return;
+        }
+        if (g.clip() != null && g.mask() != null) {
+            Sdg.Layer inner = Sdg.Layer.group(layer.name(), 1f, new Sdg.Group(g.layers(), null, g.mask()));
+            Sdg.Layer outer = Sdg.Layer.group(layer.name(), layer.opacity(),
+                    new Sdg.Group(java.util.List.of(inner), g.clip(), null));
+            sdgGroup(drawing, pages, outer, x, y, scale, roles, opacity, depth);
+            return;
+        }
+        // where the group is on screen, the window's edges cut in: the target's size
+        float[] b = {Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+        bounds(g.layers(), x, y, scale, b);
+        if (g.clip() != null) {
+            float[] c = {Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+            stencilBounds(g.clip(), x, y, scale, c);
+            b[0] = Math.max(b[0], c[0]);
+            b[1] = Math.max(b[1], c[1]);
+            b[2] = Math.min(b[2], c[2]);
+            b[3] = Math.min(b[3], c[3]);
+        }
+        int x0 = (int) Math.floor(Math.max(b[0], 0f)), y0 = (int) Math.floor(Math.max(b[1], 0f));
+        int x1 = (int) Math.ceil(Math.min(b[2], width)), y1 = (int) Math.ceil(Math.min(b[3], height));
+        int w = x1 - x0, h = y1 - y0;
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        boolean beside = g.mask() != null || g.clip() != null;
+        // a power of two each way, so a host pools targets by size; the group in its top-left corner, its mask beside
+        // two pixels apart, so the antialiased edge of the cut on one half never reaches the other
+        int gap = beside ? GROUP_GAP : 0;
+        int tw = pow2(beside ? 2 * w + gap : w), th = pow2(h);
+        GroupTarget target = beginGroup(x0, y0, tw, th);
+        // each half cut to the group's own box, so what the group draws past it never reaches the half beside
+        pushClip(x0, y0, w, h, 0f);
+        sdgLayers(drawing, pages, g.layers(), x, y, scale, roles, 1f, depth);
+        float kind = 0f;
+        if (beside) {
+            groupOrigin(x0 - w - gap, y0);
+            if (g.mask() != null) {
+                sdgLayers(drawing, pages, g.mask().layers(), x, y, scale, roles, 1f, depth);
+                kind = g.mask().kind().equals(Sdg.Mask.LUMINANCE) ? 1f : 2f;
+            } else {
+                sdgLayer(drawing, pages, new Sdg.Layer("clip", g.clip(), new Sdg.Paint.Solid(0xFFFFFFFF), 1f), x, y,
+                        scale, roles, 1f, null, EMPTY);
+                kind = 2f;
+            }
+        }
+        popClip();
+        endGroup(target);
+        float[] inst = groupInstance;
+        inst[0] = beside ? (float) (w + gap) / tw : 0f;
+        inst[1] = kind;
+        inst[2] = 0f;
+        inst[3] = 0f;
+        int record = recordOf(CoreLooks.lookOffset(CoreLooks.Primitive.GROUP), inst);
+        float u1 = (float) w / tw, v1 = (float) h / th;
+        Color c = new Color(1f, 1f, 1f, alpha);
+        // the target is laid out in screen pixels already: drawn with no turn, scale or offset of the canvas's
+        float sxx = xx, sxy = xy, syx = yx, syy = yy, stx = tx, sty = ty, ss = this.scale;
+        xx = 1f;
+        xy = 0f;
+        yx = 0f;
+        yy = 1f;
+        tx = 0f;
+        ty = 0f;
+        this.scale = 1f;
+        activeImage = target;
+        try {
+            push(x0, y0, c, 0f, 0f, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x1, y0, c, u1, 0f, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x1, y1, c, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x0, y0, c, 0f, 0f, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x1, y1, c, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x0, y1, c, 0f, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+        } finally {
+            activeImage = null;
+            xx = sxx;
+            xy = sxy;
+            yx = syx;
+            yy = syy;
+            tx = stx;
+            ty = sty;
+            this.scale = ss;
+        }
+    }
+
+    private final float[] groupInstance = new float[4];
+
+    /** Pixels between a group and its mask in their target. */
+    private static final int GROUP_GAP = 2;
+
+    /** The least power of two at least {@code n}, and at least 16. */
+    private static int pow2(int n) {
+        int p = 16;
+        while (p < n) {
+            p <<= 1;
+        }
+        return p;
+    }
+
+    /** Grows {@code b} (x0, y0, x1, y1, screen pixels) to every shape of {@code layers}, groups opened. */
+    private void bounds(java.util.List<Sdg.Layer> layers, float x, float y, float scale, float[] b) {
+        for (Sdg.Layer l : layers) {
+            if (l.isGroup()) {
+                bounds(l.group().layers(), x, y, scale, b);
+            } else if (l.known()) {
+                stencilBounds(l.stencil(), x, y, scale, b);
+            }
+        }
+    }
+
+    /** Grows {@code b} to a stencil's rectangle on screen, through the canvas's transform. */
+    private void stencilBounds(Sdg.Stencil s, float x, float y, float scale, float[] b) {
+        float ax = x + (float) (s.originX() * scale), ay = y + (float) (s.originY() * scale);
+        float bx = x + (float) ((s.originX() + s.width() / s.scale()) * scale);
+        float by = y + (float) ((s.originY() + s.height() / s.scale()) * scale);
+        for (float[] p : new float[][]{{ax, ay}, {bx, ay}, {bx, by}, {ax, by}}) {
+            float sx = xx * p[0] + xy * p[1] + tx, sy = yx * p[0] + yy * p[1] + ty;
+            b[0] = Math.min(b[0], sx);
+            b[1] = Math.min(b[1], sy);
+            b[2] = Math.max(b[2], sx);
+            b[3] = Math.max(b[3], sy);
+        }
+    }
+
+    /** One shape layer of an SDG drawing: its quad, its record. */
+    private void sdgLayer(SdgDrawing drawing, ImageHandle[] pages, Sdg.Layer layer, float x, float y, float scale,
+                          Roles roles, float opacity, Look drawnBy, float[] instance) {
+        {
             if (!layer.known() || !(layer.opacity() > 0f)) {
-                continue;
+                return;
             }
             if (!SdgPages.together(layer)) {
                 Diagnostics.dropped("canvas:sdg-pages", "an SDG layer whose paint is on another page than its stencil",
                         "a canvas run binds one image, so the layer was skipped; load the drawing through "
                                 + "SdgPages.colocated before uploading its pages");
-                continue;
+                return;
             }
             Sdg.Stencil s = layer.stencil();
             float pw = drawing.pageWidth(s.page()), ph = drawing.pageHeight(s.page());
@@ -823,7 +1003,7 @@ public final class Canvas {
                 inst[paintAt + 8] = 1f;
                 colour = new Color(1f, 1f, 1f, alpha);
             } else {
-                continue;   // a paint of a kind this does not know: known() already said no
+                return;   // a paint of a kind this does not know: known() already said no
             }
             int record = recordOf(drawnBy == null ? CoreLooks.lookOffset(CoreLooks.Primitive.SDG)
                     : lookTable.look(drawnBy), inst);
@@ -856,7 +1036,6 @@ public final class Canvas {
                 activeImage = null;
             }
         }
-        return this;
     }
 
     /** Per-instance floats of {@link CoreShadelets#SDG_STENCIL} and of {@link CoreShadelets#SDG_PAINT}. */
@@ -905,6 +1084,9 @@ public final class Canvas {
      * that drew anything; a canvas that drew no images returns exactly one run covering everything.
      */
     public List<Run> runs() {
+        if (!open.isEmpty()) {
+            throw new IllegalStateException(open.size() + " group(s) begun and not ended");
+        }
         List<Run> out = new java.util.ArrayList<>(runs);
         int open = vertexCount() - runStartVertex;
         if (open > 0) {
@@ -1092,11 +1274,113 @@ public final class Canvas {
     }
 
     private float ndcX(float screenX) {
-        return screenX / width * 2f - 1f;
+        return (screenX - originX) / (targetW > 0 ? targetW : width) * 2f - 1f;
     }
 
     private float ndcY(float screenY) {
-        return screenY / height * 2f - 1f;
+        return (screenY - originY) / (targetH > 0 ? targetH : height) * 2f - 1f;
+    }
+
+    // ------------------------------------------------------------------ groups drawn apart
+
+    /**
+     * A target a group is drawn into before the frame's own pass, and then read as an image by the quad that lays it
+     * over: {@code width × height} pixels, transparent to start, its runs in the canvas's one vertex stream and one
+     * record table. Its texel {@code (i, j)} is screen pixel {@code (originX + i, originY + j)} of the group's left
+     * half. The host gives it its image for the frame ({@link #bind}), and renders {@link #runs} into it.
+     */
+    public static final class GroupTarget implements ImageHandle {
+
+        private final int width, height;
+        private final List<Run> runs = new java.util.ArrayList<>();
+        private Object bound;
+
+        GroupTarget(int width, int height) {
+            this.width = width;
+            this.height = height;
+        }
+
+        public int width() {
+            return width;
+        }
+
+        public int height() {
+            return height;
+        }
+
+        /** Its runs, as {@link Canvas#runs()}'s: drawn in order into it. */
+        public List<Run> runs() {
+            return java.util.Collections.unmodifiableList(runs);
+        }
+
+        /** The image the host renders it into this frame, which a run naming this target samples. */
+        public void bind(Object image) {
+            this.bound = image;
+        }
+
+        public Object bound() {
+            return bound;
+        }
+    }
+
+    /**
+     * Every group this frame draws apart, in the order a host must render them: a group's inner groups come before it,
+     * since its target reads theirs.
+     */
+    public List<GroupTarget> groups() {
+        return java.util.Collections.unmodifiableList(groups);
+    }
+
+    /** Close the open run into the list being added to: the boundary a group opens or closes. */
+    private void closeRun() {
+        int n = vertexCount() - runStartVertex;
+        if (n > 0) {
+            lastFace = openFace();
+            runs.add(new Run(runStartVertex, n, runImage, lastFace));
+        }
+        runStartVertex = vertexCount();
+        runFace = NO_FACE;
+    }
+
+    /**
+     * From here, what is drawn goes into a new {@link GroupTarget} {@code w × h}, whose texel {@code (0, 0)} is screen
+     * pixel {@code (x, y)}; until {@link #endGroup}. Groups nest.
+     */
+    GroupTarget beginGroup(float x, float y, int w, int h) {
+        closeRun();
+        GroupTarget t = new GroupTarget(w, h);
+        open.push(new Open(t, runs, runImage, runFace, lastFace, originX, originY, targetW, targetH));
+        runs = t.runs;
+        runImage = null;
+        lastFace = 0;
+        originX = x;
+        originY = y;
+        targetW = w;
+        targetH = h;
+        return t;
+    }
+
+    /** Within the open group, where its texel {@code (0, 0)} is from here: for the half beside the group, its mask. */
+    void groupOrigin(float x, float y) {
+        originX = x;
+        originY = y;
+    }
+
+    /** The open group ends; drawing goes on where it was. */
+    void endGroup(GroupTarget t) {
+        if (open.isEmpty() || open.peek().target() != t) {
+            throw new IllegalStateException("a group ended that is not the one open");
+        }
+        closeRun();
+        Open o = open.pop();
+        groups.add(t);
+        runs = o.parentRuns();
+        runImage = null;
+        lastFace = o.parentLastFace();
+        originX = o.originX();
+        originY = o.originY();
+        targetW = o.targetW();
+        targetH = o.targetH();
     }
 
     private static float clampRadius(float radius, float halfW, float halfH) {

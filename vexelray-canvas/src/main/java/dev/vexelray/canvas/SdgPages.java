@@ -27,21 +27,58 @@ public final class SdgPages {
 
     /** {@code drawing} with every layer's stencil and paint on one page; itself if they already are. */
     public static Sdg colocated(Sdg drawing) {
-        List<Integer> apart = new ArrayList<>();
-        for (int i = 0; i < drawing.layers().size(); i++) {
-            Sdg.Layer layer = drawing.layers().get(i);
-            if (layer.known() && !together(layer)) {
-                apart.add(i);
-            }
-        }
-        if (apart.isEmpty()) {
+        if (!apart(drawing.layers())) {
             return drawing;
         }
-        List<Sdg.Page> pages = new ArrayList<>(drawing.pages());
-        List<Sdg.Layer> layers = new ArrayList<>(drawing.layers());
-        Shelf shelf = null;
-        for (int i : apart) {
-            Sdg.Layer layer = layers.get(i);
+        Placing p = new Placing(drawing);
+        List<Sdg.Layer> layers = p.layers(drawing.layers());
+        if (p.shelf != null) {
+            p.pages.add(p.shelf.page());
+        }
+        return new Sdg(drawing.width(), drawing.height(), p.pages, layers);
+    }
+
+    /** Whether any layer of {@code layers}, in a group or its mask too, has its paint apart from its stencil. */
+    private static boolean apart(List<Sdg.Layer> layers) {
+        for (Sdg.Layer l : layers) {
+            if (l.isGroup() ? apart(l.group().layers())
+                    || l.group().mask() != null && apart(l.group().mask().layers())
+                    : l.known() && !together(l)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The pages as they are, and the shelf of pairs being filled: through the layers, groups opened. */
+    private static final class Placing {
+
+        final Sdg drawing;
+        final List<Sdg.Page> pages;
+        Shelf shelf;
+
+        Placing(Sdg drawing) {
+            this.drawing = drawing;
+            this.pages = new ArrayList<>(drawing.pages());
+        }
+
+        List<Sdg.Layer> layers(List<Sdg.Layer> from) {
+            List<Sdg.Layer> out = new ArrayList<>(from.size());
+            for (Sdg.Layer l : from) {
+                if (l.isGroup()) {
+                    Sdg.Group g = l.group();
+                    Sdg.Mask m = g.mask() == null ? null : new Sdg.Mask(g.mask().kind(), layers(g.mask().layers()));
+                    out.add(Sdg.Layer.group(l.name(), l.opacity(), new Sdg.Group(layers(g.layers()), g.clip(), m)));
+                } else if (l.known() && !together(l)) {
+                    out.add(place(l));
+                } else {
+                    out.add(l);
+                }
+            }
+            return out;
+        }
+
+        Sdg.Layer place(Sdg.Layer layer) {
             Sdg.Stencil s = layer.stencil();
             Sdg.Paint.Sampled p = (Sdg.Paint.Sampled) layer.paint();
             int w = s.width() + p.width(), h = Math.max(s.height(), p.height());
@@ -61,15 +98,13 @@ public final class SdgPages {
             int page = pages.size();
             shelf.copy(from, s.x(), s.y(), s.width(), s.height(), at[0], at[1]);
             shelf.copy(paintFrom, p.x(), p.y(), p.width(), p.height(), at[0] + s.width(), at[1]);
-            layers.set(i, new Sdg.Layer(layer.name(),
+            return new Sdg.Layer(layer.name(),
                     new Sdg.Stencil(s.kind(), page, s.channel(), at[0], at[1], s.width(), s.height(), s.originX(),
                             s.originY(), s.scale(), s.range()),
                     new Sdg.Paint.Sampled(page, at[0] + s.width(), at[1], p.width(), p.height(), p.originX(),
                             p.originY(), p.scale()),
-                    layer.opacity()));
+                    layer.opacity());
         }
-        pages.add(shelf.page());
-        return new Sdg(drawing.width(), drawing.height(), pages, layers);
     }
 
     /**

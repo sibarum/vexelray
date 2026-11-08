@@ -90,6 +90,19 @@ public final class OffscreenDraw {
     public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
                                 long vertexBuffer, long descriptorSet, long descriptorSet2,
                                 List<WindowedPresenter.Run> runs, float cr, float cg, float cb, float ca) {
+        return toRgba(device, renderPass, pipeline, width, height, vertexBuffer, descriptorSet, descriptorSet2, runs,
+                cr, cg, cb, ca, null);
+    }
+
+    /**
+     * As the set-2 overload, with {@code prePass} recorded first, into the same command buffer, before the render pass
+     * begins: the headless twin of {@link WindowPresenter#prePass}, so a capture draws what a window does, groups drawn
+     * apart included. Null for none.
+     */
+    public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
+                                long vertexBuffer, long descriptorSet, long descriptorSet2,
+                                List<WindowedPresenter.Run> runs, float cr, float cg, float cb, float ca,
+                                Recorder prePass) {
         MemorySegment dev = device.handle();
         long pixelBytes = (long) width * height * 4;
 
@@ -215,6 +228,9 @@ public final class OffscreenDraw {
             si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
             si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(invoke(vkBeginCommandBuffer, cmd, beginInfo), "vkBeginCommandBuffer");
+            if (prePass != null) {
+                prePass.record(cmd, width, height);
+            }
 
             MemorySegment clearValue = arena.allocate(JAVA_FLOAT, 4);
             clearValue.setAtIndex(JAVA_FLOAT, 0, cr);

@@ -62,6 +62,14 @@ public interface WindowPresenter extends AutoCloseable {
     void setRuns(List<WindowedPresenter.Run> runs);
 
     /**
+     * Work recorded into each frame's command buffer before its render pass begins: passes into targets the frame then
+     * samples, such as an SDG group drawn apart (vexelray-canvas's {@code Canvas.GroupTarget}). Null for none. Read
+     * every frame, on the thread that renders; a target's pass ends in a layout its sampling reads, so the main pass
+     * needs no barrier of its own.
+     */
+    void prePass(Recorder recorder);
+
+    /**
      * Let a resize during a live drag wait for its rebuild ({@link WindowedPresenter#throttleResize}). A presenter
      * whose resize is cheap ignores it.
      */

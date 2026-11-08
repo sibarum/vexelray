@@ -300,6 +300,13 @@ public final class WindowedPresenter implements WindowPresenter {
         this.runs = List.of();
     }
 
+    private volatile Recorder prePass;
+
+    @Override
+    public void prePass(Recorder recorder) {
+        this.prePass = recorder;
+    }
+
     /**
      * Draw this frame as a sequence of {@link Run}s instead of one span — the multi-image path. Call from the
      * per-frame callback after refilling the vertex buffer, in place of {@link #setVertexCount}.
@@ -692,6 +699,10 @@ public final class WindowedPresenter implements WindowPresenter {
         s.pVertexBuffers.set(JAVA_LONG, 0, vertexBuffer);
 
         check(invoke(beginCmd, cmd, s.beginInfo), "vkBeginCommandBuffer");
+        Recorder pre = prePass;
+        if (pre != null) {
+            pre.record(cmd, extentW, extentH);   // passes into targets this frame samples, before its own
+        }
         si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_width", extentW);
         si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_height", extentH);
         sl(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "framebuffer", framebuffers.framebuffer(imageIndex));

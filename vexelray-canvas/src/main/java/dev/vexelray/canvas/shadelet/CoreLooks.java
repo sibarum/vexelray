@@ -28,7 +28,12 @@ public final class CoreLooks {
          * One layer of an SDG drawing: its stencil, its paint. Every value is the layer's own, so its elements carry
          * them in records of their own; this primitive's {@link #lookOffset look} is what those records name.
          */
-        SDG(CoreShadelets.SDG_STENCIL, CoreShadelets.SDG_PAINT);
+        SDG(CoreShadelets.SDG_STENCIL, CoreShadelets.SDG_PAINT),
+        /**
+         * An SDG group drawn apart, laid over: its target read as an image, made straight, faded and masked. Its
+         * elements carry their mask in records of their own, as {@link #SDG}'s do.
+         */
+        GROUP(CoreShadelets.BOX, CoreShadelets.GROUP_PAINT);
 
         /** Null for text, whose source depends on the shader. */
         private final Shadelet source;

@@ -267,6 +267,50 @@ public final class CoreShadelets {
         }
     };
 
+    /**
+     * {@link #GROUP_PAINT}'s style, the layer's own: {@code mask} is {@code (u, kind, 0, 0)}, the mask's texture
+     * coordinate from the group's, across ({@code u}), and its {@code kind}: 0 none, 1 luminance, 2 alpha.
+     */
+    public static final StyleLayout GROUP_PAINT_STYLE = StyleLayout.of(StyleLayout.perInstance("mask", 4));
+
+    /**
+     * An SDG group laid over (vexelray-fields {@code docs/sdg.md} §2, since 1.2): its target, drawn apart and holding
+     * premultiplied colour, read at the fragment and made straight again; times the vertex alpha, the group's opacity;
+     * times its mask, read beside it in the same target, as its luminance (the luma of its premultiplied colour) or its
+     * alpha. Over what is under it by the pipeline's blend, as every element is.
+     */
+    public static final Shadelet.Painter GROUP_PAINT = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "groupPaint";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return GROUP_PAINT_STYLE;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Expr mask = style.vector("mask");
+            Expr uv = fr.uv();
+            LocalVar group = new LocalVar("groupTexel", V4);
+            LocalVar beside = new LocalVar("groupMask", V4);
+            Expr g = new Expr.Read(group);
+            Expr m = new Expr.Read(beside);
+            Expr kind = y(mask);
+            Expr luma = add(add(mul(f(0.2126), x(m)), mul(f(0.7152), y(m))), mul(f(0.0722), z(m)));
+            Expr k = mix(f(1.0), mix(luma, w(m), step(f(1.5), kind)), step(f(0.5), kind));
+            Expr inv = div(f(1.0), max(w(g), f(1.0e-5)));
+            Expr rgb = v3(mul(x(g), inv), mul(y(g), inv), mul(z(g), inv));
+            return Region.of(
+                    new Statement.DeclareVar(group, new Expr.SampleTexture(IMAGE, uv)),
+                    new Statement.DeclareVar(beside, new Expr.SampleTexture(IMAGE, v2(add(x(uv), x(mask)), y(uv)))),
+                    new Statement.Assign(layer, Layers.premultiplied(rgb, mul(mul(w(fr.color()), w(g)), k))));
+        }
+    };
+
     /** {@link #GLOW}'s style: how far the halo reaches, in canvas units, as the falloff's length. */
     public static final StyleLayout GLOW_STYLE = StyleLayout.of(StyleLayout.shared("radius", 1));
 
@@ -479,7 +523,7 @@ public final class CoreShadelets {
     public static List<Shadelet> all(FieldType text) {
         return List.of(BOX, text(text), FIELD, SDG_STENCIL,
                 FILL, GLYPH, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
-                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW, SDG_PAINT);
+                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW, SDG_PAINT, GROUP_PAINT);
     }
 
     /** The core composition, for MSDF fonts. */
