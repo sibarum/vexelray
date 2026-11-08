@@ -16,6 +16,7 @@ import static dev.vexelray.ir.Ir.abs;
 import static dev.vexelray.ir.Ir.add;
 import static dev.vexelray.ir.Ir.clamp;
 import static dev.vexelray.ir.Ir.div;
+import static dev.vexelray.ir.Ir.dot;
 import static dev.vexelray.ir.Ir.f;
 import static dev.vexelray.ir.Ir.length;
 import static dev.vexelray.ir.Ir.max;
@@ -127,6 +128,50 @@ public final class CoreShadelets {
         }
     };
 
+    /**
+     * {@link #SDG_STENCIL}'s style, every field the layer's own: the stencil's rectangle in texture coordinates, pulled
+     * half a texel in so nothing beyond it is read; which channel holds an {@code sdf}'s distance (one-hot); whether it
+     * is an {@code msdf}, the median of three; and screen pixels per unit of the texel's value.
+     */
+    public static final StyleLayout SDG_STENCIL_STYLE = StyleLayout.of(StyleLayout.perInstance("rect", 4),
+            StyleLayout.perInstance("channel", 4), StyleLayout.perInstance("median", 1),
+            StyleLayout.perInstance("pxPerValue", 1), StyleLayout.perInstance("uvPerPx", 2));
+
+    /**
+     * An SDG layer's stencil (vexelray-fields {@code docs/sdg.md} §2.2), in the image slot: read between texel centres
+     * at the vertex UV clamped into its rectangle, each channel on its own, then one channel or the median of three, and
+     * made canvas units from the edge by {@code pxPerValue}. True to half of that, where the stencil's range ends.
+     *
+     * <p>An offset (a shadow below, a light from above) moves the read by {@code uvPerPx}, the stencil's texture
+     * coordinate per canvas unit. So a look's effects work on a layer as on a field, as far as its stencil carries
+     * distance: an {@code sdf} to {@code range / 2} texels; an {@code msdf}'s median only near its edge.
+     */
+    public static final Shadelet.Source SDG_STENCIL = new Shadelet.Source() {
+        @Override
+        public String name() {
+            return "sdgStencil";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return SDG_STENCIL_STYLE;
+        }
+
+        @Override
+        public Expr distance(Fragment fragment, Expr offset, StyleView style) {
+            Expr rect = style.vector("rect");
+            Expr step = style.vector("uvPerPx");
+            Expr moved = v2(add(x(fragment.uv()), mul(x(offset), x(step))),
+                    add(y(fragment.uv()), mul(y(offset), y(step))));
+            Expr uv = clamp(moved, v2(x(rect), y(rect)), v2(z(rect), w(rect)));
+            Expr s = new Expr.SampleTexture(IMAGE, uv);
+            Expr median = max(min(x(s), y(s)), min(max(x(s), y(s)), z(s)));
+            Expr e = mix(dot(s, style.vector("channel")), median, style.scalar("median"));
+            Expr px = style.scalar("pxPerValue");
+            return v2(mul(sub(e, f(0.5)), px), mul(f(0.5), px));
+        }
+    };
+
     // --- painters: the canvas's own primitives ---
 
     /** A flat fill in the vertex colour, one pixel soft: a box. */
@@ -178,6 +223,93 @@ public final class CoreShadelets {
         Expr boxCov = sub(f(1.0), Expr.MathCall.smoothstep(neg(fr.aa()), fr.aa(), boxSdf(fr, fr.local())));
         return assign(layer, Layers.premultiplied(xyz(fr.color()), mul(mul(w(fr.color()), boxCov), fieldCov)));
     });
+
+    /**
+     * {@link #SDG_PAINT}'s style, every field the layer's own: {@code map} takes the stencil's texture coordinate to the
+     * paint's ({@code paint = stencil * map.xy + map.zw}, both being the same canvas point); the paint's rectangle,
+     * pulled half a texel in; and whether it is {@code sampled} (1) or the vertex colour alone (0).
+     */
+    public static final StyleLayout SDG_PAINT_STYLE = StyleLayout.of(StyleLayout.perInstance("map", 4),
+            StyleLayout.perInstance("rect", 4), StyleLayout.perInstance("sampled", 1));
+
+    /**
+     * An SDG layer painted (vexelray-fields {@code docs/sdg.md} §2.3–2.5): coverage the distance cut half a pixel either
+     * side, linear; colour the vertex colour (a solid paint, or white for a sampled one), times a texel of the paint for
+     * a sampled one, read between texels inside its rectangle. The vertex alpha carries the layer's opacity. Over what
+     * is under it as every element is, by the pipeline's blend, so the layers of a drawing stack in submission order.
+     */
+    public static final Shadelet.Painter SDG_PAINT = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "sdgPaint";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return SDG_PAINT_STYLE;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Expr map = style.vector("map");
+            Expr rect = style.vector("rect");
+            Expr uv = fr.uv();
+            Expr at = clamp(v2(add(mul(x(uv), x(map)), z(map)), add(mul(y(uv), y(map)), w(map))),
+                    v2(x(rect), y(rect)), v2(z(rect), w(rect)));
+            Expr sampled = style.scalar("sampled");
+            Expr texel = mix(v4(f(1.0), f(1.0), f(1.0), f(1.0)), new Expr.SampleTexture(IMAGE, at),
+                    v4(sampled, sampled, sampled, sampled));
+            Expr cov = clamp(add(mul(x(c.distance()), fr.pixelsPerUnit()), f(0.5)), f(0.0), f(1.0));
+            Expr colour = fr.color();
+            Expr rgb = v3(mul(x(colour), x(texel)), mul(y(colour), y(texel)), mul(z(colour), z(texel)));
+            return assign(layer, Layers.premultiplied(rgb, mul(mul(w(colour), w(texel)), cov)));
+        }
+    };
+
+    /**
+     * {@link #GROUP_PAINT}'s style, the layer's own: {@code mask} is {@code (u, kind, 0, 0)}, the mask's texture
+     * coordinate from the group's, across ({@code u}), and its {@code kind}: 0 none, 1 luminance, 2 alpha.
+     */
+    public static final StyleLayout GROUP_PAINT_STYLE = StyleLayout.of(StyleLayout.perInstance("mask", 4));
+
+    /**
+     * An SDG group laid over (vexelray-fields {@code docs/sdg.md} §2, since 1.2): its target, drawn apart and holding
+     * premultiplied colour, read at the fragment and made straight again; times the vertex alpha, the group's opacity;
+     * times its mask, read beside it in the same target, as its luminance (the luma of its premultiplied colour) or its
+     * alpha. Over what is under it by the pipeline's blend, as every element is.
+     */
+    public static final Shadelet.Painter GROUP_PAINT = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "groupPaint";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return GROUP_PAINT_STYLE;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Expr mask = style.vector("mask");
+            Expr uv = fr.uv();
+            LocalVar group = new LocalVar("groupTexel", V4);
+            LocalVar beside = new LocalVar("groupMask", V4);
+            Expr g = new Expr.Read(group);
+            Expr m = new Expr.Read(beside);
+            Expr kind = y(mask);
+            Expr luma = add(add(mul(f(0.2126), x(m)), mul(f(0.7152), y(m))), mul(f(0.0722), z(m)));
+            Expr k = mix(f(1.0), mix(luma, w(m), step(f(1.5), kind)), step(f(0.5), kind));
+            Expr inv = div(f(1.0), max(w(g), f(1.0e-5)));
+            Expr rgb = v3(mul(x(g), inv), mul(y(g), inv), mul(z(g), inv));
+            return Region.of(
+                    new Statement.DeclareVar(group, new Expr.SampleTexture(IMAGE, uv)),
+                    new Statement.DeclareVar(beside, new Expr.SampleTexture(IMAGE, v2(add(x(uv), x(mask)), y(uv)))),
+                    new Statement.Assign(layer, Layers.premultiplied(rgb, mul(mul(w(fr.color()), w(g)), k))));
+        }
+    };
 
     /** {@link #GLOW}'s style: how far the halo reaches, in canvas units, as the falloff's length. */
     public static final StyleLayout GLOW_STYLE = StyleLayout.of(StyleLayout.shared("radius", 1));
@@ -389,9 +521,9 @@ public final class CoreShadelets {
 
     /** The core set for fonts of {@code text}: {@link #ALL} with {@link #text(FieldType) its text source} in place. */
     public static List<Shadelet> all(FieldType text) {
-        return List.of(BOX, text(text), FIELD,
+        return List.of(BOX, text(text), FIELD, SDG_STENCIL,
                 FILL, GLYPH, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
-                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW);
+                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW, SDG_PAINT, GROUP_PAINT);
     }
 
     /** The core composition, for MSDF fonts. */

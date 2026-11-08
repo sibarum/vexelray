@@ -90,6 +90,31 @@ public final class OffscreenDraw {
     public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
                                 long vertexBuffer, long descriptorSet, long descriptorSet2,
                                 List<WindowedPresenter.Run> runs, float cr, float cg, float cb, float ca) {
+        return toRgba(device, renderPass, pipeline, width, height, vertexBuffer, descriptorSet, descriptorSet2, runs,
+                cr, cg, cb, ca, null);
+    }
+
+    /**
+     * As the set-2 overload, with {@code prePass} recorded first, into the same command buffer, before the render pass
+     * begins: the headless twin of {@link WindowPresenter#prePass}, so a capture draws what a window does, groups drawn
+     * apart included. Null for none.
+     */
+    public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
+                                long vertexBuffer, long descriptorSet, long descriptorSet2,
+                                List<WindowedPresenter.Run> runs, float cr, float cg, float cb, float ca,
+                                Recorder prePass) {
+        return toRgba(device, renderPass, pipeline, width, height, vertexBuffer, descriptorSet, descriptorSet2, runs,
+                cr, cg, cb, ca, prePass, null);
+    }
+
+    /**
+     * As the pre-pass overload, with {@code timer}, when not null, timing the GPU over the frame: from before the
+     * pre-pass to the end of the render pass, the copy out not included ({@link GpuTimer#millis} after this returns).
+     */
+    public static byte[] toRgba(VulkanDevice device, long renderPass, GraphicsPipeline pipeline, int width, int height,
+                                long vertexBuffer, long descriptorSet, long descriptorSet2,
+                                List<WindowedPresenter.Run> runs, float cr, float cg, float cb, float ca,
+                                Recorder prePass, GpuTimer timer) {
         MemorySegment dev = device.handle();
         long pixelBytes = (long) width * height * 4;
 
@@ -215,6 +240,12 @@ public final class OffscreenDraw {
             si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
             si(beginInfo, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(invoke(vkBeginCommandBuffer, cmd, beginInfo), "vkBeginCommandBuffer");
+            if (timer != null) {
+                timer.begin(cmd);
+            }
+            if (prePass != null) {
+                prePass.record(cmd, width, height);
+            }
 
             MemorySegment clearValue = arena.allocate(JAVA_FLOAT, 4);
             clearValue.setAtIndex(JAVA_FLOAT, 0, cr);
@@ -241,6 +272,9 @@ public final class OffscreenDraw {
                 runRecorder.record(cmd, pipeline.pipelineLayout(), descriptorSet, descriptorSet2, runs, 0);
             }
             invokeVoid(vkCmdEndRenderPass, cmd);
+            if (timer != null) {
+                timer.end(cmd);
+            }
 
             MemorySegment region = arena.allocate(VkStructs.BUFFER_IMAGE_COPY);
             si(region, VkStructs.BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);

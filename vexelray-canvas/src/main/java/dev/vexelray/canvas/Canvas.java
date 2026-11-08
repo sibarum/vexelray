@@ -2,9 +2,11 @@ package dev.vexelray.canvas;
 
 import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.canvas.shadelet.CoreLooks;
+import dev.vexelray.canvas.shadelet.CoreShadelets;
 import dev.vexelray.canvas.shadelet.Look;
 import dev.vexelray.canvas.shadelet.LookTable;
 import dev.vexelray.diag.Diagnostics;
+import dev.vexelray.fields.sdg.Sdg;
 import dev.vexelray.target.ImageHandle;
 import dev.vexelray.text.GlyphQuad;
 import dev.vexelray.text.TextLayout;
@@ -59,7 +61,18 @@ public final class Canvas {
     private final java.util.ArrayDeque<float[]> translateStack = new java.util.ArrayDeque<>();
 
     // --- image runs (see #runs) ---
-    private final List<Run> runs = new java.util.ArrayList<>();
+    private final List<Run> mainRuns = new java.util.ArrayList<>();
+    private List<Run> runs = mainRuns;     // the runs being added to: the frame's, or an open group's
+    // Groups drawn apart (SDG 1.2): the targets of this frame, in the order they close (inner first); the open ones,
+    // outer below; and where the one open maps from screen pixels (its corner, its size; 0 for the canvas itself).
+    private final List<GroupTarget> groups = new java.util.ArrayList<>();
+    private final java.util.ArrayDeque<Open> open = new java.util.ArrayDeque<>();
+    private float originX, originY;
+    private int targetW, targetH;
+
+    private record Open(GroupTarget target, List<Run> parentRuns, ImageHandle parentRunImage, int parentFace,
+                        int parentLastFace, float originX, float originY, int targetW, int targetH) {
+    }
     private ImageHandle runImage;        // the image bound for the run currently open (null = none)
     private int runStartVertex;     // first vertex of the open run
     private ImageHandle activeImage;     // the image the vertex being pushed belongs to; set only while image() emits
@@ -144,6 +157,14 @@ public final class Canvas {
 
     /** Reset the draw list for a new frame and clear any clip, translation or turn. */
     public Canvas begin() {
+        mainRuns.clear();
+        runs = mainRuns;
+        groups.clear();
+        open.clear();
+        originX = 0f;
+        originY = 0f;
+        targetW = 0;
+        targetH = 0;
         count = 0;
         recordCount = 0;
         clipStack.clear();
@@ -160,7 +181,6 @@ public final class Canvas {
         tx = 0f;
         ty = 0f;
         scale = 1f;
-        runs.clear();
         runImage = null;
         runStartVertex = 0;
         activeImage = null;
@@ -407,7 +427,12 @@ public final class Canvas {
         if (floats == 0) {
             return lookTable.record(look);
         }
-        int need = recordCount + 1 + floats;
+        return recordOf(lookTable.look(look), instance);
+    }
+
+    /** An element record of its own for this frame: {@code look}, then {@code instance}. Its offset, as a vertex names it. */
+    private int recordOf(int look, float[] instance) {
+        int need = recordCount + 1 + instance.length;
         if (need > Composition.RECORDS_CAPACITY) {
             // A record past the buffer's end would be read as whatever is there. Past the cap, an element is drawn
             // as a plain fill in its colour: visibly not its look, and nothing undefined.
@@ -421,7 +446,7 @@ public final class Canvas {
         if (need > records.length) {
             records = java.util.Arrays.copyOf(records, Math.max(need, records.length * 2));
         }
-        records[recordCount++] = lookTable.look(look);
+        records[recordCount++] = look;
         for (float v : instance) {
             records[recordCount++] = v;
         }
@@ -663,6 +688,361 @@ public final class Canvas {
         }
     }
 
+    // --- SDG: signed distance graphics ---
+
+    /**
+     * The colour a solid paint's role takes (vexelray-fields {@code docs/sdg.md} §3.2, *Roles*): the theme's colour of
+     * that name, {@code 0xRRGGBBAA}, or {@code stored}, the colour it was authored in, for a role the theme has no colour
+     * for. Asked only for a paint that names one.
+     */
+    @FunctionalInterface
+    public interface Roles {
+        /** No theme: every paint as authored. */
+        Roles NONE = (role, stored) -> stored;
+
+        int rgba(String role, int stored);
+    }
+
+    /**
+     * An SDG drawing fitted into {@code (x, y, w, h)}, its aspect kept and centred, as {@code SdgRender.render} fits
+     * it: see {@link #sdg(SdgDrawing, ImageHandle[], float, float, float, Roles, float, Look, float...)}.
+     */
+    public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float w, float h, Roles roles,
+                      float opacity) {
+        return sdg(SdgDrawing.of(drawing), pages, x, y, w, h, roles, opacity, null);
+    }
+
+    /** As {@link #sdg(Sdg, ImageHandle[], float, float, float, float, Roles, float)}, at {@code (x, y)} and a scale. */
+    public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float scale, Roles roles, float opacity) {
+        return sdg(SdgDrawing.of(drawing), pages, x, y, scale, roles, opacity, null);
+    }
+
+    /**
+     * An SDG drawing fitted into {@code (x, y, w, h)}, its aspect kept and centred: see
+     * {@link #sdg(SdgDrawing, ImageHandle[], float, float, float, Roles, float, Look, float...)}.
+     */
+    public Canvas sdg(SdgDrawing drawing, ImageHandle[] pages, float x, float y, float w, float h, Roles roles,
+                      float opacity, Look look, float... instance) {
+        float k = (float) Math.min(w / drawing.width(), h / drawing.height());
+        return sdg(drawing, pages, x + (float) (w - drawing.width() * k) / 2f,
+                y + (float) (h - drawing.height() * k) / 2f, k, roles, opacity, look, instance);
+    }
+
+    /**
+     * An SDG drawing (vexelray-fields {@code docs/sdg.md}), its canvas's top-left at {@code (x, y)} and {@code scale}
+     * canvas pixels to one of its units: each layer, back to front, one quad over its stencil's rectangle, cut at the
+     * stencil's edge half a pixel either side and painted, over what is under it. Sharp at any size, turned and scaled
+     * by the canvas's transform too.
+     *
+     * <p>{@code pages[i]} is the drawing's page {@code i} uploaded as it is, RGBA8 <b>UNORM</b>, never through an sRGB
+     * decode (half of them are distances), with linear filtering and clamp-to-edge. Each layer is one run of its page,
+     * so a drawing on one page is one run; draw it {@link SdgPages#colocated colocated}, since a layer whose paint is on
+     * another page than its stencil is skipped (and said once). A layer of a kind this canvas does not know is
+     * skipped, as the format says.
+     *
+     * <p><b>A look</b> draws the drawing's first layer, the one at the back, with effects, as a field's look does: its
+     * source must be {@link CoreShadelets#SDG_STENCIL} and one of its painters {@link CoreShadelets#SDG_PAINT}, which
+     * this fills in; {@code instance} is every other part's per-instance values, in look order. Its quad grows by the
+     * look's reach, as far as the stencil carries distance. The other layers are drawn plain over it. Null for none.
+     * A look needs {@link #looks(LookTable)} set.
+     *
+     * @param roles   the colours of the theme for paints that name a role
+     * @param opacity times every layer's own
+     */
+    public Canvas sdg(SdgDrawing drawing, ImageHandle[] pages, float x, float y, float scale, Roles roles,
+                      float opacity, Look look, float... instance) {
+        if (!(scale > 0f) || !(opacity > 0f)) {
+            return this;
+        }
+        boolean first = true;
+        for (Sdg.Layer layer : drawing.layers()) {
+            Look drawnBy = first ? look : null;
+            first = false;
+            if (layer.isGroup()) {
+                sdgGroup(drawing, pages, layer, x, y, scale, roles, opacity, 1);
+            } else {
+                sdgLayer(drawing, pages, layer, x, y, scale, roles, opacity, drawnBy, instance);
+            }
+        }
+        return this;
+    }
+
+    /** {@code layers}, back to front, plain: a group's own, or its mask's. */
+    private void sdgLayers(SdgDrawing drawing, ImageHandle[] pages, java.util.List<Sdg.Layer> layers, float x,
+                           float y, float scale, Roles roles, float opacity, int depth) {
+        for (Sdg.Layer layer : layers) {
+            if (layer.isGroup()) {
+                sdgGroup(drawing, pages, layer, x, y, scale, roles, opacity, depth + 1);
+            } else {
+                sdgLayer(drawing, pages, layer, x, y, scale, roles, opacity, null, EMPTY);
+            }
+        }
+    }
+
+    private static final float[] EMPTY = new float[0];
+
+    /**
+     * An SDG 1.2 group (vexelray-fields {@code docs/sdg.md} §2). With no opacity, clip or mask it is only its layers,
+     * drawn here. Otherwise it is drawn apart: its layers into a {@link GroupTarget} the size of the group on screen,
+     * its mask (or its clip, as an alpha mask of the clip stencil drawn white) beside them in the same target, and one
+     * quad here lays the group over, by {@link CoreLooks.Primitive#GROUP}. A group with both a clip and a mask is a
+     * clip round a group with the mask. The host renders every target before the frame's own pass ({@link #groups}).
+     */
+    private void sdgGroup(SdgDrawing drawing, ImageHandle[] pages, Sdg.Layer layer, float x, float y, float scale,
+                          Roles roles, float opacity, int depth) {
+        Sdg.Group g = layer.group();
+        float alpha = layer.opacity() * opacity;
+        if (!(alpha > 0f) || depth > Sdg.Group.MAX_DEPTH || g.mask() != null && !g.mask().known()) {
+            return;   // nothing to see; or a mask of a kind this does not know, which hides its group (§2)
+        }
+        if (g.clip() == null && g.mask() == null && layer.opacity() >= 1f) {
+            sdgLayers(drawing, pages, g.layers(), x, y, scale, roles, opacity, depth);
+            return;
+        }
+        if (g.clip() != null && g.mask() != null) {
+            Sdg.Layer inner = Sdg.Layer.group(layer.name(), 1f, new Sdg.Group(g.layers(), null, g.mask()));
+            Sdg.Layer outer = Sdg.Layer.group(layer.name(), layer.opacity(),
+                    new Sdg.Group(java.util.List.of(inner), g.clip(), null));
+            sdgGroup(drawing, pages, outer, x, y, scale, roles, opacity, depth);
+            return;
+        }
+        // where the group is on screen, the window's edges cut in: the target's size
+        float[] b = {Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+        bounds(g.layers(), x, y, scale, b);
+        if (g.clip() != null) {
+            float[] c = {Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+            stencilBounds(g.clip(), x, y, scale, c);
+            b[0] = Math.max(b[0], c[0]);
+            b[1] = Math.max(b[1], c[1]);
+            b[2] = Math.min(b[2], c[2]);
+            b[3] = Math.min(b[3], c[3]);
+        }
+        int x0 = (int) Math.floor(Math.max(b[0], 0f)), y0 = (int) Math.floor(Math.max(b[1], 0f));
+        int x1 = (int) Math.ceil(Math.min(b[2], width)), y1 = (int) Math.ceil(Math.min(b[3], height));
+        int w = x1 - x0, h = y1 - y0;
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        boolean beside = g.mask() != null || g.clip() != null;
+        // a power of two each way, so a host pools targets by size; the group in its top-left corner, its mask beside
+        // two pixels apart, so the antialiased edge of the cut on one half never reaches the other
+        int gap = beside ? GROUP_GAP : 0;
+        int tw = pow2(beside ? 2 * w + gap : w), th = pow2(h);
+        GroupTarget target = beginGroup(x0, y0, tw, th);
+        // each half cut to the group's own box, so what the group draws past it never reaches the half beside
+        pushClip(x0, y0, w, h, 0f);
+        sdgLayers(drawing, pages, g.layers(), x, y, scale, roles, 1f, depth);
+        float kind = 0f;
+        if (beside) {
+            groupOrigin(x0 - w - gap, y0);
+            if (g.mask() != null) {
+                sdgLayers(drawing, pages, g.mask().layers(), x, y, scale, roles, 1f, depth);
+                kind = g.mask().kind().equals(Sdg.Mask.LUMINANCE) ? 1f : 2f;
+            } else {
+                sdgLayer(drawing, pages, new Sdg.Layer("clip", g.clip(), new Sdg.Paint.Solid(0xFFFFFFFF), 1f), x, y,
+                        scale, roles, 1f, null, EMPTY);
+                kind = 2f;
+            }
+        }
+        popClip();
+        endGroup(target);
+        float[] inst = groupInstance;
+        inst[0] = beside ? (float) (w + gap) / tw : 0f;
+        inst[1] = kind;
+        inst[2] = 0f;
+        inst[3] = 0f;
+        int record = recordOf(CoreLooks.lookOffset(CoreLooks.Primitive.GROUP), inst);
+        float u1 = (float) w / tw, v1 = (float) h / th;
+        Color c = new Color(1f, 1f, 1f, alpha);
+        // the target is laid out in screen pixels already: drawn with no turn, scale or offset of the canvas's
+        float sxx = xx, sxy = xy, syx = yx, syy = yy, stx = tx, sty = ty, ss = this.scale;
+        xx = 1f;
+        xy = 0f;
+        yx = 0f;
+        yy = 1f;
+        tx = 0f;
+        ty = 0f;
+        this.scale = 1f;
+        activeImage = target;
+        try {
+            push(x0, y0, c, 0f, 0f, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x1, y0, c, u1, 0f, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x1, y1, c, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x0, y0, c, 0f, 0f, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x1, y1, c, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            push(x0, y1, c, 0f, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+        } finally {
+            activeImage = null;
+            xx = sxx;
+            xy = sxy;
+            yx = syx;
+            yy = syy;
+            tx = stx;
+            ty = sty;
+            this.scale = ss;
+        }
+    }
+
+    private final float[] groupInstance = new float[4];
+
+    /** Pixels between a group and its mask in their target. */
+    private static final int GROUP_GAP = 2;
+
+    /** The least power of two at least {@code n}, and at least 16. */
+    private static int pow2(int n) {
+        int p = 16;
+        while (p < n) {
+            p <<= 1;
+        }
+        return p;
+    }
+
+    /** Grows {@code b} (x0, y0, x1, y1, screen pixels) to every shape of {@code layers}, groups opened. */
+    private void bounds(java.util.List<Sdg.Layer> layers, float x, float y, float scale, float[] b) {
+        for (Sdg.Layer l : layers) {
+            if (l.isGroup()) {
+                bounds(l.group().layers(), x, y, scale, b);
+            } else if (l.known()) {
+                stencilBounds(l.stencil(), x, y, scale, b);
+            }
+        }
+    }
+
+    /** Grows {@code b} to a stencil's rectangle on screen, through the canvas's transform. */
+    private void stencilBounds(Sdg.Stencil s, float x, float y, float scale, float[] b) {
+        float ax = x + (float) (s.originX() * scale), ay = y + (float) (s.originY() * scale);
+        float bx = x + (float) ((s.originX() + s.width() / s.scale()) * scale);
+        float by = y + (float) ((s.originY() + s.height() / s.scale()) * scale);
+        for (float[] p : new float[][]{{ax, ay}, {bx, ay}, {bx, by}, {ax, by}}) {
+            float sx = xx * p[0] + xy * p[1] + tx, sy = yx * p[0] + yy * p[1] + ty;
+            b[0] = Math.min(b[0], sx);
+            b[1] = Math.min(b[1], sy);
+            b[2] = Math.max(b[2], sx);
+            b[3] = Math.max(b[3], sy);
+        }
+    }
+
+    /** One shape layer of an SDG drawing: its quad, its record. */
+    private void sdgLayer(SdgDrawing drawing, ImageHandle[] pages, Sdg.Layer layer, float x, float y, float scale,
+                          Roles roles, float opacity, Look drawnBy, float[] instance) {
+        {
+            if (!layer.known() || !(layer.opacity() > 0f)) {
+                return;
+            }
+            if (!SdgPages.together(layer)) {
+                Diagnostics.dropped("canvas:sdg-pages", "an SDG layer whose paint is on another page than its stencil",
+                        "a canvas run binds one image, so the layer was skipped; load the drawing through "
+                                + "SdgPages.colocated before uploading its pages");
+                return;
+            }
+            Sdg.Stencil s = layer.stencil();
+            float pw = drawing.pageWidth(s.page()), ph = drawing.pageHeight(s.page());
+            float[] inst;
+            int stencilAt = 0, paintAt;
+            if (drawnBy == null) {
+                inst = sdgInstance;
+                java.util.Arrays.fill(inst, 0f);
+                paintAt = SDG_STENCIL_FLOATS;
+            } else {
+                inst = new float[lookTable.instanceFloats(drawnBy)];
+                paintAt = lookTable.instanceAt(drawnBy, CoreShadelets.SDG_PAINT.name());
+                if (paintAt < 0 || !drawnBy.source().shadelet().equals(CoreShadelets.SDG_STENCIL.name())) {
+                    throw new IllegalArgumentException("an SDG layer's look reads its stencil with '"
+                            + CoreShadelets.SDG_STENCIL.name() + "' and paints it with '"
+                            + CoreShadelets.SDG_PAINT.name() + "'");
+                }
+                // the look's other parts take the caller's values, in order, round the two this fills
+                int from = 0;
+                for (int k = 0; k < inst.length; k++) {
+                    boolean ours = k < stencilAt + SDG_STENCIL_FLOATS || (k >= paintAt && k < paintAt + SDG_PAINT_FLOATS);
+                    if (!ours) {
+                        if (from >= instance.length) {
+                            throw new IllegalArgumentException("this look's other parts carry more per-instance "
+                                    + "floats than the " + instance.length + " given");
+                        }
+                        inst[k] = instance[from++];
+                    }
+                }
+                if (from != instance.length) {
+                    throw new IllegalArgumentException("this look's other parts carry " + from
+                            + " per-instance floats; " + instance.length + " were given");
+                }
+            }
+            // the stencil: its rectangle half a texel in, which channel, screen px per unit of the texel's value, and
+            // texture coordinate per canvas px, which an effect looking elsewhere moves by
+            float unitPx = scale * this.scale;
+            inst[stencilAt] = (s.x() + 0.5f) / pw;
+            inst[stencilAt + 1] = (s.y() + 0.5f) / ph;
+            inst[stencilAt + 2] = (s.x() + s.width() - 0.5f) / pw;
+            inst[stencilAt + 3] = (s.y() + s.height() - 0.5f) / ph;
+            if (s.kind().equals(Sdg.Stencil.MSDF)) {
+                inst[stencilAt + 8] = 1f;
+            } else {
+                inst[stencilAt + 4 + s.channel()] = 1f;
+            }
+            inst[stencilAt + 9] = (float) (s.range() / s.scale()) * unitPx;
+            inst[stencilAt + 10] = (float) (s.scale() / unitPx) / pw;
+            inst[stencilAt + 11] = (float) (s.scale() / unitPx) / ph;
+            float alpha = layer.opacity() * opacity;
+            Color colour;
+            if (layer.paint() instanceof Sdg.Paint.Solid solid) {
+                int c = solid.role().isEmpty() ? solid.rgba() : roles.rgba(solid.role(), solid.rgba());
+                colour = new Color((c >>> 24) / 255f, (c >>> 16 & 0xFF) / 255f, (c >>> 8 & 0xFF) / 255f,
+                        (c & 0xFF) / 255f * alpha);
+            } else if (layer.paint() instanceof Sdg.Paint.Sampled p) {
+                // stencil texture coordinate to the paint's, both being the same point of the drawing
+                double k = p.scale() / s.scale();
+                inst[paintAt] = (float) k;
+                inst[paintAt + 1] = (float) k;
+                inst[paintAt + 2] = (float) ((p.x() + (s.originX() - p.originX()) * p.scale() - s.x() * k) / pw);
+                inst[paintAt + 3] = (float) ((p.y() + (s.originY() - p.originY()) * p.scale() - s.y() * k) / ph);
+                inst[paintAt + 4] = (p.x() + 0.5f) / pw;
+                inst[paintAt + 5] = (p.y() + 0.5f) / ph;
+                inst[paintAt + 6] = (p.x() + p.width() - 0.5f) / pw;
+                inst[paintAt + 7] = (p.y() + p.height() - 0.5f) / ph;
+                inst[paintAt + 8] = 1f;
+                colour = new Color(1f, 1f, 1f, alpha);
+            } else {
+                return;   // a paint of a kind this does not know: known() already said no
+            }
+            int record = recordOf(drawnBy == null ? CoreLooks.lookOffset(CoreLooks.Primitive.SDG)
+                    : lookTable.look(drawnBy), inst);
+            float x0 = x + (float) (s.originX() * scale), y0 = y + (float) (s.originY() * scale);
+            float x1 = x + (float) ((s.originX() + s.width() / s.scale()) * scale);
+            float y1 = y + (float) ((s.originY() + s.height() / s.scale()) * scale);
+            float u0 = s.x() / pw, v0 = s.y() / ph, u1 = (s.x() + s.width()) / pw, v1 = (s.y() + s.height()) / ph;
+            if (drawnBy != null) {
+                // grown by what the look draws past the stencil's edge, its texture coordinate carried on with it
+                float grow = lookTable.reach(drawnBy, inst, (x1 - x0) / 2f, (y1 - y0) / 2f);
+                float du = (u1 - u0) / (x1 - x0), dv = (v1 - v0) / (y1 - y0);
+                x0 -= grow;
+                y0 -= grow;
+                x1 += grow;
+                y1 += grow;
+                u0 -= grow * du;
+                v0 -= grow * dv;
+                u1 += grow * du;
+                v1 += grow * dv;
+            }
+            activeImage = pages[s.page()];
+            try {
+                push(x0, y0, colour, u0, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x1, y0, colour, u1, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x1, y1, colour, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x0, y0, colour, u0, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x1, y1, colour, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x0, y1, colour, u0, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            } finally {
+                activeImage = null;
+            }
+        }
+    }
+
+    /** Per-instance floats of {@link CoreShadelets#SDG_STENCIL} and of {@link CoreShadelets#SDG_PAINT}. */
+    private static final int SDG_STENCIL_FLOATS = CoreShadelets.SDG_STENCIL_STYLE.instanceFloats(),
+            SDG_PAINT_FLOATS = CoreShadelets.SDG_PAINT_STYLE.instanceFloats();
+    private final float[] sdgInstance = new float[SDG_STENCIL_FLOATS + SDG_PAINT_FLOATS];
+
     /** {@link #image(float, float, float, float, float, ImageHandle, float, float, float, float, Color)} showing the
      *  whole texture, square-cornered and untinted — what a viewport wants. */
     public Canvas image(float x, float y, float w, float h, ImageHandle image) {
@@ -704,6 +1084,9 @@ public final class Canvas {
      * that drew anything; a canvas that drew no images returns exactly one run covering everything.
      */
     public List<Run> runs() {
+        if (!open.isEmpty()) {
+            throw new IllegalStateException(open.size() + " group(s) begun and not ended");
+        }
         List<Run> out = new java.util.ArrayList<>(runs);
         int open = vertexCount() - runStartVertex;
         if (open > 0) {
@@ -891,11 +1274,113 @@ public final class Canvas {
     }
 
     private float ndcX(float screenX) {
-        return screenX / width * 2f - 1f;
+        return (screenX - originX) / (targetW > 0 ? targetW : width) * 2f - 1f;
     }
 
     private float ndcY(float screenY) {
-        return screenY / height * 2f - 1f;
+        return (screenY - originY) / (targetH > 0 ? targetH : height) * 2f - 1f;
+    }
+
+    // ------------------------------------------------------------------ groups drawn apart
+
+    /**
+     * A target a group is drawn into before the frame's own pass, and then read as an image by the quad that lays it
+     * over: {@code width × height} pixels, transparent to start, its runs in the canvas's one vertex stream and one
+     * record table. Its texel {@code (i, j)} is screen pixel {@code (originX + i, originY + j)} of the group's left
+     * half. The host gives it its image for the frame ({@link #bind}), and renders {@link #runs} into it.
+     */
+    public static final class GroupTarget implements ImageHandle {
+
+        private final int width, height;
+        private final List<Run> runs = new java.util.ArrayList<>();
+        private Object bound;
+
+        GroupTarget(int width, int height) {
+            this.width = width;
+            this.height = height;
+        }
+
+        public int width() {
+            return width;
+        }
+
+        public int height() {
+            return height;
+        }
+
+        /** Its runs, as {@link Canvas#runs()}'s: drawn in order into it. */
+        public List<Run> runs() {
+            return java.util.Collections.unmodifiableList(runs);
+        }
+
+        /** The image the host renders it into this frame, which a run naming this target samples. */
+        public void bind(Object image) {
+            this.bound = image;
+        }
+
+        public Object bound() {
+            return bound;
+        }
+    }
+
+    /**
+     * Every group this frame draws apart, in the order a host must render them: a group's inner groups come before it,
+     * since its target reads theirs.
+     */
+    public List<GroupTarget> groups() {
+        return java.util.Collections.unmodifiableList(groups);
+    }
+
+    /** Close the open run into the list being added to: the boundary a group opens or closes. */
+    private void closeRun() {
+        int n = vertexCount() - runStartVertex;
+        if (n > 0) {
+            lastFace = openFace();
+            runs.add(new Run(runStartVertex, n, runImage, lastFace));
+        }
+        runStartVertex = vertexCount();
+        runFace = NO_FACE;
+    }
+
+    /**
+     * From here, what is drawn goes into a new {@link GroupTarget} {@code w × h}, whose texel {@code (0, 0)} is screen
+     * pixel {@code (x, y)}; until {@link #endGroup}. Groups nest.
+     */
+    GroupTarget beginGroup(float x, float y, int w, int h) {
+        closeRun();
+        GroupTarget t = new GroupTarget(w, h);
+        open.push(new Open(t, runs, runImage, runFace, lastFace, originX, originY, targetW, targetH));
+        runs = t.runs;
+        runImage = null;
+        lastFace = 0;
+        originX = x;
+        originY = y;
+        targetW = w;
+        targetH = h;
+        return t;
+    }
+
+    /** Within the open group, where its texel {@code (0, 0)} is from here: for the half beside the group, its mask. */
+    void groupOrigin(float x, float y) {
+        originX = x;
+        originY = y;
+    }
+
+    /** The open group ends; drawing goes on where it was. */
+    void endGroup(GroupTarget t) {
+        if (open.isEmpty() || open.peek().target() != t) {
+            throw new IllegalStateException("a group ended that is not the one open");
+        }
+        closeRun();
+        Open o = open.pop();
+        groups.add(t);
+        runs = o.parentRuns();
+        runImage = null;
+        lastFace = o.parentLastFace();
+        originX = o.originX();
+        originY = o.originY();
+        targetW = o.targetW();
+        targetH = o.targetH();
     }
 
     private static float clampRadius(float radius, float halfW, float halfH) {

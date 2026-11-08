@@ -622,45 +622,7 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
             si(begin, COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
             check(invoke(vkBeginCommandBuffer, cmd, begin), "vkBeginCommandBuffer");
 
-            // A VkClearValue is a union of four floats, so an array of them is four floats apiece whichever
-            // member each one is. The depth one is (1.0, 0): the far plane, and a stencil of zero whose bit
-            // pattern is the same word as 0.0f -- there is no stencil in this pass to read it either way.
-            int clears = depth == null ? 1 : 2;
-            MemorySegment clear = arena.allocate(JAVA_FLOAT, 4L * clears);
-            clear.setAtIndex(JAVA_FLOAT, 0, cr);
-            clear.setAtIndex(JAVA_FLOAT, 1, cg);
-            clear.setAtIndex(JAVA_FLOAT, 2, cb);
-            clear.setAtIndex(JAVA_FLOAT, 3, ca);
-            if (depth != null) {
-                clear.setAtIndex(JAVA_FLOAT, 4, 1.0f);
-                clear.setAtIndex(JAVA_FLOAT, 5, 0.0f);
-            }
-            MemorySegment rpBegin = arena.allocate(RENDER_PASS_BEGIN_INFO);
-            si(rpBegin, RENDER_PASS_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-            sl(rpBegin, RENDER_PASS_BEGIN_INFO, "renderPass", renderPass.handle());
-            sl(rpBegin, RENDER_PASS_BEGIN_INFO, "framebuffer", framebuffer);
-            si(rpBegin, RENDER_PASS_BEGIN_INFO, "area_extent_width", width);
-            si(rpBegin, RENDER_PASS_BEGIN_INFO, "area_extent_height", height);
-            si(rpBegin, RENDER_PASS_BEGIN_INFO, "clearValueCount", clears);
-            sa(rpBegin, RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
-
-            MemorySegment pViewport = arena.allocate(VkStructs.VIEWPORT);
-            sf(pViewport, VkStructs.VIEWPORT, "width", width);
-            sf(pViewport, VkStructs.VIEWPORT, "height", height);
-            sf(pViewport, VkStructs.VIEWPORT, "maxDepth", 1.0f);
-            MemorySegment pScissor = arena.allocate(VkStructs.RECT_2D);
-            si(pScissor, VkStructs.RECT_2D, "extent_width", width);
-            si(pScissor, VkStructs.RECT_2D, "extent_height", height);
-
-            invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
-            // Unconditionally, and before the recorder, because that is what Recorder promises and what both
-            // presenters already do. A pipeline built with dynamic viewport state and handed a buffer where
-            // nothing set it draws nothing at all -- which is the failure Recorder's own javadoc was written
-            // about, and the one a recorder that draws nothing cannot detect.
-            invokeVoid(vkCmdSetViewport, cmd, 0, 1, pViewport);
-            invokeVoid(vkCmdSetScissor, cmd, 0, 1, pScissor);
-            recorder.record(cmd, width, height);
-            invokeVoid(vkCmdEndRenderPass, cmd);
+            pass(arena, cmd, recorder, cr, cg, cb, ca);
             check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
 
             MemorySegment pCmdArray = arena.allocate(ADDRESS);
@@ -711,6 +673,62 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
         if (listener != null) {
             listener.run();
         }
+    }
+
+
+    /**
+     * This target's pass, recorded into {@code cmd}, a command buffer of the caller's that is begun and outside any
+     * render pass: cleared to {@code (cr, cg, cb, ca)}, viewport and scissor set to the whole target, {@code recorder}'s
+     * draws, then ended, the image left SHADER_READ_ONLY for whatever samples it later in the same submission. Nothing
+     * is submitted and nothing waits: the image is ready once the caller's submission is. What a frame that draws an SDG
+     * group apart records before its own pass.
+     */
+    public void record(MemorySegment cmd, Recorder recorder, float cr, float cg, float cb, float ca) {
+        try (Arena arena = Arena.ofConfined()) {
+            pass(arena, cmd, recorder, cr, cg, cb, ca);
+        }
+    }
+
+    private void pass(Arena arena, MemorySegment cmd, Recorder recorder, float cr, float cg, float cb, float ca) {
+        // A VkClearValue is a union of four floats, so an array of them is four floats apiece whichever
+        // member each one is. The depth one is (1.0, 0): the far plane, and a stencil of zero whose bit
+        // pattern is the same word as 0.0f -- there is no stencil in this pass to read it either way.
+        int clears = depth == null ? 1 : 2;
+        MemorySegment clear = arena.allocate(JAVA_FLOAT, 4L * clears);
+        clear.setAtIndex(JAVA_FLOAT, 0, cr);
+        clear.setAtIndex(JAVA_FLOAT, 1, cg);
+        clear.setAtIndex(JAVA_FLOAT, 2, cb);
+        clear.setAtIndex(JAVA_FLOAT, 3, ca);
+        if (depth != null) {
+            clear.setAtIndex(JAVA_FLOAT, 4, 1.0f);
+            clear.setAtIndex(JAVA_FLOAT, 5, 0.0f);
+        }
+        MemorySegment rpBegin = arena.allocate(RENDER_PASS_BEGIN_INFO);
+        si(rpBegin, RENDER_PASS_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+        sl(rpBegin, RENDER_PASS_BEGIN_INFO, "renderPass", renderPass.handle());
+        sl(rpBegin, RENDER_PASS_BEGIN_INFO, "framebuffer", framebuffer);
+        si(rpBegin, RENDER_PASS_BEGIN_INFO, "area_extent_width", width);
+        si(rpBegin, RENDER_PASS_BEGIN_INFO, "area_extent_height", height);
+        si(rpBegin, RENDER_PASS_BEGIN_INFO, "clearValueCount", clears);
+        sa(rpBegin, RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
+
+        MemorySegment pViewport = arena.allocate(VkStructs.VIEWPORT);
+        sf(pViewport, VkStructs.VIEWPORT, "width", width);
+        sf(pViewport, VkStructs.VIEWPORT, "height", height);
+        sf(pViewport, VkStructs.VIEWPORT, "maxDepth", 1.0f);
+        MemorySegment pScissor = arena.allocate(VkStructs.RECT_2D);
+        si(pScissor, VkStructs.RECT_2D, "extent_width", width);
+        si(pScissor, VkStructs.RECT_2D, "extent_height", height);
+
+        invokeVoid(vkCmdBeginRenderPass, cmd, rpBegin, Vk.SUBPASS_CONTENTS_INLINE);
+        // Unconditionally, and before the recorder, because that is what Recorder promises and what both
+        // presenters already do. A pipeline built with dynamic viewport state and handed a buffer where
+        // nothing set it draws nothing at all -- which is the failure Recorder's own javadoc was written
+        // about, and the one a recorder that draws nothing cannot detect.
+        invokeVoid(vkCmdSetViewport, cmd, 0, 1, pViewport);
+        invokeVoid(vkCmdSetScissor, cmd, 0, 1, pScissor);
+        recorder.record(cmd, width, height);
+        invokeVoid(vkCmdEndRenderPass, cmd);
     }
 
     private volatile Runnable rendered;

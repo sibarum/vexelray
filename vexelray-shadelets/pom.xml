@@ -7,7 +7,7 @@
     <parent>
         <groupId>dev.vexelray</groupId>
         <artifactId>vexelray</artifactId>
-        <version>0.1.3-SNAPSHOT</version>
+        <version>0.2.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>vexelray-shadelets</artifactId>
@@ -36,6 +36,12 @@
         <dependency>
             <groupId>dev.supirvast</groupId>
             <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- SDG's witness: drawings made by its encoders, drawn on the GPU and checked against its CPU reference. -->
+        <dependency>
+            <groupId>dev.vexelray.fields</groupId>
+            <artifactId>vexelray-fields-sdg</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
