@@ -740,6 +740,12 @@ public final class Canvas {
         for (Sdg.Layer layer : drawing.layers()) {
             Look drawnBy = first ? look : null;
             first = false;
+            if (layer.isGroup()) {
+                Diagnostics.dropped("canvas:sdg-group", "an SDG 1.2 group (a group opacity, clip or mask)",
+                        "this canvas does not draw groups yet, so the group was skipped as a reader of 1.1 skips it; "
+                                + "SdgRender draws it");
+                continue;
+            }
             if (!layer.known() || !(layer.opacity() > 0f)) {
                 continue;
             }
