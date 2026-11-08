@@ -82,6 +82,7 @@ vexelray-engine        Runtime impl:  │  vexelray-technique-sdf    SdfScene + 
                        VexelEngine,   │  vexelray-technique-panel  Panel + PanelShader + PanelTechnique
                                       │  vexelray-technique-mesh   Mesh + Placement + MeshShader + MeshTechnique
                                       │                            (later: -splat, …)
+                                      │  How to write one: techniques.md.
                        realises a     │
                        pipeline, owns │  A technique depends on -engine-api and -engine-vulkan-api. It does NOT
                        window/device/ │  depend on -engine: the runtime depends on the contract, not the
@@ -141,6 +142,11 @@ else's command buffer needs). `vexelray-engine` holds *orchestration* (frame loo
 driving, event publication). Techniques target Vulkan directly — a backend abstraction is deferred (YAGNI until
 a second backend exists) — but they target the Vulkan *contract*, not this runtime.
 
+That is not hypothetical: there are two hosts. `vexelray-engine` owns a window and a swapchain, which suits an
+application whose whole surface is the scene. `vexelray-engine-embedded`'s `SampledTechniqueHost` composites the
+same ordered technique list into a `SampledColorTarget` somebody else owns and presents — a GUI viewport, sampled
+as a box with chrome around it — and the techniques cannot tell which one is driving them.
+
 **The engine is a publisher.** Given an `Atchung` bus, `VexelEngine.run(pipeline, bus, onFrame)` publishes
 `RUN_STARTED`, `FRAME_STARTED`, `RESIZED`, `TECHNIQUE_REALIZED`, `TECHNIQUE_CLOSED`, `DEVICE_LOST` and
 `RUN_ENDED` — onto the same bus Tactroller's input already reaches, so input and rendering meet in one place
@@ -198,6 +204,7 @@ Two public layers, cleanly separated:
 **Extension point:** the `RenderTechnique` SPI. A technique gets one-time setup against the shared target
 (`realize`) and a per-frame `record` that binds a pipeline and issues draws into a render pass the runtime owns;
 it never touches the swapchain or sync. Third parties add renderable kinds by implementing it — no core change.
+[`techniques.md`](techniques.md) is the guide to doing so.
 
 ---
 
@@ -207,22 +214,22 @@ it never touches the swapchain or sync. Third parties add renderable kinds by im
 |---|---|---|
 | Runtime ownership | `VexelEngine` facade behind a `ServiceLoader` provider; owns window/instance/device/surface/swapchain/render pass/depth and the frame loop; one frame in flight, as a rule (D25, limited 2026-10-04: mapped buffers are not per slot), per-slot command buffers and sync against per-image depth and semaphores; resize rebuilds the swapchain without re-realising a technique | a second queue, so transfers do not serialise behind the graphics one |
 | Present targets | windowed swapchain and `Target.Kind.OFFSCREEN`, behind one `Target` and one frame loop; `VexelEngine.lastFrameRgba()` hands back the frame a headless run finished on. The single-pipeline `OffscreenRenderer`/`OffscreenDraw` stay for "render one thing to a texture" | recording a sequence rather than a last frame |
-| Render techniques | SDF raymarch, 2D canvas, world panel and polygon meshes as modules; `FathomTechnique` and `HelloTechnique` authored *outside* the engine's modules | Gaussian splats — same SPI, no core change |
+| Render techniques | SDF raymarch, 2D canvas, world panel and polygon meshes as modules; `FathomTechnique` and `HelloTechnique` authored *outside* the engine's modules; two hosts run the same techniques — `vexelray-engine` into its own window, `vexelray-engine-embedded`'s `SampledTechniqueHost` into a target a GUI owns | Gaussian splats — same SPI, no core change |
 | Composition / hybrid | N techniques sharing one colour+depth target, one render pass, one command buffer, in declared order (`HybridFrameTest`) **and interleaving per pixel where depth decides** — the march writes `gl_FragDepth` from its hit distance through the shared `ClipDepth` convention, and `vexelray-technique-mesh` rasterises real geometry through `ClipDepth.clipZ`, cross-occluding it (`MeshOcclusionTest`, D28) | meshes the simulation can collide with — today a mesh is drawn and not simulated |
 | Technique authoring | `DrawCommands` for the Panama boilerplate; the runtime sets viewport and scissor before recording; `HelloTechnique` is the worked example in main source | a pooled allocator on `TechniqueContext` when one exists |
 | Shaders | runtime SDF composed as `core` IR → SPIR-V, type-checked by `CoreCheck` before the driver sees it | `CoreCheck` covering `MathCall`; the operand-type check pushed upstream into SupirVast |
 | Render == sim | SDF evaluated CPU + GPU from one IR; sphere-trace collision | physics/queries against the render field; GPU/CPU placement |
 | Resources | each class owns its own allocation; `TechniqueContext` deliberately hands out no allocator, and the unimplemented `ResourceManager` interface has been deleted rather than left as a guess | a pooled/suballocated allocator, added to the context on the day there is one to return |
-| Lighting | inline in the SDF shader | pluggable `LightingModel`s folded into composition |
+| Lighting | a `Shading` (a `LightingModel` that emits `core` IR; `Shadings.unlit`, `lambert`, `defaultKeyLight`) chosen per scene and shared: the march and `MeshTechnique` light with the same one | more models than a single directional light |
 | Input / events | Tactroller snapshot → `tactroller-atchung` bridge → Atchung bus; **and the engine publishes onto the same bus** (`EngineEvents`: run, frame, resize, technique lifecycle, device lost) | GUI/recorder/network consumers with no core change; selected topics bridged over `atchung-elektroq` |
-| Platform | Windows (Panama); Linux/macOS skeletons | all three; per-OS reachability metadata |
+| Platform | Windows (Panama; presents through DXGI, `vexelray-present-dxgi`) and Linux (X11), both released in 0.1.2; macOS a skeleton | macOS; Wayland; display scaling on Linux |
 | Packaging | JVM run + `-Pnative` profile wired | verified single native binary, driver-only |
 
 ---
 
 ## 6. Status snapshot
 
-Working end to end on Windows/RTX: window + swapchain, offscreen readback, runtime-composed SDF shaders, a live
+Working end to end on Windows and on Linux over X11 (both released in 0.1.2; macOS is still a skeleton): window + swapchain, offscreen readback, runtime-composed SDF shaders, a live
 first-person raymarched scene with WASD, CPU/GPU render==sim collision, and SDF "sprites" (round-extruded 2D
 glyphs). The `Canvas` now also **samples**: an image is the same analytic rounded box run
 through a texel read from a second descriptor set, and a frame divides into `Canvas.Run` spans that say where

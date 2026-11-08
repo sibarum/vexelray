@@ -23,6 +23,9 @@ Multi-module Maven reactor, dependencies pointing downward:
 
 ```
 vexelray                 parent (pom)
+├─ vexelray-diagnostics  one class: how a seam says it silently dropped something the caller asked for
+├─ vexelray-trace        @Trace sites and the guarded entry they call (docs/trace.md)
+├─ vexelray-trace-maven-plugin  the weaver that rewrites every @Trace method after javac
 ├─ vexelray-ir           terse vocabulary for authoring core IR by hand — depends on vastir alone
 │    dev.vexelray.ir        Ir: constants, vectors, arithmetic, core's type discipline (broadcast, typed zero)
 ├─ vexelray-core         binding-agnostic engine vocabulary — no SupirVast, no Vulkan
@@ -46,19 +49,20 @@ vexelray                 parent (pom)
 │    dev.vexelray.technique.sdf  SdfComposer, SdfScene, MarchSettings; ConeField is the same march with the
 │                           geometry read from a storage buffer instead of compiled in — one pipeline for
 │                           every scene, so new geometry is a buffer copy rather than a shader build
-├─ vexelray-msdf-maven-plugin  build-time font atlases (Maven plugin): every face of a font family, one MSDF or
-│                        SDF atlas each, listed in fonts.json (vexelray-msdf-maven-plugin/README.md)
-├─ vexelray-text         text from those atlases: faces, per-code-point fallback, layout, MSDF shader as core IR
-│    dev.vexelray.text      FontSet, AtlasData/AtlasInfo, GlyphLayout, TextLayout/TextMesh, MsdfShader
-│                           (docs/text.md)
+├─ vexelray-msdf-maven-plugin  build-time MSDF atlas generator (Maven plugin), used by vexelray-text
+├─ vexelray-msdf-tool-windows  the msdf-atlas-gen.exe that plugin runs on Windows (elsewhere: committed atlases)
+├─ vexelray-text         MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, MSDF shader as core IR
+│    dev.vexelray.text      AtlasData/AtlasInfo, GlyphLayout, TextLayout/TextMesh, MsdfShader
 ├─ vexelray-canvas       2D Canvas API: immediate-mode unified-batched geometry and its uber-shader as core IR
 │    dev.vexelray.canvas    Canvas, CanvasVertex, CanvasShader, Color — shapes, text and sampled images all
 │                           share one fat-vertex batch, so a whole scene composites as a single draw
+├─ vexelray-shadelet-codegen  annotation processor: a generated layout for every @Style record, no reflection
+├─ vexelray-shadelets    opt-in canvas effects (weight, outline, morphs) composed beside the core shadelet set
 ├─ vexelray-os           OS integration (nested aggregator) — direct Panama bindings, no LWJGL/GLFW
 │    ├─ vexelray-os-api     platform-agnostic API: NativePlatform, NativeWindow, WindowConfig,
 │    │                      Decorations + HitRegions (application-drawn window chrome); Ffi is supirvast's
 │    ├─ vexelray-os-windows WindowsPlatform  (user32/kernel32 + VK_KHR_win32_surface)
-│    ├─ vexelray-os-linux   LinuxPlatform    (libX11 + VK_KHR_xlib_surface)      — skeleton
+│    ├─ vexelray-os-linux   LinuxPlatform    (libX11 + VK_KHR_xlib_surface)
 │    └─ vexelray-os-macos   MacosPlatform    (AppKit/QuartzCore + VK_EXT_metal_surface) — skeleton
 ├─ vexelray-vulkan       the Panama Vulkan runtime + resource implementation; hosts the OS-activated
 │                        selection profiles that pick the platform module
@@ -67,8 +71,11 @@ vexelray                 parent (pom)
 │                           GraphicsPipeline, DrawCommands, VertexBuffer, AtlasTexture, SampledImage,
 │                           SampledColorTarget, OffscreenDraw, WindowedPresenter
 │    dev.vexelray.vulkan.offscreen OffscreenRenderer + OffscreenReadback (headless render-to-image)
+├─ vexelray-present-dxgi  Windows presentation through a flip-model DXGI swapchain; Vulkan still draws everything
 ├─ vexelray-engine       the Vulkan runtime behind VexelEngine: window, device, swapchain, shared render pass,
 │    dev.vexelray.engine.vulkan.runtime  depth, the frame loop, and the ordered list of RenderTechniques
+├─ vexelray-engine-embedded  the other technique host: SampledTechniqueHost composites the same ordered list
+│    dev.vexelray.engine.embedded  into a SampledColorTarget somebody else owns and presents (a GUI viewport)
 ├─ vexelray-technique-canvas  the canvas technique: a Canvas batch recorded into a frame the runtime began
 ├─ vexelray-technique-panel  the same canvas on a plane in the world: projected through the scene's camera,
 │    dev.vexelray.technique.panel  sharing the frame's depth, with nothing in it fixed to a pixel size
@@ -76,6 +83,7 @@ vexelray                 parent (pom)
 │    dev.vexelray.technique.mesh  Shading, so meshes and marched surfaces occlude and light alike
 ├─ vexelray-demo         Fathom — the reference demo app (first-person SDF dungeon), -Pnative single binary;
 │                        HelloTechnique is the worked example a third party copies
+├─ vexelray-demo-planet  a procedural exoplanet meant to be flown from orbit to the grass
 └─ vexelray-experimental research harness: build/run/compare shape-definition + rendering techniques
      dev.vexelray.experimental  ComparisonHarness, Raymarcher, Metrics, SurfaceGallery, noise/blended fields
 ```
@@ -88,6 +96,7 @@ stays free of both the shader compiler and any Vulkan binding.
 **[docs/architecture.md](docs/architecture.md)** is the living target-architecture doc — the thesis (pluggable
 render techniques composited into one frame), the module topology, the public pipeline-building API, and the
 capability roadmap. Read it for the big picture; this README covers what exists today.
+**[docs/techniques.md](docs/techniques.md)** is the guide to writing a technique of your own.
 
 ### Native integration
 
@@ -99,28 +108,43 @@ build time by the host OS. The binding pattern is normative and documented in
 ## Status
 
 **Working renderer, pre-1.0 API.** The Vulkan runtime is real end to end — instance → device → swapchain →
-shaded frame — on both present paths: windowed (`WindowedPresenter`) and offscreen render-to-image with
-readback. On top of it sit the surface compiler, MSDF text, and the 2D Canvas. Windows is the complete platform;
-Linux and macOS are skeletons.
+shaded frame — windowed and offscreen with readback. On top of it sit the surface compiler, MSDF text, and the
+2D Canvas. Windows and Linux (X11) are released platforms as of 0.1.2; macOS is still a skeleton.
 
-The pipeline-configuration API (`RenderPipeline`, `FrameGraph`, `RuntimeManager`) is still the design-stage
-seam — a hybrid raster+SDF+post pipeline is expressible and validated (`HybridPipelineTest`), but the working
-demos drive `vexelray-vulkan` directly rather than going through it. Wiring the runtime up behind the
-`RenderTechnique` SPI is the next increment.
+The pipeline API is the front door, not a design sketch. An application builds a `RenderPipeline` — a `Target`
+and an ordered list of `RenderTechnique`s — and hands it to `VexelEngine.run`, which owns the window, device,
+swapchain, shared render pass, depth and frame loop. Four techniques ship as modules: the SDF ray-march,
+the 2D canvas, a canvas on a plane in the world, and polygon meshes. They share one colour+depth target and
+occlude each other per pixel (`HybridFrameTest`, `MeshOcclusionTest`). Fathom composes a pipeline rather than
+building a runtime, and `HelloTechnique` is the smallest complete technique, for a third party to copy.
+
+**Writing your own technique:** [docs/techniques.md](docs/techniques.md) — the SPI, the four built-in
+techniques, how they share depth, and a walk through `HelloTechnique`.
+
+What is open is in [TODO.md](TODO.md). A few older demos still build their own swapchain and presenter instead of
+going through the engine; they are kept on purpose as the coverage of `WindowedPresenter`'s single-pipeline path.
 
 ## See it run
 
-The runnable demos live as test sources in `vexelray-vulkan` — each is a `main` you can launch directly:
+The runnable demos are `main`s you can launch directly. Most are test sources of the module they exercise:
 
-| Demo | What it shows |
-| --- | --- |
-| `WindowedClearDemo` / `WindowedTriangleDemo` | swapchain present, from a clear to a shaded triangle |
-| `Sdf2DWindowDemo` | the SDF-3D pipeline reused unchanged to draw 2D |
-| `TextWindowDemo` | MSDF text from a build-time atlas |
-| `CanvasDemo` / `DynamicCanvasDemo` | the immediate-mode 2D API, static and per-frame |
-| `SampledSurfaceDemo` | a compiled surface marched into a sampled texture |
-| `OffscreenTriangleSmoke` / `OffscreenScreenshotSmoke` / `SurfaceDeviceSmoke` | headless render + readback |
-| `StrokeMarchSmoke` | a `Surface.Stroke` marched headlessly, answering *did anything get drawn* in numbers |
+| Demo | Module | What it shows |
+| --- | --- | --- |
+| `HelloTechnique` | `vexelray-demo` (main) | the smallest complete technique, through the engine |
+| `HybridFrameSmoke` | `vexelray-demo` (main) | a march and a canvas in one frame |
+| `SdfEngineSmoke` | `vexelray-technique-sdf` | an SDF scene marched through the engine, not hand-wired Vulkan |
+| `BoxCullSmoke` | `vexelray-technique-sdf` | what culling a march to its box saves, in milliseconds a frame |
+| `MeshDemo` | `vexelray-technique-mesh` | meshes in a marched scene, cutting it along shared depth; a march drawn through a mesh |
+| `MengerShellDemo` | `vexelray-technique-mesh` | an endless Menger lattice seen only through polygon shells |
+| `PanelDemo` | `vexelray-technique-panel` | a canvas hung in a marched scene |
+| `CanvasDemo` / `DynamicCanvasDemo` | `vexelray-technique-canvas` | the immediate-mode 2D API, static and per-frame |
+| `TextWindowDemo` | `vexelray-technique-canvas` | MSDF text from a build-time atlas |
+| `SampledSurfaceDemo` | `vexelray-technique-canvas` | a compiled surface marched into a sampled texture |
+| `WindowedClearDemo` / `WindowedTriangleDemo` | `vexelray-vulkan` | swapchain present, from a clear to a shaded triangle |
+| `Sdf2DWindowDemo` | `vexelray-vulkan` | the SDF-3D pipeline reused unchanged to draw 2D |
+| `OffscreenTriangleSmoke` / `OffscreenScreenshotSmoke` / `SurfaceDeviceSmoke` | `vexelray-vulkan` | headless render + readback |
+| `StrokeMarchSmoke` | `vexelray-technique-sdf` | a `Surface.Stroke` marched headlessly, answering *did anything get drawn* in numbers |
+| `PlanetDemo` | `vexelray-demo-planet` (main) | a procedural planet, from orbit |
 
 `StrokeMarchSmoke` is worth knowing about before you need it: "nothing renders" is three questions a window
 cannot tell apart — a shader that draws nothing, a good shader with the camera pointed elsewhere, or a draw that
