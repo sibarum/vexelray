@@ -5,6 +5,7 @@ import dev.vexelray.canvas.shadelet.CoreLooks;
 import dev.vexelray.canvas.shadelet.Look;
 import dev.vexelray.canvas.shadelet.LookTable;
 import dev.vexelray.diag.Diagnostics;
+import dev.vexelray.fields.sdg.Sdg;
 import dev.vexelray.target.ImageHandle;
 import dev.vexelray.text.GlyphQuad;
 import dev.vexelray.text.TextLayout;
@@ -407,7 +408,12 @@ public final class Canvas {
         if (floats == 0) {
             return lookTable.record(look);
         }
-        int need = recordCount + 1 + floats;
+        return recordOf(lookTable.look(look), instance);
+    }
+
+    /** An element record of its own for this frame: {@code look}, then {@code instance}. Its offset, as a vertex names it. */
+    private int recordOf(int look, float[] instance) {
+        int need = recordCount + 1 + instance.length;
         if (need > Composition.RECORDS_CAPACITY) {
             // A record past the buffer's end would be read as whatever is there. Past the cap, an element is drawn
             // as a plain fill in its colour: visibly not its look, and nothing undefined.
@@ -421,7 +427,7 @@ public final class Canvas {
         if (need > records.length) {
             records = java.util.Arrays.copyOf(records, Math.max(need, records.length * 2));
         }
-        records[recordCount++] = lookTable.look(look);
+        records[recordCount++] = look;
         for (float v : instance) {
             records[recordCount++] = v;
         }
@@ -662,6 +668,122 @@ public final class Canvas {
             imagePrimitive = CoreLooks.Primitive.IMAGE;
         }
     }
+
+    // --- SDG: signed distance graphics ---
+
+    /**
+     * The colour a solid paint's role takes (vexelray-fields {@code docs/sdg.md} §3.2, *Roles*): the theme's colour of
+     * that name, {@code 0xRRGGBBAA}, or {@code stored}, the colour it was authored in, for a role the theme has no colour
+     * for. Asked only for a paint that names one.
+     */
+    @FunctionalInterface
+    public interface Roles {
+        /** No theme: every paint as authored. */
+        Roles NONE = (role, stored) -> stored;
+
+        int rgba(String role, int stored);
+    }
+
+    /**
+     * An SDG drawing fitted into {@code (x, y, w, h)}, its aspect kept and centred, as {@code SdgRender.render} fits
+     * it: see {@link #sdg(Sdg, ImageHandle[], float, float, float, Roles, float)}.
+     */
+    public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float w, float h, Roles roles,
+                      float opacity) {
+        float k = (float) Math.min(w / drawing.width(), h / drawing.height());
+        return sdg(drawing, pages, x + (float) (w - drawing.width() * k) / 2f,
+                y + (float) (h - drawing.height() * k) / 2f, k, roles, opacity);
+    }
+
+    /**
+     * An SDG drawing (vexelray-fields {@code docs/sdg.md}), its canvas's top-left at {@code (x, y)} and {@code scale}
+     * canvas pixels to one of its units: each layer, back to front, one quad over its stencil's rectangle, cut at the
+     * stencil's edge half a pixel either side and painted, over what is under it. Sharp at any size, turned and scaled
+     * by the canvas's transform too.
+     *
+     * <p>{@code pages[i]} is the drawing's page {@code i} uploaded as it is, RGBA8 <b>UNORM</b>, never through an sRGB
+     * decode (half of them are distances), with linear filtering and clamp-to-edge. Each layer is one run of its page,
+     * so a drawing on one page is one run; draw it {@link SdgPages#colocated colocated}, since a layer whose paint is on
+     * another page than its stencil is skipped (and said once). A layer of a kind this canvas does not know is
+     * skipped, as the format says.
+     *
+     * @param roles   the colours of the theme for paints that name a role
+     * @param opacity times every layer's own
+     */
+    public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float scale, Roles roles, float opacity) {
+        if (!(scale > 0f) || !(opacity > 0f)) {
+            return this;
+        }
+        float[] inst = sdgInstance;
+        int look = CoreLooks.lookOffset(CoreLooks.Primitive.SDG);
+        for (Sdg.Layer layer : drawing.layers()) {
+            if (!layer.known() || !(layer.opacity() > 0f)) {
+                continue;
+            }
+            if (!SdgPages.together(layer)) {
+                Diagnostics.dropped("canvas:sdg-pages", "an SDG layer whose paint is on another page than its stencil",
+                        "a canvas run binds one image, so the layer was skipped; load the drawing through "
+                                + "SdgPages.colocated before uploading its pages");
+                continue;
+            }
+            Sdg.Stencil s = layer.stencil();
+            Sdg.Page page = drawing.pages().get(s.page());
+            float pw = page.width(), ph = page.height();
+            java.util.Arrays.fill(inst, 0f);
+            // the stencil: its rectangle half a texel in, which channel, and screen px per unit of the texel's value
+            inst[0] = (s.x() + 0.5f) / pw;
+            inst[1] = (s.y() + 0.5f) / ph;
+            inst[2] = (s.x() + s.width() - 0.5f) / pw;
+            inst[3] = (s.y() + s.height() - 0.5f) / ph;
+            if (s.kind().equals(Sdg.Stencil.MSDF)) {
+                inst[8] = 1f;
+            } else {
+                inst[4 + s.channel()] = 1f;
+            }
+            inst[9] = (float) (s.range() / s.scale()) * scale * this.scale;
+            float alpha = layer.opacity() * opacity;
+            Color colour;
+            if (layer.paint() instanceof Sdg.Paint.Solid solid) {
+                int c = solid.role().isEmpty() ? solid.rgba() : roles.rgba(solid.role(), solid.rgba());
+                colour = new Color((c >>> 24) / 255f, (c >>> 16 & 0xFF) / 255f, (c >>> 8 & 0xFF) / 255f,
+                        (c & 0xFF) / 255f * alpha);
+            } else if (layer.paint() instanceof Sdg.Paint.Sampled p) {
+                // stencil texture coordinate to the paint's, both being the same point of the drawing
+                double k = p.scale() / s.scale();
+                inst[10] = (float) k;
+                inst[11] = (float) k;
+                inst[12] = (float) ((p.x() + (s.originX() - p.originX()) * p.scale() - s.x() * k) / pw);
+                inst[13] = (float) ((p.y() + (s.originY() - p.originY()) * p.scale() - s.y() * k) / ph);
+                inst[14] = (p.x() + 0.5f) / pw;
+                inst[15] = (p.y() + 0.5f) / ph;
+                inst[16] = (p.x() + p.width() - 0.5f) / pw;
+                inst[17] = (p.y() + p.height() - 0.5f) / ph;
+                inst[18] = 1f;
+                colour = new Color(1f, 1f, 1f, alpha);
+            } else {
+                continue;   // a paint of a kind this does not know: known() already said no, but say it here too
+            }
+            int record = recordOf(look, inst);
+            float x0 = x + (float) (s.originX() * scale), y0 = y + (float) (s.originY() * scale);
+            float x1 = x + (float) ((s.originX() + s.width() / s.scale()) * scale);
+            float y1 = y + (float) ((s.originY() + s.height() / s.scale()) * scale);
+            float u0 = s.x() / pw, v0 = s.y() / ph, u1 = (s.x() + s.width()) / pw, v1 = (s.y() + s.height()) / ph;
+            activeImage = pages[s.page()];
+            try {
+                push(x0, y0, colour, u0, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x1, y0, colour, u1, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x1, y1, colour, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x0, y0, colour, u0, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x1, y1, colour, u1, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+                push(x0, y1, colour, u0, v1, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
+            } finally {
+                activeImage = null;
+            }
+        }
+        return this;
+    }
+
+    private final float[] sdgInstance = new float[19];
 
     /** {@link #image(float, float, float, float, float, ImageHandle, float, float, float, float, Color)} showing the
      *  whole texture, square-cornered and untinted — what a viewport wants. */

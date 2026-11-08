@@ -83,22 +83,30 @@ final class OffscreenCanvas implements AutoCloseable {
 
     /** {@code canvas} drawn over opaque black, as tightly packed RGBA rows, top to bottom. */
     byte[] draw(LookTable table, Canvas canvas) {
-        return draw(table, canvas, null);
+        return draw(table, canvas, List.<Texture>of());
     }
 
     /** As {@link #draw(LookTable, Canvas)}, with {@code texture} bound for the runs that name its handle. */
     byte[] draw(LookTable table, Canvas canvas, Texture texture) {
+        return draw(table, canvas, texture == null ? List.of() : List.of(texture));
+    }
+
+    /** As {@link #draw(LookTable, Canvas)}, each of {@code textures} bound for the runs that name its handle. */
+    byte[] draw(LookTable table, Canvas canvas, List<Texture> textures) {
         float[] looks = table.floats();
         tables.update(0, looks, looks.length);
         tables.update(Composition.RECORDS_BASE, canvas.records(), canvas.recordCount());
-        AtlasTexture image = texture == null ? null
-                : new AtlasTexture(device, texture.width(), texture.height(), texture.rgba());
+        java.util.Map<ImageHandle, AtlasTexture> images = new java.util.IdentityHashMap<>();
         try (VertexBuffer vertices = new VertexBuffer(device, canvas.toVertexArray())) {
+            for (Texture t : textures) {
+                images.put(t.handle(), new AtlasTexture(device, t.width(), t.height(), t.rgba()));
+            }
             List<WindowedPresenter.Run> runs = new ArrayList<>();
             for (Canvas.Run run : canvas.runs()) {
                 long set1 = placeholder.descriptorSet();
                 if (run.image() != null) {
-                    if (texture == null || run.image() != texture.handle()) {
+                    AtlasTexture image = images.get(run.image());
+                    if (image == null) {
                         throw new IllegalArgumentException("the canvas names an image the harness was not given");
                     }
                     set1 = image.descriptorSet();
@@ -108,9 +116,7 @@ final class OffscreenCanvas implements AutoCloseable {
             return OffscreenDraw.toRgba(device, renderPass.handle(), pipeline, width, height, vertices.handle(),
                     placeholder.descriptorSet(), tables.descriptorSet(), runs, 0f, 0f, 0f, 1f);
         } finally {
-            if (image != null) {
-                image.close();
-            }
+            images.values().forEach(AtlasTexture::close);
         }
     }
 

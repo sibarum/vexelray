@@ -23,7 +23,12 @@ public final class CoreLooks {
         /** An image across a rounded box. */
         IMAGE(CoreShadelets.BOX, CoreShadelets.IMAGE_FILL),
         /** A shape from a distance field, filled in the vertex colour. */
-        FIELD(CoreShadelets.FIELD, CoreShadelets.FIELD_FILL);
+        FIELD(CoreShadelets.FIELD, CoreShadelets.FIELD_FILL),
+        /**
+         * One layer of an SDG drawing: its stencil, its paint. Every value is the layer's own, so its elements carry
+         * them in records of their own; this primitive's {@link #lookOffset look} is what those records name.
+         */
+        SDG(CoreShadelets.SDG_STENCIL, CoreShadelets.SDG_PAINT);
 
         /** Null for text, whose source depends on the shader. */
         private final Shadelet source;
@@ -48,7 +53,9 @@ public final class CoreLooks {
 
     private static final List<Primitive> PRIMITIVES = List.of(Primitive.values());
 
-    private static final int[] RECORDS = seed(new LookTable(CoreShadelets.composition().manifest()));
+    private static final LookTable REFERENCE = new LookTable(CoreShadelets.composition().manifest());
+    private static final int[] RECORDS = seed(REFERENCE);
+    private static final int[] LOOKS = looks(REFERENCE);
 
     private CoreLooks() {
     }
@@ -56,6 +63,27 @@ public final class CoreLooks {
     /** The element record a vertex of {@code primitive} names: the same in every table {@link #table} starts. */
     public static int record(Primitive primitive) {
         return RECORDS[primitive.ordinal()];
+    }
+
+    /**
+     * Where {@code primitive}'s look is in every table {@link #table} starts: what the first float of an element record
+     * of its own holds, for a primitive whose elements carry per-instance values ({@link Primitive#SDG}).
+     */
+    public static int lookOffset(Primitive primitive) {
+        return LOOKS[primitive.ordinal()];
+    }
+
+    /** Floats of per-instance values an element of {@code primitive} carries after its look. */
+    public static int instanceFloats(Primitive primitive) {
+        return REFERENCE.instanceFloats(primitive.look());
+    }
+
+    private static int[] looks(LookTable table) {
+        int[] looks = new int[PRIMITIVES.size()];
+        for (Primitive p : PRIMITIVES) {
+            looks[p.ordinal()] = table.look(p.look(CoreShadelets.textType(table.manifest())));
+        }
+        return looks;
     }
 
     /**
@@ -80,8 +108,9 @@ public final class CoreLooks {
             throw new IllegalArgumentException("this shader lacks some of the core set, so the canvas's own "
                     + "primitives cannot all be drawn. Compose it as CoreShadelets.composition(type).with(...)", e);
         }
+        int[] looks = looks(table);
         for (int k = 0; k < records.length; k++) {
-            if (records[k] != RECORDS[k]) {
+            if (records[k] != RECORDS[k] || looks[k] != LOOKS[k]) {
                 throw new IllegalArgumentException("this shader lacks some of the core set, so the canvas's own "
                         + "primitives cannot all be drawn. Compose it as CoreShadelets.composition(type).with(...)");
             }
