@@ -6,7 +6,7 @@
 
     <groupId>dev.vexelray</groupId>
     <artifactId>vexelray</artifactId>
-    <version>0.1.3-SNAPSHOT</version>
+    <version>0.2.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>VexelRay</name>
@@ -103,6 +103,8 @@
         <!-- Pure-Java vector/matrix math for camera/MVP transforms (no natives). -->
         <joml.version>1.10.7</joml.version>
         <junit.version>5.11.4</junit.version>
+        <!-- vexelray-fields: the SDG format (Canvas.sdg draws it) and, for tests, its encoders and reference renderer. -->
+        <vexelray-fields.version>0.2.0-SNAPSHOT</vexelray-fields.version>
 
         <!-- Maven plugin tooling for vexelray-msdf-maven-plugin. -->
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
@@ -112,6 +114,18 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- The .sdg file (signed distance graphics) as records, and nothing else: vexelray-fields's format
+                 module, which depends on nothing. The canvas draws an Sdg's layers; the encoders stay in fields. -->
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-sdg-format</artifactId>
+                <version>${vexelray-fields.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.vexelray.fields</groupId>
+                <artifactId>vexelray-fields-sdg</artifactId>
+                <version>${vexelray-fields.version}</version>
+            </dependency>
             <!-- The stack-wide profiling seam (see sibarum.probe.Probe). Zero dependencies of its own, so a
                  module can carry instrumentation without acquiring the event bus with it. -->
             <dependency>
