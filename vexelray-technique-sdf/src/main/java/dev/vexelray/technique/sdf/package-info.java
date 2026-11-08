@@ -14,8 +14,9 @@
  * ({@link dev.vexelray.technique.sdf.SdfComposer#sdfFunction}), which is both the shader's own single copy of
  * the field and the function a host lowers to the CPU for collision — the same definition, drawn and simulated.
  *
- * <p>The module is named for what it becomes: when the Phase 2 runtime lands it grows a {@code RenderTechnique}
- * implementation alongside the composer. See {@code docs/architecture.md} §3 and
+ * <p>{@link dev.vexelray.technique.sdf.SdfRaymarchTechnique} is the {@code RenderTechnique} that records the
+ * composed march into a frame the engine began, writing depth from its hit distance so it composites per pixel
+ * with the other techniques in the pipeline. See {@code docs/techniques.md}, {@code docs/architecture.md} §3 and
  * {@code docs/surface-compiler.md} stage S1.
  */
 package dev.vexelray.technique.sdf;

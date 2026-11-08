@@ -15,8 +15,8 @@
 
     <description>
         Linux platform binding: window + Vulkan surface via direct Panama bindings to libX11 (Wayland later) and
-        VK_KHR_xlib_surface. Skeleton — exists from day one per the multi-platform principle; the binding
-        implementation follows docs/native-bindings.md. Selected at build time on Linux hosts.
+        VK_KHR_xlib_surface, plus the desktop integration around it (tray, notices, user data folder). Released in
+        0.1.2; the bindings follow docs/native-bindings.md. Selected at build time on Linux hosts.
     </description>
 
     <dependencies>

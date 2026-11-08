@@ -46,8 +46,9 @@ import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
  * boilerplate, and each grown a private copy of a helper that had been public all along. A worked example is
  * the cheapest fix for both.
  *
- * <p>Run it: {@code mvn -pl vexelray-demo exec:java -Dexec.mainClass=dev.vexelray.demo.HelloTechnique}, with
- * {@code --enable-native-access=ALL-UNNAMED}. An optional first argument sets the frame count.
+ * <p>Run it: {@code mvn -pl vexelray-demo exec:exec -Dfathom.mainClass=dev.vexelray.demo.HelloTechnique
+ * -Dfathom.args=300}. {@code exec:exec} starts a fresh JVM with {@code --enable-native-access=ALL-UNNAMED}, which
+ * the Panama calls need; the argument is the frame count. {@code docs/techniques.md} walks through this class.
  *
  * <h2>1. What the engine gives you, and what it keeps</h2>
  *

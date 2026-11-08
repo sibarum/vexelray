@@ -36,9 +36,10 @@ package dev.vexelray.engine;
  * change, or a new target — and it is paired with a {@link #close()} first. A technique therefore never has to
  * make {@code realize} tolerate being called twice over live objects.
  *
- * <p><b>Device access.</b> {@link TechniqueContext} exposes the target's formats, extent, render-pass handle, and
- * resource manager as substrate-light values. A technique that must create Vulkan objects casts the context to
- * the runtime-provided Vulkan-bearing subtype (deferred backend abstraction, YAGNI — see D3).
+ * <p><b>Device access.</b> {@link TechniqueContext} exposes the target's formats, extent and render-pass handle as
+ * substrate-light values, and no allocator (its javadoc says why). A technique that must create Vulkan objects
+ * casts the context to {@code VulkanTechniqueContext}, in {@code vexelray-engine-vulkan-api}, for the device
+ * (deferred backend abstraction, YAGNI — see D3, D18). {@code docs/techniques.md} is the guide to writing one.
  *
  * <h2>Threading contract</h2>
  *
