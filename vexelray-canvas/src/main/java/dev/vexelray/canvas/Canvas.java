@@ -2,6 +2,7 @@ package dev.vexelray.canvas;
 
 import dev.vexelray.canvas.shadelet.Composition;
 import dev.vexelray.canvas.shadelet.CoreLooks;
+import dev.vexelray.canvas.shadelet.CoreShadelets;
 import dev.vexelray.canvas.shadelet.Look;
 import dev.vexelray.canvas.shadelet.LookTable;
 import dev.vexelray.diag.Diagnostics;
@@ -686,13 +687,27 @@ public final class Canvas {
 
     /**
      * An SDG drawing fitted into {@code (x, y, w, h)}, its aspect kept and centred, as {@code SdgRender.render} fits
-     * it: see {@link #sdg(Sdg, ImageHandle[], float, float, float, Roles, float)}.
+     * it: see {@link #sdg(SdgDrawing, ImageHandle[], float, float, float, Roles, float, Look, float...)}.
      */
     public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float w, float h, Roles roles,
                       float opacity) {
+        return sdg(SdgDrawing.of(drawing), pages, x, y, w, h, roles, opacity, null);
+    }
+
+    /** As {@link #sdg(Sdg, ImageHandle[], float, float, float, float, Roles, float)}, at {@code (x, y)} and a scale. */
+    public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float scale, Roles roles, float opacity) {
+        return sdg(SdgDrawing.of(drawing), pages, x, y, scale, roles, opacity, null);
+    }
+
+    /**
+     * An SDG drawing fitted into {@code (x, y, w, h)}, its aspect kept and centred: see
+     * {@link #sdg(SdgDrawing, ImageHandle[], float, float, float, Roles, float, Look, float...)}.
+     */
+    public Canvas sdg(SdgDrawing drawing, ImageHandle[] pages, float x, float y, float w, float h, Roles roles,
+                      float opacity, Look look, float... instance) {
         float k = (float) Math.min(w / drawing.width(), h / drawing.height());
         return sdg(drawing, pages, x + (float) (w - drawing.width() * k) / 2f,
-                y + (float) (h - drawing.height() * k) / 2f, k, roles, opacity);
+                y + (float) (h - drawing.height() * k) / 2f, k, roles, opacity, look, instance);
     }
 
     /**
@@ -707,16 +722,24 @@ public final class Canvas {
      * another page than its stencil is skipped (and said once). A layer of a kind this canvas does not know is
      * skipped, as the format says.
      *
+     * <p><b>A look</b> draws the drawing's first layer, the one at the back, with effects, as a field's look does: its
+     * source must be {@link CoreShadelets#SDG_STENCIL} and one of its painters {@link CoreShadelets#SDG_PAINT}, which
+     * this fills in; {@code instance} is every other part's per-instance values, in look order. Its quad grows by the
+     * look's reach, as far as the stencil carries distance. The other layers are drawn plain over it. Null for none.
+     * A look needs {@link #looks(LookTable)} set.
+     *
      * @param roles   the colours of the theme for paints that name a role
      * @param opacity times every layer's own
      */
-    public Canvas sdg(Sdg drawing, ImageHandle[] pages, float x, float y, float scale, Roles roles, float opacity) {
+    public Canvas sdg(SdgDrawing drawing, ImageHandle[] pages, float x, float y, float scale, Roles roles,
+                      float opacity, Look look, float... instance) {
         if (!(scale > 0f) || !(opacity > 0f)) {
             return this;
         }
-        float[] inst = sdgInstance;
-        int look = CoreLooks.lookOffset(CoreLooks.Primitive.SDG);
+        boolean first = true;
         for (Sdg.Layer layer : drawing.layers()) {
+            Look drawnBy = first ? look : null;
+            first = false;
             if (!layer.known() || !(layer.opacity() > 0f)) {
                 continue;
             }
@@ -727,20 +750,53 @@ public final class Canvas {
                 continue;
             }
             Sdg.Stencil s = layer.stencil();
-            Sdg.Page page = drawing.pages().get(s.page());
-            float pw = page.width(), ph = page.height();
-            java.util.Arrays.fill(inst, 0f);
-            // the stencil: its rectangle half a texel in, which channel, and screen px per unit of the texel's value
-            inst[0] = (s.x() + 0.5f) / pw;
-            inst[1] = (s.y() + 0.5f) / ph;
-            inst[2] = (s.x() + s.width() - 0.5f) / pw;
-            inst[3] = (s.y() + s.height() - 0.5f) / ph;
-            if (s.kind().equals(Sdg.Stencil.MSDF)) {
-                inst[8] = 1f;
+            float pw = drawing.pageWidth(s.page()), ph = drawing.pageHeight(s.page());
+            float[] inst;
+            int stencilAt = 0, paintAt;
+            if (drawnBy == null) {
+                inst = sdgInstance;
+                java.util.Arrays.fill(inst, 0f);
+                paintAt = SDG_STENCIL_FLOATS;
             } else {
-                inst[4 + s.channel()] = 1f;
+                inst = new float[lookTable.instanceFloats(drawnBy)];
+                paintAt = lookTable.instanceAt(drawnBy, CoreShadelets.SDG_PAINT.name());
+                if (paintAt < 0 || !drawnBy.source().shadelet().equals(CoreShadelets.SDG_STENCIL.name())) {
+                    throw new IllegalArgumentException("an SDG layer's look reads its stencil with '"
+                            + CoreShadelets.SDG_STENCIL.name() + "' and paints it with '"
+                            + CoreShadelets.SDG_PAINT.name() + "'");
+                }
+                // the look's other parts take the caller's values, in order, round the two this fills
+                int from = 0;
+                for (int k = 0; k < inst.length; k++) {
+                    boolean ours = k < stencilAt + SDG_STENCIL_FLOATS || (k >= paintAt && k < paintAt + SDG_PAINT_FLOATS);
+                    if (!ours) {
+                        if (from >= instance.length) {
+                            throw new IllegalArgumentException("this look's other parts carry more per-instance "
+                                    + "floats than the " + instance.length + " given");
+                        }
+                        inst[k] = instance[from++];
+                    }
+                }
+                if (from != instance.length) {
+                    throw new IllegalArgumentException("this look's other parts carry " + from
+                            + " per-instance floats; " + instance.length + " were given");
+                }
             }
-            inst[9] = (float) (s.range() / s.scale()) * scale * this.scale;
+            // the stencil: its rectangle half a texel in, which channel, screen px per unit of the texel's value, and
+            // texture coordinate per canvas px, which an effect looking elsewhere moves by
+            float unitPx = scale * this.scale;
+            inst[stencilAt] = (s.x() + 0.5f) / pw;
+            inst[stencilAt + 1] = (s.y() + 0.5f) / ph;
+            inst[stencilAt + 2] = (s.x() + s.width() - 0.5f) / pw;
+            inst[stencilAt + 3] = (s.y() + s.height() - 0.5f) / ph;
+            if (s.kind().equals(Sdg.Stencil.MSDF)) {
+                inst[stencilAt + 8] = 1f;
+            } else {
+                inst[stencilAt + 4 + s.channel()] = 1f;
+            }
+            inst[stencilAt + 9] = (float) (s.range() / s.scale()) * unitPx;
+            inst[stencilAt + 10] = (float) (s.scale() / unitPx) / pw;
+            inst[stencilAt + 11] = (float) (s.scale() / unitPx) / ph;
             float alpha = layer.opacity() * opacity;
             Color colour;
             if (layer.paint() instanceof Sdg.Paint.Solid solid) {
@@ -750,24 +806,38 @@ public final class Canvas {
             } else if (layer.paint() instanceof Sdg.Paint.Sampled p) {
                 // stencil texture coordinate to the paint's, both being the same point of the drawing
                 double k = p.scale() / s.scale();
-                inst[10] = (float) k;
-                inst[11] = (float) k;
-                inst[12] = (float) ((p.x() + (s.originX() - p.originX()) * p.scale() - s.x() * k) / pw);
-                inst[13] = (float) ((p.y() + (s.originY() - p.originY()) * p.scale() - s.y() * k) / ph);
-                inst[14] = (p.x() + 0.5f) / pw;
-                inst[15] = (p.y() + 0.5f) / ph;
-                inst[16] = (p.x() + p.width() - 0.5f) / pw;
-                inst[17] = (p.y() + p.height() - 0.5f) / ph;
-                inst[18] = 1f;
+                inst[paintAt] = (float) k;
+                inst[paintAt + 1] = (float) k;
+                inst[paintAt + 2] = (float) ((p.x() + (s.originX() - p.originX()) * p.scale() - s.x() * k) / pw);
+                inst[paintAt + 3] = (float) ((p.y() + (s.originY() - p.originY()) * p.scale() - s.y() * k) / ph);
+                inst[paintAt + 4] = (p.x() + 0.5f) / pw;
+                inst[paintAt + 5] = (p.y() + 0.5f) / ph;
+                inst[paintAt + 6] = (p.x() + p.width() - 0.5f) / pw;
+                inst[paintAt + 7] = (p.y() + p.height() - 0.5f) / ph;
+                inst[paintAt + 8] = 1f;
                 colour = new Color(1f, 1f, 1f, alpha);
             } else {
-                continue;   // a paint of a kind this does not know: known() already said no, but say it here too
+                continue;   // a paint of a kind this does not know: known() already said no
             }
-            int record = recordOf(look, inst);
+            int record = recordOf(drawnBy == null ? CoreLooks.lookOffset(CoreLooks.Primitive.SDG)
+                    : lookTable.look(drawnBy), inst);
             float x0 = x + (float) (s.originX() * scale), y0 = y + (float) (s.originY() * scale);
             float x1 = x + (float) ((s.originX() + s.width() / s.scale()) * scale);
             float y1 = y + (float) ((s.originY() + s.height() / s.scale()) * scale);
             float u0 = s.x() / pw, v0 = s.y() / ph, u1 = (s.x() + s.width()) / pw, v1 = (s.y() + s.height()) / ph;
+            if (drawnBy != null) {
+                // grown by what the look draws past the stencil's edge, its texture coordinate carried on with it
+                float grow = lookTable.reach(drawnBy, inst, (x1 - x0) / 2f, (y1 - y0) / 2f);
+                float du = (u1 - u0) / (x1 - x0), dv = (v1 - v0) / (y1 - y0);
+                x0 -= grow;
+                y0 -= grow;
+                x1 += grow;
+                y1 += grow;
+                u0 -= grow * du;
+                v0 -= grow * dv;
+                u1 += grow * du;
+                v1 += grow * dv;
+            }
             activeImage = pages[s.page()];
             try {
                 push(x0, y0, colour, u0, v0, record, false, 0f, 0f, 0f, 0f, 0f, 0f);
@@ -783,7 +853,10 @@ public final class Canvas {
         return this;
     }
 
-    private final float[] sdgInstance = new float[19];
+    /** Per-instance floats of {@link CoreShadelets#SDG_STENCIL} and of {@link CoreShadelets#SDG_PAINT}. */
+    private static final int SDG_STENCIL_FLOATS = CoreShadelets.SDG_STENCIL_STYLE.instanceFloats(),
+            SDG_PAINT_FLOATS = CoreShadelets.SDG_PAINT_STYLE.instanceFloats();
+    private final float[] sdgInstance = new float[SDG_STENCIL_FLOATS + SDG_PAINT_FLOATS];
 
     /** {@link #image(float, float, float, float, float, ImageHandle, float, float, float, float, Color)} showing the
      *  whole texture, square-cornered and untinted — what a viewport wants. */

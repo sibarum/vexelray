@@ -64,6 +64,29 @@ public final class LookTable {
     }
 
     /**
+     * Where {@code shadelet}'s per-instance values start among an element of this look's ({@link #instanceFloats}),
+     * counted from the first after the record's look; -1 if the look has no part of that name. How a host that fills
+     * in one part of a look (the canvas, an SDG layer's paint) finds its place.
+     */
+    public int instanceAt(Look look, String shadelet) {
+        Written w = written(look);
+        if (w.source.name.equals(shadelet)) {
+            return w.source.instanceAt;
+        }
+        for (Part m : w.modifiers) {
+            if (m.name.equals(shadelet)) {
+                return m.instanceAt;
+            }
+        }
+        for (Part p : w.painters) {
+            if (p.name.equals(shadelet)) {
+                return p.instanceAt;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * How far past its geometry an element of this look draws, in canvas units, for an element that carries no
      * per-instance values: see {@link #reach(Look, float[], float, float)}.
      */
@@ -98,7 +121,7 @@ public final class LookTable {
      * element's (counted from the first after the record's look). The shadelet is null for a table built from a
      * manifest alone, which then reaches nowhere.
      */
-    private record Part(Shadelet shadelet, float[] shared, int instanceAt, int instanceFloats) {
+    private record Part(String name, Shadelet shadelet, float[] shared, int instanceAt, int instanceFloats) {
         float reach(float[] instance, float halfW, float halfH) {
             if (shadelet == null) {
                 return 0f;
@@ -192,7 +215,7 @@ public final class LookTable {
 
     /** {@code use} as a part whose per-instance floats start at {@code instanceAt} in the record (1 is the first). */
     private Part part(Look.Use use, int instanceAt, int floats) {
-        return new Part(shadelets.get(use.shadelet()), use.shared(), instanceAt - 1, floats);
+        return new Part(use.shadelet(), shadelets.get(use.shadelet()), use.shared(), instanceAt - 1, floats);
     }
 
     private record Resolved(Manifest.Entry entry, Look.Use use) {

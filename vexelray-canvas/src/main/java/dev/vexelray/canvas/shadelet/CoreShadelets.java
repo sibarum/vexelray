@@ -135,13 +135,16 @@ public final class CoreShadelets {
      */
     public static final StyleLayout SDG_STENCIL_STYLE = StyleLayout.of(StyleLayout.perInstance("rect", 4),
             StyleLayout.perInstance("channel", 4), StyleLayout.perInstance("median", 1),
-            StyleLayout.perInstance("pxPerValue", 1));
+            StyleLayout.perInstance("pxPerValue", 1), StyleLayout.perInstance("uvPerPx", 2));
 
     /**
      * An SDG layer's stencil (vexelray-fields {@code docs/sdg.md} §2.2), in the image slot: read between texel centres
      * at the vertex UV clamped into its rectangle, each channel on its own, then one channel or the median of three, and
-     * made canvas units from the edge by {@code pxPerValue}. Its effects would need distance far from the edge, which an
-     * SDG stencil does not promise, so {@code offset} is not looked at.
+     * made canvas units from the edge by {@code pxPerValue}. True to half of that, where the stencil's range ends.
+     *
+     * <p>An offset (a shadow below, a light from above) moves the read by {@code uvPerPx}, the stencil's texture
+     * coordinate per canvas unit. So a look's effects work on a layer as on a field, as far as its stencil carries
+     * distance: an {@code sdf} to {@code range / 2} texels; an {@code msdf}'s median only near its edge.
      */
     public static final Shadelet.Source SDG_STENCIL = new Shadelet.Source() {
         @Override
@@ -157,7 +160,10 @@ public final class CoreShadelets {
         @Override
         public Expr distance(Fragment fragment, Expr offset, StyleView style) {
             Expr rect = style.vector("rect");
-            Expr uv = clamp(fragment.uv(), v2(x(rect), y(rect)), v2(z(rect), w(rect)));
+            Expr step = style.vector("uvPerPx");
+            Expr moved = v2(add(x(fragment.uv()), mul(x(offset), x(step))),
+                    add(y(fragment.uv()), mul(y(offset), y(step))));
+            Expr uv = clamp(moved, v2(x(rect), y(rect)), v2(z(rect), w(rect)));
             Expr s = new Expr.SampleTexture(IMAGE, uv);
             Expr median = max(min(x(s), y(s)), min(max(x(s), y(s)), z(s)));
             Expr e = mix(dot(s, style.vector("channel")), median, style.scalar("median"));
