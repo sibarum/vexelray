@@ -46,9 +46,11 @@ vexelray                 parent (pom)
 │    dev.vexelray.technique.sdf  SdfComposer, SdfScene, MarchSettings; ConeField is the same march with the
 │                           geometry read from a storage buffer instead of compiled in — one pipeline for
 │                           every scene, so new geometry is a buffer copy rather than a shader build
-├─ vexelray-msdf-maven-plugin  build-time MSDF atlas generator (Maven plugin), used by vexelray-text
-├─ vexelray-text         MSDF text: atlas model (msdf-atlas-gen JSON), glyph layout, MSDF shader as core IR
-│    dev.vexelray.text      AtlasData/AtlasInfo, GlyphLayout, TextLayout/TextMesh, MsdfShader
+├─ vexelray-msdf-maven-plugin  build-time font atlases (Maven plugin): every face of a font family, one MSDF or
+│                        SDF atlas each, listed in fonts.json (vexelray-msdf-maven-plugin/README.md)
+├─ vexelray-text         text from those atlases: faces, per-code-point fallback, layout, MSDF shader as core IR
+│    dev.vexelray.text      FontSet, AtlasData/AtlasInfo, GlyphLayout, TextLayout/TextMesh, MsdfShader
+│                           (docs/text.md)
 ├─ vexelray-canvas       2D Canvas API: immediate-mode unified-batched geometry and its uber-shader as core IR
 │    dev.vexelray.canvas    Canvas, CanvasVertex, CanvasShader, Color — shapes, text and sampled images all
 │                           share one fat-vertex batch, so a whole scene composites as a single draw
