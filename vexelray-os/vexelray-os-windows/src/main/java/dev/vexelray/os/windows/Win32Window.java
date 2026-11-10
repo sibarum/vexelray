@@ -124,6 +124,10 @@ public final class Win32Window implements NativeWindow {
     // and written once at construction, so final rather than volatile.
     private final int minWidth;
     private final int minHeight;
+    // The smallest client area the application asks for (setMinClientSize), derived from what it draws and moved
+    // while the window is open — written by the frame, read by the pump on WM_GETMINMAXINFO.
+    private volatile int minClientWidth;
+    private volatile int minClientHeight;
     private int width;
     private int height;
     // Two facts, not one. WM_CLOSE is a *request* — this window procedure deliberately does not pass it to
@@ -333,9 +337,19 @@ public final class Win32Window implements NativeWindow {
                     // window manager owns the drag, so a size refused after the fact is one the user already
                     // saw. Windows fills the struct first and only ptMinTrackSize is overwritten -- the maximize
                     // geometry in the other members is its answer and has to stay its answer.
-                    if (window.minWidth > 0 || window.minHeight > 0) {
+                    int minW = window.minWidth;
+                    int minH = window.minHeight;
+                    int floorW = window.minClientWidth;
+                    int floorH = window.minClientHeight;
+                    if (floorW > 0 || floorH > 0) {
+                        // The application's floor is a client size and the track size an outer one: add the frame.
+                        int[] frame = window.frameExtent(hwnd);
+                        minW = Math.max(minW, floorW > 0 ? floorW + frame[0] : 0);
+                        minH = Math.max(minH, floorH > 0 ? floorH + frame[1] : 0);
+                    }
+                    if (minW > 0 || minH > 0) {
                         User32.defWindowProcW(hwnd, msg, wParam, lParam);
-                        User32.setMinTrackSize(lParam, window.minWidth, window.minHeight);
+                        User32.setMinTrackSize(lParam, minW, minH);
                         return 0;
                     }
                 }
@@ -470,6 +484,35 @@ public final class Win32Window implements NativeWindow {
     @Override
     public void setHitRegions(HitRegions regions) {
         this.hitRegions = regions == null ? HitRegions.NONE : regions;
+    }
+
+    @Override
+    public void setMinClientSize(int width, int height) {
+        // Only stored: Windows asks for it (WM_GETMINMAXINFO) before each sizing operation, so a new floor takes
+        // effect at the next drag and never resizes a window by itself.
+        this.minClientWidth = Math.max(0, width);
+        this.minClientHeight = Math.max(0, height);
+    }
+
+    /**
+     * How much wider and taller the outer rect is than the client area: what turns a client floor into a track
+     * size. Nothing for a {@link Decorations#CLIENT} window, whose client area is the whole window rect (see
+     * {@code calcClientFrame}; maximized it is inset, but a maximized window is not being dragged); the live
+     * difference for a system frame, which also follows its DPI.
+     */
+    private int[] frameExtent(MemorySegment hwnd) {
+        if (decorations == Decorations.CLIENT) {
+            return new int[] {0, 0};
+        }
+        try (Arena temp = Arena.ofConfined()) {
+            MemorySegment outer = temp.allocate(User32.RECT);
+            MemorySegment client = temp.allocate(User32.RECT);
+            User32.getWindowRect(hwnd, outer);
+            User32.getClientRect(hwnd, client);
+            return new int[] {
+                    Math.max(0, User32.rectSpanX(outer) - User32.rectSpanX(client)),
+                    Math.max(0, User32.rectSpanY(outer) - User32.rectSpanY(client))};
+        }
     }
 
     @Override

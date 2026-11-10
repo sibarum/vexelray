@@ -203,6 +203,14 @@ final class X11Window implements NativeWindow {
     private int frameRight;
     private int frameTop;
     private int frameBottom;
+    // What WM_NORMAL_HINTS is rebuilt from when the application's floor moves (setMinClientSize): the creation-time
+    // bounds, whether the window manager draws a frame around the client, and the floor itself, in client px.
+    private WindowConfig sizeConfig;
+    private boolean sizeFramed;
+    private int minClientWidth;
+    private int minClientHeight;
+    /** Whether a hint has gone out, so a floor that falls back to nothing is written as nothing rather than kept. */
+    private boolean sizeHintsWritten;
 
     private volatile boolean closeRequested;
     private boolean closeFromWindowManager;
@@ -346,16 +354,43 @@ final class X11Window implements NativeWindow {
     }
 
     private void setMinSize(WindowConfig config, boolean framed) {
+        this.sizeConfig = config;
+        this.sizeFramed = framed;
+        writeSizeHints();
+    }
+
+    @Override
+    public void setMinClientSize(int width, int height) {
+        int w = Math.max(0, width);
+        int h = Math.max(0, height);
+        if (w == minClientWidth && h == minClientHeight) {
+            return;   // pushed every frame; a property write is only owed when the floor moves
+        }
+        minClientWidth = w;
+        minClientHeight = h;
+        if (sizeConfig != null) {
+            writeSizeHints();
+        }
+    }
+
+    /**
+     * {@code WM_NORMAL_HINTS} from the creation-time bounds and the application's floor, the larger of the two on each
+     * axis. Hints are in client px, so the config's outer minimum loses the frame and the floor is taken as it is.
+     */
+    private void writeSizeHints() {
+        WindowConfig config = sizeConfig;
+        boolean framed = sizeFramed;
         if (config.minWidth() == WindowConfig.NO_MINIMUM && config.minHeight() == WindowConfig.NO_MINIMUM
-                && config.resizable()) {
+                && config.resizable() && minClientWidth == 0 && minClientHeight == 0 && !sizeHintsWritten) {
             return;
         }
+        sizeHintsWritten = true;
         try (Arena temp = Arena.ofConfined()) {
             MemorySegment hints = temp.allocate(X11.XSizeHints);
             int frameW = framed ? frameLeft + frameRight : 0;
             int frameH = framed ? frameTop + frameBottom : 0;
-            int minW = Math.max(1, config.minWidth() - frameW);
-            int minH = Math.max(1, config.minHeight() - frameH);
+            int minW = Math.max(1, Math.max(config.minWidth() - frameW, minClientWidth));
+            int minH = Math.max(1, Math.max(config.minHeight() - frameH, minClientHeight));
             if (!config.resizable()) {
                 // A fixed-size window is one whose minimum and maximum are both its size.
                 minW = Math.max(1, config.width() - frameW);

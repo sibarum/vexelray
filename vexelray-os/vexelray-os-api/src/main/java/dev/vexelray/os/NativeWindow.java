@@ -269,6 +269,24 @@ public interface NativeWindow extends AutoCloseable {
     }
 
     /**
+     * The smallest <b>client area</b> the user may drag this window to, in the units {@link #width()} and
+     * {@link #height()} report: a floor the application derives from what it draws, and may move while the window
+     * is open (a zoom that makes its chrome wider raises it). The window manager enforces it, so a drag simply
+     * stops there.
+     *
+     * <p>It sits beside {@link WindowConfig#minWidth}/{@code minHeight}, which bound the <em>outer</em> rect and are
+     * fixed at creation; the larger of the two wins on each axis. The platform converts between the two rects, so
+     * a caller never needs to know how thick a frame is or whether the application draws it.
+     *
+     * <p>Not a resize: a window already smaller than a new floor keeps its size until the user next sizes it.
+     * {@code 0} on an axis sets no floor there. Like {@link #setHitRegions}, push it as often as convenient; a
+     * platform does the work only when the value changes.
+     */
+    default void setMinClientSize(int width, int height) {
+        // no-op by default
+    }
+
+    /**
      * Install the callback the platform invokes when it must paint outside the host's own loop — while the
      * window manager runs a modal move or resize, or during a live resize. Without it a window drawn by a
      * pull-style frame loop freezes for the duration of a drag, because that loop is suspended inside the

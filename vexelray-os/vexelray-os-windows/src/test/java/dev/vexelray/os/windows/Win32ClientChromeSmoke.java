@@ -91,6 +91,18 @@ public final class Win32ClientChromeSmoke {
             check("a resize below it is clamped", window.outerWidth(), MIN_W);
             check("on both axes", window.outerHeight(), MIN_H);
 
+            // 4b. The application's own floor, a client size pushed while the window is open: the larger of it and
+            // the config's wins, and a client-drawn window's client area is its whole rect, so nothing is added.
+            window.setMinClientSize(MIN_W + 120, MIN_H + 40);
+            check("a larger client floor wins", minTrack(window)[0], MIN_W + 120);
+            check("on both axes, as a client floor", minTrack(window)[1], MIN_H + 40);
+            check("a new floor resizes nothing by itself", window.outerWidth(), MIN_W);
+            window.setBounds(200, 200, MIN_W, MIN_H);
+            window.pumpEvents();
+            check("the next sizing honours it", window.outerWidth(), MIN_W + 120);
+            window.setMinClientSize(0, 0);
+            check("a floor withdrawn leaves the config's", minTrack(window)[0], MIN_W);
+
             // 5. requestClose travels the ordinary route, so the pump reports it.
             window.requestClose();
             check("close is observed by the pump", window.pumpEvents(), false);
@@ -99,6 +111,16 @@ public final class Win32ClientChromeSmoke {
         System.out.println(failures == 0 ? "client chrome OK" : failures + " CHECK(S) FAILED");
         if (failures > 0) {
             System.exit(1);
+        }
+    }
+
+    /** Ask the window what Windows asks it before a sizing operation: the smallest track size, outer px. */
+    private static int[] minTrack(NativeWindow window) {
+        try (java.lang.foreign.Arena temp = java.lang.foreign.Arena.ofConfined()) {
+            MemorySegment info = User32.allocMinMaxInfo(temp);
+            User32.sendMessageW(MemorySegment.ofAddress(window.osHandle()),
+                    User32.WM_GETMINMAXINFO, 0L, info.address());
+            return new int[] {User32.minTrackWidth(info), User32.minTrackHeight(info)};
         }
     }
 
