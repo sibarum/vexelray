@@ -143,6 +143,55 @@ class HitRegionsTest {
         assertEquals(HitRegions.Zone.TOP, bar().zone(300, GUTTER - 1, W, H, false, GUTTER, GUTTER));
     }
 
+    /** {@link #bar()} with a 12px frame of grips down the left, right and bottom, and a 16px corner at bottom-right. */
+    private static HitRegions gripped() {
+        HitRegions b = bar();
+        return new HitRegions(b.caption(), b.interactive(), b.maximizeButton(), BORDER, List.of(
+                new HitRegions.Grip(new HitRegions.Rect(0, 32, 12, H - 32), HitRegions.Zone.LEFT),
+                new HitRegions.Grip(new HitRegions.Rect(W - 12, 32, 12, H - 32), HitRegions.Zone.RIGHT),
+                new HitRegions.Grip(new HitRegions.Rect(0, H - 12, W, 12), HitRegions.Zone.BOTTOM),
+                new HitRegions.Grip(new HitRegions.Rect(W - 16, H - 16, 16, 16), HitRegions.Zone.BOTTOM_RIGHT)));
+    }
+
+    private static HitRegions.Zone atGripped(int x, int y) {
+        return gripped().zone(x, y, W, H, false, BORDER);
+    }
+
+    @Test
+    void aGripIsItsZoneWhereverItIsDrawn() {
+        assertEquals(HitRegions.Zone.LEFT, atGripped(10, 300), "a whole grip's width in, not the band's");
+        assertEquals(HitRegions.Zone.RIGHT, atGripped(W - 11, 300));
+        assertEquals(HitRegions.Zone.BOTTOM, atGripped(300, H - 11));
+    }
+
+    @Test
+    void theGripDeclaredLastWinsWhereTwoOverlap() {
+        // The corner square sits over the ends of the bottom and right grips, and is drawn on top of them.
+        assertEquals(HitRegions.Zone.BOTTOM_RIGHT, atGripped(W - 14, H - 14));
+        assertEquals(HitRegions.Zone.BOTTOM, atGripped(W - 30, H - 3), "the bottom grip outside the corner");
+    }
+
+    @Test
+    void gripsTurnTheBandOff() {
+        // The invariant: a window that declares grips is resized only from its grips, so content at the edge keeps
+        // its clicks and the title bar keeps its top pixels.
+        assertEquals(HitRegions.Zone.CAPTION, atGripped(300, 2), "no top band over the title bar");
+        assertEquals(HitRegions.Zone.CLIENT, atGripped(W - 4, 3), "and none over the close button's corner");
+        assertEquals(HitRegions.Zone.CAPTION, atGripped(2, 2), "nor at the top-left corner");
+    }
+
+    @Test
+    void aMaximizedWindowsGripsAreWhatLiesUnderThem() {
+        assertEquals(HitRegions.Zone.CLIENT, gripped().zone(10, 300, W, H, true, BORDER));
+        assertEquals(HitRegions.Zone.CLIENT, gripped().zone(W - 4, H - 4, W, H, true, BORDER));
+    }
+
+    @Test
+    void aGripIsOneOfTheEightResizeZones() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new HitRegions.Grip(new HitRegions.Rect(0, 0, 10, 10), HitRegions.Zone.CAPTION));
+    }
+
     @Test
     void resizeZonesAreDistinguishableFromTheRest() {
         assertEquals(true, HitRegions.Zone.TOP_LEFT.isResize());

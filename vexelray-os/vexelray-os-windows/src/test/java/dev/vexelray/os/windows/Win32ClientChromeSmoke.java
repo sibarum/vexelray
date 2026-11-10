@@ -103,6 +103,22 @@ public final class Win32ClientChromeSmoke {
             window.setMinClientSize(0, 0);
             check("a floor withdrawn leaves the config's", minTrack(window)[0], MIN_W);
 
+            // 4c. Grips: drawn resize controls answer as the edge they size, and turn the band off everywhere else.
+            int gw = window.width();
+            int gh = window.height();
+            window.setHitRegions(new HitRegions(
+                    List.of(new HitRegions.Rect(0, 0, gw, BAR_H)),
+                    List.of(new HitRegions.Rect(gw - BUTTON_W, 0, BUTTON_W, BAR_H)),
+                    null,
+                    8,
+                    List.of(new HitRegions.Grip(new HitRegions.Rect(0, gh - 12, gw, 12), HitRegions.Zone.BOTTOM),
+                            new HitRegions.Grip(new HitRegions.Rect(gw - 16, gh - 16, 16, 16),
+                                    HitRegions.Zone.BOTTOM_RIGHT))));
+            check("a grip sizes from its edge", hitTest(window, gw / 2, gh - 10), User32.HTBOTTOM);
+            check("the corner grip from its corner", hitTest(window, gw - 14, gh - 14), User32.HTBOTTOMRIGHT);
+            check("with grips there is no top band", hitTest(window, gw / 2, 2), User32.HTCAPTION);
+            check("nor a left one", hitTest(window, 2, gh / 2), User32.HTCLIENT);
+
             // 5. requestClose travels the ordinary route, so the pump reports it.
             window.requestClose();
             check("close is observed by the pump", window.pumpEvents(), false);

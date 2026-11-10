@@ -27,9 +27,15 @@ import java.util.List;
  *                       content. Where a {@code caption}, {@code interactive} or {@code maximizeButton}
  *                       rectangle covers the edge instead, the platform's own metric applies, so a band widened
  *                       to reach into a gutter can never eat half a title bar's drag surface or half a close
- *                       button. {@code 0} asks the platform for its default everywhere.
+ *                       button. {@code 0} asks the platform for its default everywhere. Unused while there are
+ *                       {@code grips}.
+ * @param grips          resize controls the application draws, each sizing the window from its own edge or corner.
+ *                       <b>A window that declares any is resized only from its grips</b>: the implicit band along
+ *                       the edges is off, so content that runs to the edge keeps its clicks and the only resize
+ *                       surface is one the user can see. Empty keeps the band.
  */
-public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximizeButton, int resizeBorder) {
+public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximizeButton, int resizeBorder,
+                         List<Grip> grips) {
 
     /** No caption anywhere: every pixel is content, and the platform's default resize band applies. */
     public static final HitRegions NONE = new HitRegions(List.of(), List.of(), null, 0);
@@ -37,8 +43,29 @@ public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximi
     public HitRegions {
         caption = List.copyOf(caption);
         interactive = List.copyOf(interactive);
+        grips = List.copyOf(grips);
         if (resizeBorder < 0) {
             throw new IllegalArgumentException("resizeBorder must not be negative, got " + resizeBorder);
+        }
+    }
+
+    /** Regions with no grips: the window is resized from the band along its edges. */
+    public HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximizeButton, int resizeBorder) {
+        this(caption, interactive, maximizeButton, resizeBorder, List.of());
+    }
+
+    /**
+     * A resize control the application draws: dragging {@code rect} sizes the window from {@code zone}'s edge or
+     * corner, exactly as the platform's own band there would. Its look, its hover and its cursor are the
+     * application's; only the drag is the window manager's.
+     */
+    public record Grip(Rect rect, Zone zone) {
+
+        public Grip {
+            if (rect == null || zone == null || !zone.isResize()) {
+                throw new IllegalArgumentException("a grip needs a rectangle and one of the eight resize zones, got "
+                        + zone);
+            }
         }
     }
 
@@ -77,7 +104,11 @@ public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximi
      * drawn on the title bar is a button; without that the caption would swallow its own controls. Everything
      * else is content.
      *
-     * <p>A maximized window has no resize band — its edges belong to the screen, not to a drag.
+     * <p>Where the application declared {@link #grips}, they take the band's place: a grip is its zone wherever it
+     * is drawn, ahead of any caption or control under it, and the edges are content everywhere else.
+     *
+     * <p>A maximized window has no resize band and its grips do nothing: its edges belong to the screen, not to a
+     * drag. A grip there is whatever lies under it.
      *
      * <p>One band everywhere, which is the conservative reading of {@link #resizeBorder}. The overload taking a
      * second thickness is what lets an application widen the band over its own dead space without the widening
@@ -107,7 +138,15 @@ public record HitRegions(List<Rect> caption, List<Rect> interactive, Rect maximi
      *                     rectangles — the platform's own frame metric
      */
     public Zone zone(int px, int py, int clientW, int clientH, boolean maximized, int border, int systemBorder) {
-        if (!maximized) {
+        if (!maximized && !grips.isEmpty()) {
+            // Grips replace the band rather than adding to it. Last declared first, since it is the one drawn on top.
+            for (int i = grips.size() - 1; i >= 0; i--) {
+                Grip grip = grips.get(i);
+                if (grip.rect().contains(px, py)) {
+                    return grip.zone();
+                }
+            }
+        } else if (!maximized) {
             Zone edge = edge(px, py, clientW, clientH, declared(px, py) ? systemBorder : border);
             if (edge != null) {
                 return edge;

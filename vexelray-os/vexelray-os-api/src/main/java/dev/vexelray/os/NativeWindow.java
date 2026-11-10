@@ -243,7 +243,11 @@ public interface NativeWindow extends AutoCloseable {
         /** The two-headed horizontal arrow: something whose width is dragged, a divider between side-by-side panes. */
         RESIZE_HORIZONTAL,
         /** The two-headed vertical arrow: something whose height is dragged, a divider between stacked panes. */
-        RESIZE_VERTICAL
+        RESIZE_VERTICAL,
+        /** The diagonal arrow from top-left to bottom-right: a corner that sizes both ways, such as a window's bottom-right grip. */
+        RESIZE_NWSE,
+        /** The diagonal arrow from top-right to bottom-left: the other two corners. */
+        RESIZE_NESW
     }
 
     /**

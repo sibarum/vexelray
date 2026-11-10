@@ -787,6 +787,8 @@ final class X11Window implements NativeWindow {
                 : cursor == Cursor.POINTER ? X11.XC_hand2
                 : cursor == Cursor.RESIZE_HORIZONTAL ? X11.XC_sb_h_double_arrow
                 : cursor == Cursor.RESIZE_VERTICAL ? X11.XC_sb_v_double_arrow
+                : cursor == Cursor.RESIZE_NWSE ? X11.XC_bottom_right_corner
+                : cursor == Cursor.RESIZE_NESW ? X11.XC_bottom_left_corner
                 : X11.XC_left_ptr;
     }
 

@@ -85,6 +85,9 @@ public final class X11 {
     public static final int XC_sb_h_double_arrow = 108;
     public static final int XC_sb_v_double_arrow = 116;
     public static final int XC_xterm = 152;
+    /** The cursor font has no two-headed diagonal: a corner arrow is how X shows a corner that sizes both ways. */
+    public static final int XC_bottom_right_corner = 14;
+    public static final int XC_bottom_left_corner = 12;
 
     // ---- Struct layouts. Offsets come from these, never from a literal (§4.3). -----------------------------------
 

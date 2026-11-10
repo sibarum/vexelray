@@ -94,6 +94,10 @@ public final class User32 {
     public static final int IDC_SIZEWE = 32644;
     /** {@code IDC_SIZENS} — the two-headed north-south arrow. */
     public static final int IDC_SIZENS = 32645;
+    /** {@code IDC_SIZENWSE} — the two-headed diagonal arrow, top-left to bottom-right. */
+    public static final int IDC_SIZENWSE = 32642;
+    /** {@code IDC_SIZENESW} — the two-headed diagonal arrow, top-right to bottom-left. */
+    public static final int IDC_SIZENESW = 32643;
 
     // ---- Struct layouts (named fields; padding explicit to match the x64 C ABI) -----------------------------
 

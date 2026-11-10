@@ -267,6 +267,8 @@ public final class Win32Window implements NativeWindow {
         CURSORS.put(Cursor.POINTER, User32.loadCursorW(MemorySegment.NULL, User32.IDC_HAND));
         CURSORS.put(Cursor.RESIZE_HORIZONTAL, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZEWE));
         CURSORS.put(Cursor.RESIZE_VERTICAL, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZENS));
+        CURSORS.put(Cursor.RESIZE_NWSE, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZENWSE));
+        CURSORS.put(Cursor.RESIZE_NESW, User32.loadCursorW(MemorySegment.NULL, User32.IDC_SIZENESW));
         MemorySegment cursor = arrowCursor;
         // A neutral dark background painted before the first Vulkan present (0x11141b). Process-lifetime, like the
         // class itself — the OS reclaims it at exit.
