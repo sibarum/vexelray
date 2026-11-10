@@ -432,6 +432,11 @@ public final class User32 {
     public static final int WM_TIMER         = 0x0113;
     public static final int WM_ENTERSIZEMOVE = 0x0231;
     public static final int WM_EXITSIZEMOVE  = 0x0232;
+    /** Sent through a live resize, its wParam naming the edge being dragged ({@code WMSZ_LEFT} 1 to {@code WMSZ_BOTTOMRIGHT} 8). */
+    public static final int WM_SIZING        = 0x0214;
+    public static final int WM_SYSCOMMAND    = 0x0112;
+    /** {@code WM_SYSCOMMAND}: a resize. Started by the mouse, the low four bits name the edge as {@code WMSZ_*} do; from the keyboard, they are 0. */
+    public static final int SC_SIZE          = 0xF000;
 
     /** {@code WM_SIZE} wParam: the window was minimized (its client size is 0 and must not be presented to). */
     public static final int SIZE_MINIMIZED = 1;

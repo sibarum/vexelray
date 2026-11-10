@@ -291,6 +291,16 @@ public interface NativeWindow extends AutoCloseable {
     }
 
     /**
+     * The edge or corner the window manager is resizing this window from right now, or {@code null} when no resize
+     * is under way (a move is not one). Read once a frame, like {@link #isMaximized()}: during the drag the pointer is
+     * the window manager's, so this is how an application-drawn grip knows to stay lit for the whole of it.
+     * Always one of the {@link HitRegions.Zone#isResize() resize zones}. The default reports none.
+     */
+    default HitRegions.Zone resizing() {
+        return null;
+    }
+
+    /**
      * Install the callback the platform invokes when it must paint outside the host's own loop — while the
      * window manager runs a modal move or resize, or during a live resize. Without it a window drawn by a
      * pull-style frame loop freezes for the duration of a drag, because that loop is suspended inside the

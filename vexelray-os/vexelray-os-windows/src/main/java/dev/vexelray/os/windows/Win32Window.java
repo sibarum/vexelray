@@ -128,6 +128,11 @@ public final class Win32Window implements NativeWindow {
     // while the window is open — written by the frame, read by the pump on WM_GETMINMAXINFO.
     private volatile int minClientWidth;
     private volatile int minClientHeight;
+    // The edge a resize is running from (resizing()), null when none is. pendingResize is the edge the WM_SYSCOMMAND
+    // that starts the loop named, held until WM_ENTERSIZEMOVE says the loop has begun. Pump thread only; volatile
+    // because the frame that reads resizing() may be pulled from inside that loop by the size-move timer.
+    private volatile HitRegions.Zone resizing;
+    private volatile HitRegions.Zone pendingResize;
     private int width;
     private int height;
     // Two facts, not one. WM_CLOSE is a *request* — this window procedure deliberately does not pass it to
@@ -376,13 +381,31 @@ public final class Win32Window implements NativeWindow {
                         return 0;
                     }
                 }
+                case User32.WM_SYSCOMMAND -> {
+                    // The command that starts a size or move loop, and the only place the edge is named before
+                    // the loop begins: a mouse resize carries it in the low four bits. Anything else (a move, a
+                    // keyboard size, which says no edge) leaves no edge pending. Not handled: Windows runs it.
+                    window.pendingResize = ((int) wParam & 0xFFF0) == User32.SC_SIZE
+                            ? sizingZone((int) wParam & 0xF) : null;
+                }
                 case User32.WM_ENTERSIZEMOVE -> {
                     // Windows is about to run a message loop of its own until the drag ends. The host's loop is
                     // suspended for the duration, so frames have to be pulled from in here instead.
+                    window.resizing = window.pendingResize;
+                    window.pendingResize = null;
                     User32.setTimer(hwnd, SIZEMOVE_TIMER, SIZEMOVE_TIMER_MS);
                     return 0;
                 }
+                case User32.WM_SIZING -> {
+                    // Through the resize, the edge being dragged. The answer for a keyboard size, whose edge is
+                    // only known once the first arrow key has picked one. Windows' own handling still runs.
+                    HitRegions.Zone edge = sizingZone((int) wParam);
+                    if (edge != null) {
+                        window.resizing = edge;
+                    }
+                }
                 case User32.WM_EXITSIZEMOVE -> {
+                    window.resizing = null;
                     User32.killTimer(hwnd, SIZEMOVE_TIMER);
                     return 0;
                 }
@@ -487,6 +510,23 @@ public final class Win32Window implements NativeWindow {
     public void setHitRegions(HitRegions regions) {
         this.hitRegions = regions == null ? HitRegions.NONE : regions;
     }
+
+    @Override
+    public HitRegions.Zone resizing() {
+        return resizing;
+    }
+
+    /** The resize zone a {@code WMSZ_*} code names (1 left to 8 bottom-right), or {@code null} for 0 or anything else. */
+    private static HitRegions.Zone sizingZone(int wmsz) {
+        return wmsz >= 1 && wmsz < WMSZ_ZONES.length ? WMSZ_ZONES[wmsz] : null;
+    }
+
+    /** {@code WMSZ_LEFT} (1) to {@code WMSZ_BOTTOMRIGHT} (8), by value. */
+    private static final HitRegions.Zone[] WMSZ_ZONES = {
+            null,
+            HitRegions.Zone.LEFT, HitRegions.Zone.RIGHT, HitRegions.Zone.TOP,
+            HitRegions.Zone.TOP_LEFT, HitRegions.Zone.TOP_RIGHT, HitRegions.Zone.BOTTOM,
+            HitRegions.Zone.BOTTOM_LEFT, HitRegions.Zone.BOTTOM_RIGHT};
 
     @Override
     public void setMinClientSize(int width, int height) {

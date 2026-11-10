@@ -119,6 +119,20 @@ public final class Win32ClientChromeSmoke {
             check("with grips there is no top band", hitTest(window, gw / 2, 2), User32.HTCAPTION);
             check("nor a left one", hitTest(window, 2, gh / 2), User32.HTCLIENT);
 
+            // 4d. resizing(): which edge the window manager is dragging, from the messages its loop sends. Sent
+            // here one at a time, without the loop itself (which would wait on a real button).
+            MemorySegment w = MemorySegment.ofAddress(window.osHandle());
+            check("no resize to begin with", window.resizing(), null);
+            User32.sendMessageW(w, User32.WM_ENTERSIZEMOVE, 0L, 0L);
+            check("a loop with no edge named is not yet a resize (a move, say)", window.resizing(), null);
+            try (java.lang.foreign.Arena temp = java.lang.foreign.Arena.ofConfined()) {
+                MemorySegment rect = User32.allocRect(temp, 200, 200, gw, gh);
+                User32.sendMessageW(w, User32.WM_SIZING, 8L, rect.address());   // WMSZ_BOTTOMRIGHT
+            }
+            check("WM_SIZING names the edge", window.resizing(), HitRegions.Zone.BOTTOM_RIGHT);
+            User32.sendMessageW(w, User32.WM_EXITSIZEMOVE, 0L, 0L);
+            check("and the loop's end clears it", window.resizing(), null);
+
             // 5. requestClose travels the ordinary route, so the pump reports it.
             window.requestClose();
             check("close is observed by the pump", window.pumpEvents(), false);
