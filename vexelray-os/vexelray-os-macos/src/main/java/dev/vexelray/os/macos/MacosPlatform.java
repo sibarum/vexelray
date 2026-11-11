@@ -1,5 +1,6 @@
 package dev.vexelray.os.macos;
 
+import dev.vexelray.os.KeyLegends;
 import dev.vexelray.os.NativePlatform;
 import dev.vexelray.os.NativeWindow;
 import dev.vexelray.os.Platform;
@@ -23,6 +24,12 @@ public final class MacosPlatform implements NativePlatform {
     @Override
     public Platform platform() {
         return Platform.MACOS;
+    }
+
+    /** An Apple keyboard prints its modifiers as symbols: {@code ⌃ ⌥ ⇧ ⌘}. */
+    @Override
+    public KeyLegends keyLegends() {
+        return KeyLegends.SYMBOLS;
     }
 
     /** {@code open}, which is Launch Services from the command line. Needs no binding, so it is here before they are. */

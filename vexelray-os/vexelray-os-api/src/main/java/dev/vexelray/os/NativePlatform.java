@@ -121,6 +121,17 @@ public interface NativePlatform {
     }
 
     /**
+     * How this platform's keyboards print their modifiers, so a shortcut is drawn as the person's own keys are:
+     * Ctrl and Alt in words on a PC keyboard, {@code ⌃ ⌥ ⌘} on a Mac's. A chord's spelling (what a settings file
+     * stores) is the same everywhere; only its picture follows this.
+     *
+     * <p>Defaults to {@link KeyLegends#WORDS}, the PC keyboard, which is what Windows and Linux are sold with.
+     */
+    default KeyLegends keyLegends() {
+        return KeyLegends.WORDS;
+    }
+
+    /**
      * The presenter every window on this platform must present through, by its {@code PresenterProvider} name, or
      * empty for a Vulkan swapchain. A platform that names one does not start without it: on Windows that is DXGI,
      * because a swapchain recreated on resize is what DXGI replaces there (on some machines it freezes the desktop).
