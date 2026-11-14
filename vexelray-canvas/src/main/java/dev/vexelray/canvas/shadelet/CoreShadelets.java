@@ -513,6 +513,76 @@ public final class CoreShadelets {
         }
     };
 
+    /** {@link #SOFT_FILL}'s style: how soft each edge is, {@code (left, top, right, bottom)}, in canvas units. */
+    public static final StyleLayout SOFT_FILL_STYLE = StyleLayout.of(StyleLayout.perInstance("soft", 4));
+
+    /**
+     * The box filled in the vertex colour, each edge as soft as its element says: the edge's position spread evenly
+     * over that width, centred on it, so a soft edge reaches half its width out and half in. The fill a moving mark is
+     * drawn with, a box that travelled during the shutter being exactly a box whose edges are spread over how far each
+     * one went (a tab indicator gliding along x has a soft left and right).
+     *
+     * <p>No edge is sharper than a fill's: below two {@code aa} it is {@link #FILL}'s edge, the same pixels. Across one
+     * axis the two edges add rather than multiply ({@code max(0, fL + fR - 1)}), which is the exact coverage of a box
+     * whose edges both move one way, and the same as a product wherever the two do not overlap. The corners stay
+     * round while the softness is under the radius, and give way to the straight spread past it, where a radius no
+     * longer shows.
+     */
+    public static final Shadelet.Painter SOFT_FILL = new Shadelet.Painter() {
+        @Override
+        public String name() {
+            return "softFill";
+        }
+
+        @Override
+        public StyleLayout style() {
+            return SOFT_FILL_STYLE;
+        }
+
+        /** Half the softest edge: a soft edge reaches half its width past the box. */
+        @Override
+        public float reach(float[] shared, float[] instance, float halfW, float halfH) {
+            float most = 0f;
+            for (int k = 0; k < 4; k++) {
+                most = Math.max(most, instance[k]);
+            }
+            return 0.5f * most;
+        }
+
+        @Override
+        public Region paint(PaintContext c, StyleView style, LocalVar layer) {
+            Fragment fr = c.fragment();
+            Expr soft = style.vector("soft");
+            Expr local = fr.local();
+            Expr shape = fr.shape();
+            Expr aa2 = mul(fr.aa(), f(2.0));
+            Expr hw = x(shape);
+            Expr hh = y(shape);
+            Expr left = max(x(soft), aa2);
+            Expr top = max(y(soft), aa2);
+            Expr right = max(z(soft), aa2);
+            Expr bottom = max(w(soft), aa2);
+            // Each axis on its own: the fraction of the spread the near edge has passed, from each side.
+            Expr fl = Expr.MathCall.smoothstep(sub(neg(hw), mul(left, f(0.5))), add(neg(hw), mul(left, f(0.5))),
+                    x(local));
+            Expr fr2 = sub(f(1.0), Expr.MathCall.smoothstep(sub(hw, mul(right, f(0.5))), add(hw, mul(right, f(0.5))),
+                    x(local)));
+            Expr ft = Expr.MathCall.smoothstep(sub(neg(hh), mul(top, f(0.5))), add(neg(hh), mul(top, f(0.5))),
+                    y(local));
+            Expr fb = sub(f(1.0), Expr.MathCall.smoothstep(sub(hh, mul(bottom, f(0.5))), add(hh, mul(bottom, f(0.5))),
+                    y(local)));
+            Expr across = clamp(sub(add(fl, fr2), f(1.0)), f(0.0), f(1.0));
+            Expr down = clamp(sub(add(ft, fb), f(1.0)), f(0.0), f(1.0));
+            Expr spread = mul(across, down);
+            // The round box, as FILL draws it, while the softness is under the radius.
+            Expr round = sub(f(1.0), Expr.MathCall.smoothstep(neg(fr.aa()), fr.aa(), sdf(c)));
+            Expr excess = sub(max(max(left, right), max(top, bottom)), aa2);
+            Expr radius = max(max(z(shape), w(shape)), fr.aa());
+            Expr k = clamp(div(excess, radius), f(0.0), f(1.0));
+            return assign(layer, tinted(fr, mix(round, spread, k)));
+        }
+    };
+
     /**
      * The core set for MSDF fonts, in the order that fixes their ids: an application's composition starts with these.
      * {@link #all(FieldType)} is the same set for either type of font.
@@ -523,7 +593,7 @@ public final class CoreShadelets {
     public static List<Shadelet> all(FieldType text) {
         return List.of(BOX, text(text), FIELD, SDG_STENCIL,
                 FILL, GLYPH, IMAGE_FILL, FIELD_FILL, GLOW, DROP_SHADOW,
-                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW, SDG_PAINT, GROUP_PAINT);
+                NODE_STROKE, NODE_FILL, NODE_LIT, NODE_SHADOW, SDG_PAINT, GROUP_PAINT, SOFT_FILL);
     }
 
     /** The core composition, for MSDF fonts. */
