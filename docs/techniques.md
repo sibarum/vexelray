@@ -103,6 +103,19 @@ The flip side is that two techniques that need the same number are each told it.
 a mesh calls `camera(...)` on both, with the same five arguments. That is on purpose: a camera owned by the
 engine would make the engine know what a camera is.
 
+### What a technique reads that is not its own: `bindings()`
+
+Numbers are told; resources owned by somebody else are *declared*. A technique that draws a buffer a simulation
+writes, or a picture a feed holds, lists them in `bindings()` (`TechniqueBinding.buffer("step")`,
+`TechniqueBinding.picture("picture")`), one descriptor set at `bindingSet()`, binding `i` the `i`th declared. The
+host makes the set's layout from that list and hands it over at `realize` (`TechniqueContext.bindingLayout()`), so the
+pipeline is built with it; each frame it writes a set with what it was told to bind and hands that over
+(`FrameContext.bindings()`), and `record` binds it. The technique never holds the resource, so a picture rebound
+between frames is drawn with nothing rebuilt, and what it reads is said in one place. Hosts write the set through
+`TechniqueBindings` (vexelray-engine-embedded): `SampledTechniqueHost.bindings(technique)` is told each name, and a
+name never bound is refused by name at the first frame. `TechniqueBindingsTest` is the worked example. Declaring
+none, the default, is every technique that owns what it draws, the four built-in ones among them.
+
 ## 5. Threading
 
 **Every method on a technique runs on one thread: the one that called `VexelEngine.run`.** Within a frame the
