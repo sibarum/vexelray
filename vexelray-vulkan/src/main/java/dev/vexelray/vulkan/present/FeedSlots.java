@@ -1,6 +1,7 @@
 package dev.vexelray.vulkan.present;
 
 import dev.supirvast.vulkan.Vk;
+import dev.supirvast.vulkan.VkStructs;
 import dev.supirvast.vulkan.VulkanDevice;
 import sibarum.probe.Lane;
 import sibarum.probe.Probe;
@@ -209,11 +210,34 @@ public final class FeedSlots implements AutoCloseable {
 
     private boolean closed;
 
+    /** {@code VK_FORMAT_R16_UNORM}, {@code R8G8_UNORM}, {@code R16G16_UNORM}: plane formats {@code Vk} does not name. */
+    private static final int FORMAT_R16_UNORM = 70;
+    private static final int FORMAT_R8G8_UNORM = 16;
+    private static final int FORMAT_R16G16_UNORM = 77;
+    /** {@code VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT}: the sRGB slot image is drawn into through a UNORM view. */
+    private static final int IMAGE_CREATE_MUTABLE_FORMAT = 0x8;
+
+    /** How the slots are staged when they are planes, or null when they are RGBA8. */
+    private final PlaneLayout planes;
+    /** The conversion from planes, made only for a planar ring. */
+    private final Conversion conversion;
+
     /**
      * {@code slots} pictures of {@code width x height} and their staging, made once. With {@code picture}, sRGB with a
      * mip chain the landing makes; without, plain RGBA8 at one level.
      */
     public FeedSlots(VulkanDevice device, int width, int height, int slots, boolean picture) {
+        this(device, width, height, slots, picture, null, null, null);
+    }
+
+    /**
+     * As the RGBA8 ring, staged as {@code planes} instead: each slot's staging holds a decoder's planes, packed
+     * ({@link PlaneLayout}), and the landing copies them into plane images and converts them into the slot's picture
+     * with a full-screen pass, {@code vertexSpirv} and {@code fragmentSpirv} (vexelray-canvas's {@code PlaneShader}),
+     * before its mips. This module takes shaders as SPIR-V and never composes one.
+     */
+    public FeedSlots(VulkanDevice device, int width, int height, int slots, boolean picture, PlaneLayout planes,
+                     byte[] vertexSpirv, byte[] fragmentSpirv) {
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("a feed's slots need a positive size: " + width + "x" + height);
         }
@@ -226,7 +250,11 @@ public final class FeedSlots implements AutoCloseable {
         this.height = height;
         this.picture = picture;
         this.levels = picture ? MipChain.count(width, height) : 1;
-        this.slotBytes = (long) width * height * 4;
+        if (planes != null && (vertexSpirv == null || fragmentSpirv == null)) {
+            throw new IllegalArgumentException("a planar feed needs the conversion's shaders");
+        }
+        this.planes = planes;
+        this.slotBytes = planes == null ? (long) width * height * 4 : planes.frameBytes(width, height);
         int format = picture ? Vk.FORMAT_R8G8B8A8_SRGB : Vk.FORMAT_R8G8B8A8_UNORM;
         MemorySegment dev = device.handle();
 
@@ -331,10 +359,12 @@ public final class FeedSlots implements AutoCloseable {
             // --- the slots: an image each, sampled, copied into, and blitted from and into for its mips ---
             this.slots = new Slot[slots];
             int usage = Vk.IMAGE_USAGE_TRANSFER_DST_BIT | Vk.IMAGE_USAGE_SAMPLED_BIT
-                    | (levels > 1 ? Vk.IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+                    | (levels > 1 ? Vk.IMAGE_USAGE_TRANSFER_SRC_BIT : 0)
+                    | (planes != null ? Vk.IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0);
             for (int s = 0; s < slots; s++) {
                 MemorySegment imgInfo = arena.allocate(IMAGE_CREATE_INFO);
                 si(imgInfo, IMAGE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+                si(imgInfo, IMAGE_CREATE_INFO, "flags", planes != null ? IMAGE_CREATE_MUTABLE_FORMAT : 0);
                 si(imgInfo, IMAGE_CREATE_INFO, "imageType", Vk.IMAGE_TYPE_2D);
                 si(imgInfo, IMAGE_CREATE_INFO, "format", format);
                 si(imgInfo, IMAGE_CREATE_INFO, "extent_width", width);
@@ -396,6 +426,12 @@ public final class FeedSlots implements AutoCloseable {
                         slotBytes * s);
             }
         }
+        this.conversion = planes == null ? null : new Conversion(vertexSpirv, fragmentSpirv);
+    }
+
+    /** How a planar ring's slots are staged, or null for RGBA8. */
+    public PlaneLayout planes() {
+        return planes;
     }
 
     public int width() {
@@ -449,20 +485,25 @@ public final class FeedSlots implements AutoCloseable {
             throw new IllegalStateException(this + " is closed");
         }
         try (Arena arena = Arena.ofConfined()) {
-            // Whatever the image held is not kept: level 0 is about to be copied whole and the rest made from it.
-            barrier(arena, commandBuffer, s.image, 0, levels, Vk.IMAGE_LAYOUT_UNDEFINED,
-                    Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, Vk.ACCESS_TRANSFER_WRITE_BIT,
-                    Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
-            MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
-            sl(region, BUFFER_IMAGE_COPY, "bufferOffset", s.stagingOffset);
-            si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
-            si(region, BUFFER_IMAGE_COPY, "is_mipLevel", 0);
-            si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
-            si(region, BUFFER_IMAGE_COPY, "ext_width", width);
-            si(region, BUFFER_IMAGE_COPY, "ext_height", height);
-            si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
-            invokeVoid(vkCmdCopyBufferToImage, commandBuffer, staging, s.image, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    1, region);
+            if (conversion != null) {
+                // Level 0 drawn from the planes, left as a transfer's destination as a copy would leave it.
+                conversion.convert(arena, commandBuffer, s);
+            } else {
+                // Whatever the image held is not kept: level 0 is about to be copied whole and the rest made from it.
+                barrier(arena, commandBuffer, s.image, 0, levels, Vk.IMAGE_LAYOUT_UNDEFINED,
+                        Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, Vk.ACCESS_TRANSFER_WRITE_BIT,
+                        Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
+                MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
+                sl(region, BUFFER_IMAGE_COPY, "bufferOffset", s.stagingOffset);
+                si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
+                si(region, BUFFER_IMAGE_COPY, "is_mipLevel", 0);
+                si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
+                si(region, BUFFER_IMAGE_COPY, "ext_width", width);
+                si(region, BUFFER_IMAGE_COPY, "ext_height", height);
+                si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
+                invokeVoid(vkCmdCopyBufferToImage, commandBuffer, staging, s.image,
+                        Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, region);
+            }
 
             MemorySegment blit = levels > 1 ? arena.allocate(IMAGE_BLIT) : null;
             for (int l = 1; l < levels; l++) {
@@ -501,9 +542,9 @@ public final class FeedSlots implements AutoCloseable {
 
     /**
      * Level {@code level} of a landed slot, read back: RGBA8, row after row. Submits a command buffer of its own and
-     * waits for the device, so for a test, never a frame. The thread that records frames.
+     * waits for the device, so for a test or a tool, never a frame. The thread that records frames.
      */
-    byte[] read(int slot, int level) {
+    public byte[] read(int slot, int level) {
         Slot s = slot(slot);
         int w = MipChain.size(width, level);
         int h = MipChain.size(height, level);
@@ -574,6 +615,9 @@ public final class FeedSlots implements AutoCloseable {
         }
         closed = true;
         Probe.closed(Lane.GPU, "FeedSlots", this);
+        if (conversion != null) {
+            conversion.close();
+        }
         MemorySegment dev = device.handle();
         for (Slot s : slots) {
             invokeVoid(vkDestroyImageView, dev, s.view, MemorySegment.NULL);
@@ -682,6 +726,295 @@ public final class FeedSlots implements AutoCloseable {
         }
     }
 
+    /**
+     * A planar ring's conversion: each slot's plane images and the set that binds them, a UNORM view of its level 0 and
+     * a framebuffer over it, and one render pass and pipeline for them all. Made with the ring, freed with it.
+     */
+    private final class Conversion implements AutoCloseable {
+
+        private final long[][] planeImages;
+        private final long[][] planeMemory;
+        private final long[][] planeViews;
+        private final long[] sets;
+        private final long[] attachmentViews;
+        private final long[] framebuffers;
+        private final long setLayout;
+        private final long pool;
+        private final VulkanRenderPass renderPass;
+        private final GraphicsPipeline pipeline;
+        private final DrawCommands commands;
+        private final MemorySegment push;
+        private final MethodHandle vkCmdBeginRenderPass;
+        private final MethodHandle vkCmdEndRenderPass;
+        private final MethodHandle vkDestroyFramebuffer;
+
+        Conversion(byte[] vertexSpirv, byte[] fragmentSpirv) {
+            MemorySegment dev = device.handle();
+            int n = slots.length;
+            int count = planes.planes();
+            MethodHandle vkCreateImage = device.command("vkCreateImage", C4);
+            MethodHandle vkGetImageMemoryRequirements = device.command("vkGetImageMemoryRequirements", MEMREQ);
+            MethodHandle vkAllocateMemory = device.command("vkAllocateMemory", C4);
+            MethodHandle vkBindImageMemory = device.command("vkBindImageMemory", BIND);
+            MethodHandle vkCreateImageView = device.command("vkCreateImageView", C4);
+            MethodHandle vkCreateDescriptorSetLayout = device.command("vkCreateDescriptorSetLayout", C4);
+            MethodHandle vkCreateDescriptorPool = device.command("vkCreateDescriptorPool", C4);
+            MethodHandle vkAllocateDescriptorSets = device.command("vkAllocateDescriptorSets",
+                    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
+            MethodHandle vkUpdateDescriptorSets = device.command("vkUpdateDescriptorSets",
+                    FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
+            MethodHandle vkCreateFramebuffer = device.command("vkCreateFramebuffer", C4);
+            this.vkCmdBeginRenderPass = device.command("vkCmdBeginRenderPass",
+                    FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, JAVA_INT));
+            this.vkCmdEndRenderPass = device.command("vkCmdEndRenderPass", FunctionDescriptor.ofVoid(ADDRESS));
+            this.vkDestroyFramebuffer = device.command("vkDestroyFramebuffer", D_LONG);
+
+            this.planeImages = new long[n][count];
+            this.planeMemory = new long[n][count];
+            this.planeViews = new long[n][count];
+            this.sets = new long[n];
+            this.attachmentViews = new long[n];
+            this.framebuffers = new long[n];
+            // Level 0 is drawn as plain bytes: the shader writes the encoded R'G'B' an sRGB texel holds.
+            this.renderPass = new VulkanRenderPass(device, Vk.FORMAT_R8G8B8A8_UNORM,
+                    Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment bindings = arena.allocate(DESCRIPTOR_SET_LAYOUT_BINDING, 3);
+                for (int b = 0; b < 3; b++) {
+                    MemorySegment one = bindings.asSlice(b * DESCRIPTOR_SET_LAYOUT_BINDING.byteSize(),
+                            DESCRIPTOR_SET_LAYOUT_BINDING.byteSize());
+                    si(one, DESCRIPTOR_SET_LAYOUT_BINDING, "binding", b);
+                    si(one, DESCRIPTOR_SET_LAYOUT_BINDING, "descriptorType", Vk.DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+                    si(one, DESCRIPTOR_SET_LAYOUT_BINDING, "descriptorCount", 1);
+                    si(one, DESCRIPTOR_SET_LAYOUT_BINDING, "stageFlags", Vk.SHADER_STAGE_FRAGMENT_BIT);
+                }
+                MemorySegment dslInfo = arena.allocate(DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
+                si(dslInfo, DESCRIPTOR_SET_LAYOUT_CREATE_INFO, "sType",
+                        Vk.STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
+                si(dslInfo, DESCRIPTOR_SET_LAYOUT_CREATE_INFO, "bindingCount", 3);
+                sa(dslInfo, DESCRIPTOR_SET_LAYOUT_CREATE_INFO, "pBindings", bindings);
+                MemorySegment pDsl = arena.allocate(JAVA_LONG);
+                check(invoke(vkCreateDescriptorSetLayout, dev, dslInfo, MemorySegment.NULL, pDsl),
+                        "vkCreateDescriptorSetLayout");
+                this.setLayout = pDsl.get(JAVA_LONG, 0);
+
+                MemorySegment poolSize = arena.allocate(DESCRIPTOR_POOL_SIZE);
+                si(poolSize, DESCRIPTOR_POOL_SIZE, "type", Vk.DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+                si(poolSize, DESCRIPTOR_POOL_SIZE, "descriptorCount", 3 * n);
+                MemorySegment poolInfo = arena.allocate(DESCRIPTOR_POOL_CREATE_INFO);
+                si(poolInfo, DESCRIPTOR_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
+                si(poolInfo, DESCRIPTOR_POOL_CREATE_INFO, "maxSets", n);
+                si(poolInfo, DESCRIPTOR_POOL_CREATE_INFO, "poolSizeCount", 1);
+                sa(poolInfo, DESCRIPTOR_POOL_CREATE_INFO, "pPoolSizes", poolSize);
+                MemorySegment pPool = arena.allocate(JAVA_LONG);
+                check(invoke(vkCreateDescriptorPool, dev, poolInfo, MemorySegment.NULL, pPool),
+                        "vkCreateDescriptorPool");
+                this.pool = pPool.get(JAVA_LONG, 0);
+
+                for (int s = 0; s < n; s++) {
+                    for (int p = 0; p < count; p++) {
+                        int format = planeFormat(p);
+                        MemorySegment imgInfo = arena.allocate(IMAGE_CREATE_INFO);
+                        si(imgInfo, IMAGE_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+                        si(imgInfo, IMAGE_CREATE_INFO, "imageType", Vk.IMAGE_TYPE_2D);
+                        si(imgInfo, IMAGE_CREATE_INFO, "format", format);
+                        si(imgInfo, IMAGE_CREATE_INFO, "extent_width", planes.planeWidth(p, width));
+                        si(imgInfo, IMAGE_CREATE_INFO, "extent_height", planes.planeHeight(p, height));
+                        si(imgInfo, IMAGE_CREATE_INFO, "extent_depth", 1);
+                        si(imgInfo, IMAGE_CREATE_INFO, "mipLevels", 1);
+                        si(imgInfo, IMAGE_CREATE_INFO, "arrayLayers", 1);
+                        si(imgInfo, IMAGE_CREATE_INFO, "samples", Vk.SAMPLE_COUNT_1_BIT);
+                        si(imgInfo, IMAGE_CREATE_INFO, "tiling", Vk.IMAGE_TILING_OPTIMAL);
+                        si(imgInfo, IMAGE_CREATE_INFO, "usage",
+                                Vk.IMAGE_USAGE_TRANSFER_DST_BIT | Vk.IMAGE_USAGE_SAMPLED_BIT);
+                        si(imgInfo, IMAGE_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
+                        si(imgInfo, IMAGE_CREATE_INFO, "initialLayout", Vk.IMAGE_LAYOUT_UNDEFINED);
+                        MemorySegment pImage = arena.allocate(JAVA_LONG);
+                        check(invoke(vkCreateImage, dev, imgInfo, MemorySegment.NULL, pImage), "vkCreateImage");
+                        long image = pImage.get(JAVA_LONG, 0);
+                        MemorySegment req = arena.allocate(MEMORY_REQUIREMENTS);
+                        invokeVoid(vkGetImageMemoryRequirements, dev, image, req);
+                        long memory = allocate(arena, vkAllocateMemory, dev, gl(req, MEMORY_REQUIREMENTS, "size"),
+                                device.findMemoryType(gi(req, MEMORY_REQUIREMENTS, "memoryTypeBits"),
+                                        Vk.MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+                        check(invoke(vkBindImageMemory, dev, image, memory, 0L), "vkBindImageMemory");
+                        planeImages[s][p] = image;
+                        planeMemory[s][p] = memory;
+                        planeViews[s][p] = view(arena, vkCreateImageView, dev, image, format, 1);
+                    }
+                    attachmentViews[s] = view(arena, vkCreateImageView, dev, slots[s].image,
+                            Vk.FORMAT_R8G8B8A8_UNORM, 1);
+
+                    MemorySegment pSetLayouts = arena.allocate(JAVA_LONG);
+                    pSetLayouts.set(JAVA_LONG, 0, setLayout);
+                    MemorySegment allocInfo = arena.allocate(DESCRIPTOR_SET_ALLOCATE_INFO);
+                    si(allocInfo, DESCRIPTOR_SET_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
+                    sl(allocInfo, DESCRIPTOR_SET_ALLOCATE_INFO, "descriptorPool", pool);
+                    si(allocInfo, DESCRIPTOR_SET_ALLOCATE_INFO, "descriptorSetCount", 1);
+                    sa(allocInfo, DESCRIPTOR_SET_ALLOCATE_INFO, "pSetLayouts", pSetLayouts);
+                    MemorySegment pSet = arena.allocate(JAVA_LONG);
+                    check(invoke(vkAllocateDescriptorSets, dev, allocInfo, pSet), "vkAllocateDescriptorSets");
+                    sets[s] = pSet.get(JAVA_LONG, 0);
+                    MemorySegment infos = arena.allocate(DESCRIPTOR_IMAGE_INFO, 3);
+                    MemorySegment writes = arena.allocate(WRITE_DESCRIPTOR_SET, 3);
+                    for (int b = 0; b < 3; b++) {
+                        // Two planes: the interleaved chroma is bound at 1 and again at 2, and the shader picks.
+                        int p = Math.min(b, count - 1);
+                        MemorySegment info = infos.asSlice(b * DESCRIPTOR_IMAGE_INFO.byteSize(),
+                                DESCRIPTOR_IMAGE_INFO.byteSize());
+                        sl(info, DESCRIPTOR_IMAGE_INFO, "sampler", sampler);
+                        sl(info, DESCRIPTOR_IMAGE_INFO, "imageView", planeViews[s][p]);
+                        si(info, DESCRIPTOR_IMAGE_INFO, "imageLayout", Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        MemorySegment w = writes.asSlice(b * WRITE_DESCRIPTOR_SET.byteSize(),
+                                WRITE_DESCRIPTOR_SET.byteSize());
+                        si(w, WRITE_DESCRIPTOR_SET, "sType", Vk.STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+                        sl(w, WRITE_DESCRIPTOR_SET, "dstSet", sets[s]);
+                        si(w, WRITE_DESCRIPTOR_SET, "dstBinding", b);
+                        si(w, WRITE_DESCRIPTOR_SET, "descriptorCount", 1);
+                        si(w, WRITE_DESCRIPTOR_SET, "descriptorType", Vk.DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+                        sa(w, WRITE_DESCRIPTOR_SET, "pImageInfo", info);
+                    }
+                    invokeVoid(vkUpdateDescriptorSets, dev, 3, writes, 0, MemorySegment.NULL);
+
+                    MemorySegment pAttachment = arena.allocate(JAVA_LONG);
+                    pAttachment.set(JAVA_LONG, 0, attachmentViews[s]);
+                    MemorySegment fbInfo = arena.allocate(VkStructs.FRAMEBUFFER_CREATE_INFO);
+                    si(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "sType",
+                            Vk.STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
+                    sl(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "renderPass",
+                            renderPass.handle());
+                    si(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "attachmentCount", 1);
+                    sa(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "pAttachments", pAttachment);
+                    si(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "width", width);
+                    si(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "height", height);
+                    si(fbInfo, VkStructs.FRAMEBUFFER_CREATE_INFO, "layers", 1);
+                    MemorySegment pFb = arena.allocate(JAVA_LONG);
+                    check(invoke(vkCreateFramebuffer, dev, fbInfo, MemorySegment.NULL, pFb), "vkCreateFramebuffer");
+                    framebuffers[s] = pFb.get(JAVA_LONG, 0);
+                }
+            }
+            this.pipeline = new GraphicsPipeline(device, renderPass.handle(), width, height,
+                    vertexSpirv, "main", fragmentSpirv, "main",
+                    new GraphicsPipeline.Config(0, java.util.List.of(), new long[] {setLayout}, false,
+                            Vk.SHADER_STAGE_FRAGMENT_BIT, PUSH_BYTES, false));
+            this.commands = new DrawCommands(device);
+            this.push = commands.allocatePushConstants(PUSH_BYTES);
+            float[] constants = planes.constants();
+            for (int i = 0; i < constants.length; i++) {
+                push.setAtIndex(JAVA_FLOAT, i, constants[i]);
+            }
+        }
+
+        /** The ten floats {@code PlaneShader} reads. */
+        private static final int PUSH_BYTES = 10 * Float.BYTES;
+
+        private int planeFormat(int p) {
+            boolean wide = planes.format().bytesPerSample == 2;
+            boolean pair = p > 0 && planes.format().interleaved;
+            if (pair) {
+                return wide ? FORMAT_R16G16_UNORM : FORMAT_R8G8_UNORM;
+            }
+            return wide ? FORMAT_R16_UNORM : Vk.FORMAT_R8_UNORM;
+        }
+
+        private long view(Arena arena, MethodHandle vkCreateImageView, MemorySegment dev, long image, int format,
+                          int levelCount) {
+            MemorySegment viewInfo = arena.allocate(IMAGE_VIEW_CREATE_INFO);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
+            sl(viewInfo, IMAGE_VIEW_CREATE_INFO, "image", image);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "viewType", Vk.IMAGE_VIEW_TYPE_2D);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "format", format);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_levelCount", levelCount);
+            si(viewInfo, IMAGE_VIEW_CREATE_INFO, "sr_layerCount", 1);
+            MemorySegment pView = arena.allocate(JAVA_LONG);
+            check(invoke(vkCreateImageView, dev, viewInfo, MemorySegment.NULL, pView), "vkCreateImageView");
+            return pView.get(JAVA_LONG, 0);
+        }
+
+        /**
+         * Record slot {@code s}'s planes copied in and drawn into its level 0, which is left a transfer's destination
+         * with the draw's writes visible to transfers, as the RGBA path's copy leaves it; levels below are made ready
+         * for the blits. Every earlier read of the slot's image, in submission order, finishes first.
+         */
+        void convert(Arena arena, MemorySegment cmd, Slot s) {
+            int index = s.index;
+            int count = planes.planes();
+            for (int p = 0; p < count; p++) {
+                imageBarrier(arena, cmd, planeImages[index][p], 0, 1, Vk.IMAGE_LAYOUT_UNDEFINED,
+                        Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, Vk.ACCESS_TRANSFER_WRITE_BIT,
+                        Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
+                MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
+                sl(region, BUFFER_IMAGE_COPY, "bufferOffset", s.stagingOffset + planes.planeOffset(p, width, height));
+                si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
+                si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
+                si(region, BUFFER_IMAGE_COPY, "ext_width", planes.planeWidth(p, width));
+                si(region, BUFFER_IMAGE_COPY, "ext_height", planes.planeHeight(p, height));
+                si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
+                invokeVoid(vkCmdCopyBufferToImage, cmd, staging, planeImages[index][p],
+                        Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, region);
+                imageBarrier(arena, cmd, planeImages[index][p], 0, 1, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, Vk.ACCESS_TRANSFER_WRITE_BIT,
+                        Vk.ACCESS_SHADER_READ_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT,
+                        Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            }
+            // Level 0 becomes the pass's attachment, the levels below the blits' destinations; neither keeps what it held.
+            imageBarrier(arena, cmd, s.image, 0, 1, Vk.IMAGE_LAYOUT_UNDEFINED, Vk.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    0, Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT, Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            if (levels > 1) {
+                imageBarrier(arena, cmd, s.image, 1, levels - 1, Vk.IMAGE_LAYOUT_UNDEFINED,
+                        Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, Vk.ACCESS_TRANSFER_WRITE_BIT,
+                        Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
+            }
+            GroupLayout begin = VkStructs.RENDER_PASS_BEGIN_INFO;
+            MemorySegment info = arena.allocate(begin);
+            si(info, begin, "sType", Vk.STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+            sl(info, begin, "renderPass", renderPass.handle());
+            sl(info, begin, "framebuffer", framebuffers[index]);
+            si(info, begin, "area_extent_width", width);
+            si(info, begin, "area_extent_height", height);
+            MemorySegment clear = arena.allocate(16);   // the pass clears; every texel is drawn over anyway
+            si(info, begin, "clearValueCount", 1);
+            sa(info, begin, "pClearValues", clear);
+            invokeVoid(vkCmdBeginRenderPass, cmd, info, Vk.SUBPASS_CONTENTS_INLINE);
+            commands.bindPipeline(cmd, pipeline);
+            commands.bindDescriptorSet(cmd, pipeline, 0, sets[index]);
+            commands.pushFragment(cmd, pipeline, push, PUSH_BYTES);
+            commands.draw(cmd, 3);
+            invokeVoid(vkCmdEndRenderPass, cmd);
+            // The pass left level 0 a transfer's destination; its writes are made visible to the transfers that follow.
+            imageBarrier(arena, cmd, s.image, 0, 1, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Vk.ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    Vk.ACCESS_TRANSFER_READ_BIT | Vk.ACCESS_TRANSFER_WRITE_BIT,
+                    Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
+        }
+
+        private void imageBarrier(Arena arena, MemorySegment cmd, long image, int base, int count, int oldLayout,
+                                  int newLayout, int srcAccess, int dstAccess, int srcStage, int dstStage) {
+            barrier(arena, cmd, image, base, count, oldLayout, newLayout, srcAccess, dstAccess, srcStage, dstStage);
+        }
+
+        @Override
+        public void close() {
+            MemorySegment dev = device.handle();
+            pipeline.close();
+            commands.close();
+            for (int s = 0; s < slots.length; s++) {
+                invokeVoid(vkDestroyFramebuffer, dev, framebuffers[s], MemorySegment.NULL);
+                invokeVoid(vkDestroyImageView, dev, attachmentViews[s], MemorySegment.NULL);
+                for (int p = 0; p < planeImages[s].length; p++) {
+                    invokeVoid(vkDestroyImageView, dev, planeViews[s][p], MemorySegment.NULL);
+                    invokeVoid(vkDestroyImage, dev, planeImages[s][p], MemorySegment.NULL);
+                    invokeVoid(vkFreeMemory, dev, planeMemory[s][p], MemorySegment.NULL);
+                }
+            }
+            invokeVoid(vkDestroyDescriptorPool, dev, pool, MemorySegment.NULL);
+            invokeVoid(vkDestroyDescriptorSetLayout, dev, setLayout, MemorySegment.NULL);
+            renderPass.close();
+        }
+    }
+
     /** A command buffer recorded, submitted and waited for: {@link #read}'s, never a frame's. */
     private static final class OneShot {
 
@@ -737,8 +1070,8 @@ public final class FeedSlots implements AutoCloseable {
         }
     }
 
-    /** For a test: record {@code body} into a command buffer of its own, submit it and wait for the queue. */
-    static void oneShot(VulkanDevice device, java.util.function.Consumer<MemorySegment> body) {
+    /** For a test or a tool: record {@code body} into a command buffer of its own, submit it and wait for the queue. */
+    public static void oneShot(VulkanDevice device, java.util.function.Consumer<MemorySegment> body) {
         OneShot.run(device, body::accept);
     }
 }
