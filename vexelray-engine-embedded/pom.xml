@@ -49,5 +49,23 @@
             <artifactId>vexelray-vulkan</artifactId>
             <version>${project.version}</version>
         </dependency>
+
+        <!-- Test-only: a technique that declares a binding composes real SPIR-V to sample what the host binds. -->
+        <dependency>
+            <groupId>dev.vexelray</groupId>
+            <artifactId>vexelray-shader</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.supirvast</groupId>
+            <artifactId>vastir-tools</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

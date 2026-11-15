@@ -95,6 +95,24 @@ public interface RenderTechnique extends AutoCloseable {
     void realize(TechniqueContext ctx);
 
     /**
+     * What this technique reads that somebody else owns, one descriptor set's worth, in binding order: the host makes
+     * the set's layout from it ({@link TechniqueContext#bindingLayout()}, given at {@link #realize}, which the pipeline
+     * is built with), and each frame writes it with what it was told to bind and hands it over
+     * ({@link FrameContext#bindings()}), for {@link #record} to bind at {@link #bindingSet()}. None, the default, is
+     * every technique that owns all it draws from, the four built-in ones among them.
+     *
+     * <p>Asked once, before the first {@link #realize}, and not again: a declaration, not a state.
+     */
+    default java.util.List<TechniqueBinding> bindings() {
+        return java.util.List.of();
+    }
+
+    /** The set index {@link #bindings()} is bound at in this technique's pipeline layout. Zero unless it says. */
+    default int bindingSet() {
+        return 0;
+    }
+
+    /**
      * Record this technique's draws for one frame into {@code frame.commandBuffer()}. The runtime has already
      * begun the shared render pass and set the dynamic viewport and scissor to the frame's extent; nothing else
      * is bound. The technique binds its own pipeline, pushes its per-frame data, and draws. It must not

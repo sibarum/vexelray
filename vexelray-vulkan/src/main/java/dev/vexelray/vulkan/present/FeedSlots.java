@@ -473,6 +473,16 @@ public final class FeedSlots implements AutoCloseable {
         return slot(slot);
     }
 
+    /** Slot {@code slot}'s {@code VkImageView}, every level: what a technique's picture binding is written with. */
+    public long view(int slot) {
+        return slot(slot).view;
+    }
+
+    /** The {@code VkSampler} every slot is sampled with: linear, clamped, across its mips. */
+    public long sampler() {
+        return sampler;
+    }
+
     /**
      * Record slot {@code slot}'s landing into {@code commandBuffer}, outside any render pass, before the pass that
      * samples it: its staging copied into level 0, each level below blitted from the one above, and the whole image
@@ -545,63 +555,8 @@ public final class FeedSlots implements AutoCloseable {
      * waits for the device, so for a test or a tool, never a frame. The thread that records frames.
      */
     public byte[] read(int slot, int level) {
-        Slot s = slot(slot);
-        int w = MipChain.size(width, level);
-        int h = MipChain.size(height, level);
-        long bytes = (long) w * h * 4;
-        MemorySegment dev = device.handle();
-        MethodHandle vkCreateBuffer = device.command("vkCreateBuffer", C4);
-        MethodHandle vkGetBufferMemoryRequirements = device.command("vkGetBufferMemoryRequirements", MEMREQ);
-        MethodHandle vkAllocateMemory = device.command("vkAllocateMemory", C4);
-        MethodHandle vkBindBufferMemory = device.command("vkBindBufferMemory", BIND);
-        MethodHandle vkMapMemory = device.command("vkMapMemory",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, ADDRESS));
-        MethodHandle vkCmdCopyImageToBuffer = device.command("vkCmdCopyImageToBuffer",
-                FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS));
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment bufInfo = arena.allocate(BUFFER_CREATE_INFO);
-            si(bufInfo, BUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-            sl(bufInfo, BUFFER_CREATE_INFO, "size", bytes);
-            si(bufInfo, BUFFER_CREATE_INFO, "usage", Vk.BUFFER_USAGE_TRANSFER_DST_BIT);
-            si(bufInfo, BUFFER_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
-            MemorySegment pBuffer = arena.allocate(JAVA_LONG);
-            check(invoke(vkCreateBuffer, dev, bufInfo, MemorySegment.NULL, pBuffer), "vkCreateBuffer");
-            long buffer = pBuffer.get(JAVA_LONG, 0);
-            MemorySegment req = arena.allocate(MEMORY_REQUIREMENTS);
-            invokeVoid(vkGetBufferMemoryRequirements, dev, buffer, req);
-            long memory = allocate(arena, vkAllocateMemory, dev, gl(req, MEMORY_REQUIREMENTS, "size"),
-                    device.findMemoryType(gi(req, MEMORY_REQUIREMENTS, "memoryTypeBits"),
-                            Vk.MEMORY_PROPERTY_HOST_VISIBLE_BIT | Vk.MEMORY_PROPERTY_HOST_COHERENT_BIT));
-            check(invoke(vkBindBufferMemory, dev, buffer, memory, 0L), "vkBindBufferMemory");
-            try {
-                OneShot.run(device, cmd -> {
-                    barrier(arena, cmd, s.image, level, 1, Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                            Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, Vk.ACCESS_SHADER_READ_BIT, Vk.ACCESS_TRANSFER_READ_BIT,
-                            Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
-                    MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
-                    si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
-                    si(region, BUFFER_IMAGE_COPY, "is_mipLevel", level);
-                    si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
-                    si(region, BUFFER_IMAGE_COPY, "ext_width", w);
-                    si(region, BUFFER_IMAGE_COPY, "ext_height", h);
-                    si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
-                    invokeVoid(vkCmdCopyImageToBuffer, cmd, s.image, Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
-                            region);
-                    barrier(arena, cmd, s.image, level, 1, Vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, Vk.ACCESS_TRANSFER_READ_BIT,
-                            Vk.ACCESS_SHADER_READ_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT,
-                            Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-                });
-                MemorySegment ppData = arena.allocate(ADDRESS);
-                check(invoke(vkMapMemory, dev, memory, 0L, bytes, 0, ppData), "vkMapMemory");
-                byte[] out = ppData.get(ADDRESS, 0).reinterpret(bytes).toArray(JAVA_BYTE);
-                invokeVoid(vkUnmapMemory, dev, memory);
-                return out;
-            } finally {
-                invokeVoid(vkDestroyBuffer, dev, buffer, MemorySegment.NULL);
-                invokeVoid(vkFreeMemory, dev, memory, MemorySegment.NULL);
-            }
-        }
+        return ImageReadback.read(device, slot(slot).image, MipChain.size(width, level),
+                MipChain.size(height, level), level);
     }
 
     /**
@@ -1015,63 +970,8 @@ public final class FeedSlots implements AutoCloseable {
         }
     }
 
-    /** A command buffer recorded, submitted and waited for: {@link #read}'s, never a frame's. */
-    private static final class OneShot {
-
-        interface Body {
-            void record(MemorySegment cmd);
-        }
-
-        static void run(VulkanDevice device, Body body) {
-            MemorySegment dev = device.handle();
-            MethodHandle vkCreateCommandPool = device.command("vkCreateCommandPool", C4);
-            MethodHandle vkAllocateCommandBuffers = device.command("vkAllocateCommandBuffers",
-                    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
-            MethodHandle vkBeginCommandBuffer = device.command("vkBeginCommandBuffer",
-                    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
-            MethodHandle vkEndCommandBuffer = device.command("vkEndCommandBuffer",
-                    FunctionDescriptor.of(JAVA_INT, ADDRESS));
-            MethodHandle vkQueueSubmit = device.command("vkQueueSubmit",
-                    FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_LONG));
-            MethodHandle vkQueueWaitIdle = device.command("vkQueueWaitIdle", FunctionDescriptor.of(JAVA_INT, ADDRESS));
-            MethodHandle vkDestroyCommandPool = device.command("vkDestroyCommandPool", D_LONG);
-            try (Arena arena = Arena.ofConfined()) {
-                MemorySegment cpInfo = arena.allocate(COMMAND_POOL_CREATE_INFO);
-                si(cpInfo, COMMAND_POOL_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO);
-                si(cpInfo, COMMAND_POOL_CREATE_INFO, "queueFamilyIndex", device.queueFamilyIndex());
-                MemorySegment pCp = arena.allocate(JAVA_LONG);
-                check(invoke(vkCreateCommandPool, dev, cpInfo, MemorySegment.NULL, pCp), "vkCreateCommandPool");
-                long pool = pCp.get(JAVA_LONG, 0);
-                try {
-                    MemorySegment cbInfo = arena.allocate(COMMAND_BUFFER_ALLOCATE_INFO);
-                    si(cbInfo, COMMAND_BUFFER_ALLOCATE_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
-                    sl(cbInfo, COMMAND_BUFFER_ALLOCATE_INFO, "commandPool", pool);
-                    si(cbInfo, COMMAND_BUFFER_ALLOCATE_INFO, "level", Vk.COMMAND_BUFFER_LEVEL_PRIMARY);
-                    si(cbInfo, COMMAND_BUFFER_ALLOCATE_INFO, "commandBufferCount", 1);
-                    MemorySegment pCmd = arena.allocate(ADDRESS);
-                    check(invoke(vkAllocateCommandBuffers, dev, cbInfo, pCmd), "vkAllocateCommandBuffers");
-                    MemorySegment cmd = pCmd.get(ADDRESS, 0);
-                    MemorySegment begin = arena.allocate(COMMAND_BUFFER_BEGIN_INFO);
-                    si(begin, COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-                    si(begin, COMMAND_BUFFER_BEGIN_INFO, "flags", Vk.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-                    check(invoke(vkBeginCommandBuffer, cmd, begin), "vkBeginCommandBuffer");
-                    body.record(cmd);
-                    check(invoke(vkEndCommandBuffer, cmd), "vkEndCommandBuffer");
-                    MemorySegment submit = arena.allocate(SUBMIT_INFO);
-                    si(submit, SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
-                    si(submit, SUBMIT_INFO, "commandBufferCount", 1);
-                    sa(submit, SUBMIT_INFO, "pCommandBuffers", pCmd);
-                    check(invoke(vkQueueSubmit, device.queue(), 1, submit, 0L), "vkQueueSubmit");
-                    check(invoke(vkQueueWaitIdle, device.queue()), "vkQueueWaitIdle");
-                } finally {
-                    invokeVoid(vkDestroyCommandPool, dev, pool, MemorySegment.NULL);
-                }
-            }
-        }
-    }
-
     /** For a test or a tool: record {@code body} into a command buffer of its own, submit it and wait for the queue. */
     public static void oneShot(VulkanDevice device, java.util.function.Consumer<MemorySegment> body) {
-        OneShot.run(device, body::accept);
+        ImageReadback.oneShot(device, body);
     }
 }

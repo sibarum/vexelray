@@ -475,6 +475,14 @@ public final class SampledColorTarget implements SampledImage, AutoCloseable {
     }
 
     /**
+     * What was last drawn, read back: RGBA8, row after row. Submits a command buffer of its own and waits for the
+     * device, so for a test or a tool, never a frame. On the thread that records frames, between them.
+     */
+    public byte[] read() {
+        return ImageReadback.read(device, image, width, height, 0);
+    }
+
+    /**
      * A pipeline that draws into <em>this</em> target — the piece a client application cannot build for itself.
      *
      * <p>{@link GraphicsPipeline}'s constructors take a {@link VulkanDevice}, and an application that got its

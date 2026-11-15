@@ -67,6 +67,9 @@ public final class SampledTechniqueHost implements AutoCloseable {
 
     private final List<RenderTechnique> techniques;
 
+    /** Each technique's bindings, at its index, or null for one that declares none: made with the host, on its device. */
+    private final TechniqueBindings[] bindings;
+
     /**
      * Bound once rather than per frame: a capturing lambda in {@link #render} would allocate inside the budget.
      *
@@ -96,6 +99,13 @@ public final class SampledTechniqueHost implements AutoCloseable {
         this.techniques = List.copyOf(techniques);
         if (this.techniques.isEmpty()) {
             throw new IllegalArgumentException("a host must have at least one technique");
+        }
+        this.bindings = new TechniqueBindings[this.techniques.size()];
+        for (int i = 0; i < this.techniques.size(); i++) {
+            List<dev.vexelray.engine.TechniqueBinding> declared = this.techniques.get(i).bindings();
+            if (!declared.isEmpty()) {
+                bindings[i] = new TechniqueBindings(target.device(), declared);
+            }
         }
     }
 
@@ -142,19 +152,41 @@ public final class SampledTechniqueHost implements AutoCloseable {
      * <p>Register it with the host application's disposer <em>after</em> whatever owns the device, so it runs
      * before it: a technique frees GPU objects, and the thing they belong to has to outlive them.
      */
+    /**
+     * What {@code technique} is bound to: tell it each name the technique declares ({@link TechniqueBindings#buffer},
+     * {@link TechniqueBindings#picture}) before the first {@link #render}, and again whenever one changes.
+     *
+     * @throws IllegalArgumentException for a technique this host does not run, or one that declares no bindings
+     */
+    public TechniqueBindings bindings(RenderTechnique technique) {
+        int i = techniques.indexOf(technique);
+        if (i < 0) {
+            throw new IllegalArgumentException("this host does not run " + technique);
+        }
+        if (bindings[i] == null) {
+            throw new IllegalArgumentException(technique + " declares no bindings");
+        }
+        return bindings[i];
+    }
+
     @Override
     public void close() {
         closeRealized();
+        for (TechniqueBindings b : bindings) {
+            if (b != null) {
+                b.close();
+            }
+        }
     }
 
     private void realize() {
         if (realized == techniques.size()) {
             return;
         }
-        Context ctx = new Context(target);
         try {
             while (realized < techniques.size()) {
-                techniques.get(realized).realize(ctx);
+                TechniqueBindings b = bindings[realized];
+                techniques.get(realized).realize(new Context(target, b == null ? 0L : b.layout()));
                 // Incremented only after realise returns, so a technique that threw is not one this host
                 // believes it owns a close for -- RenderTechnique promises close exactly once per *successful*
                 // realise, including on this rollback path.
@@ -202,7 +234,8 @@ public final class SampledTechniqueHost implements AutoCloseable {
         // Indexed rather than for-each: this runs inside the host's frame budget, and an iterator per frame is
         // an allocation the hook contract above this one does not allow.
         for (int i = 0; i < techniques.size(); i++) {
-            techniques.get(i).record(frame);
+            TechniqueBindings b = bindings[i];
+            techniques.get(i).record(b == null ? frame : frame.withBindings(b.next()));
         }
     }
 
@@ -217,9 +250,16 @@ public final class SampledTechniqueHost implements AutoCloseable {
     private static final class Context implements VulkanTechniqueContext {
 
         private final SampledColorTarget target;
+        private final long bindingLayout;
 
-        Context(SampledColorTarget target) {
+        Context(SampledColorTarget target, long bindingLayout) {
             this.target = target;
+            this.bindingLayout = bindingLayout;
+        }
+
+        @Override
+        public long bindingLayout() {
+            return bindingLayout;
         }
 
         @Override

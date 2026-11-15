@@ -24,13 +24,28 @@ import java.lang.foreign.MemorySegment;
  * @param deltaSeconds  seconds elapsed since the previous frame
  * @param width         current framebuffer width in pixels (may change across frames on resize)
  * @param height        current framebuffer height in pixels
+ * @param bindings      the {@code VkDescriptorSet} the host wrote this frame for the technique's
+ *                      {@link RenderTechnique#bindings()}, to bind at its {@link RenderTechnique#bindingSet()}; zero
+ *                      for a technique that declares none
  */
 public record FrameContext(MemorySegment commandBuffer, long frameIndex, double timeSeconds,
-                           double deltaSeconds, int width, int height) {
+                           double deltaSeconds, int width, int height, long bindings) {
 
     public FrameContext {
         if (commandBuffer == null) {
             throw new IllegalArgumentException("commandBuffer must not be null");
         }
+    }
+
+    /** A frame with nothing bound: every technique that declares no {@link RenderTechnique#bindings()}. */
+    public FrameContext(MemorySegment commandBuffer, long frameIndex, double timeSeconds, double deltaSeconds,
+                        int width, int height) {
+        this(commandBuffer, frameIndex, timeSeconds, deltaSeconds, width, height, 0L);
+    }
+
+    /** This frame for one technique: the same, with {@code bindings} its set. Allocates a record, once per binder. */
+    public FrameContext withBindings(long bindings) {
+        return bindings == this.bindings ? this
+                : new FrameContext(commandBuffer, frameIndex, timeSeconds, deltaSeconds, width, height, bindings);
     }
 }

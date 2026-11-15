@@ -55,4 +55,13 @@ public interface TechniqueContext {
     default boolean hasDepth() {
         return depthFormat().isPresent();
     }
+
+    /**
+     * The {@code VkDescriptorSetLayout} the host made from the technique's {@link RenderTechnique#bindings()}: what the
+     * technique's pipeline layout names at its {@link RenderTechnique#bindingSet()}. Zero for a technique that declares
+     * none, and from a host that binds nothing.
+     */
+    default long bindingLayout() {
+        return 0L;
+    }
 }
