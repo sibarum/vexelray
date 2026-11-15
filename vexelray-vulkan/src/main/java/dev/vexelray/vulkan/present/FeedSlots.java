@@ -43,9 +43,16 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * A landing waits, inside the GPU, for every earlier read of the slot's image in submission order, so landing a slot
  * that frames still in flight sample would tear; the feed's free rule is what keeps that from happening.
  *
+ * <p><b>Or landed from memory it lent</b> (a ring made {@code lent}): a decoder decodes straight into chunks of
+ * host-visible memory this lends it ({@link #lend}), so a frame is where the GPU copies it from the moment it is
+ * decoded, and a slot is landed from wherever its planes are, at the decoder's own strides ({@link #land(MemorySegment,
+ * int, int, long[], int[])}). The slots then have no staging of their own. The chunks are host-cached where the device
+ * has such memory, since a decoder reads its reference frames back from them.
+ *
  * <p>With {@code picture}, sRGB texels the sampler decodes to linear light and a whole mip chain, blitted in linear
  * light; without, plain RGBA8 at one level. {@link #land}, {@link #image} and {@link #close} on the thread that records
- * frames; {@link #staging} from any thread, by whoever the feed has given the slot to.
+ * frames; {@link #staging}, {@link #lend} and {@link #chunk} from any thread, by whoever the feed has given the slot or
+ * the chunk to.
  */
 public final class FeedSlots implements AutoCloseable {
 
@@ -208,7 +215,7 @@ public final class FeedSlots implements AutoCloseable {
     private final MethodHandle vkCmdCopyBufferToImage;
     private final MethodHandle vkCmdBlitImage;
 
-    private boolean closed;
+    private volatile boolean closed;
 
     /** {@code VK_FORMAT_R16_UNORM}, {@code R8G8_UNORM}, {@code R16G16_UNORM}: plane formats {@code Vk} does not name. */
     private static final int FORMAT_R16_UNORM = 70;
@@ -222,22 +229,48 @@ public final class FeedSlots implements AutoCloseable {
     /** The conversion from planes, made only for a planar ring. */
     private final Conversion conversion;
 
+    /** {@code VK_MEMORY_PROPERTY_HOST_CACHED_BIT}, which {@code Vk} does not name. */
+    private static final int MEMORY_PROPERTY_HOST_CACHED = 0x8;
+    /** The most chunks a lent ring lends. */
+    public static final int MAX_CHUNKS = 64;
+
+    /** Whether the slots are landed from lent chunks rather than staging of their own. */
+    private final boolean lent;
+    /** The chunks lent so far, each a buffer, its memory and its mapping; {@link #chunks} of them are made. */
+    private final long[] chunkBuffers = new long[MAX_CHUNKS];
+    private final long[] chunkMemory = new long[MAX_CHUNKS];
+    private final MemorySegment[] chunkMapped = new MemorySegment[MAX_CHUNKS];
+    /** How many chunks are lent: written after the chunk itself, so a reader of fewer sees them whole. */
+    private volatile int chunks;
+    private final MethodHandle vkCreateBuffer;
+    private final MethodHandle vkGetBufferMemoryRequirements;
+    private final MethodHandle vkAllocateMemory;
+    private final MethodHandle vkBindBufferMemory;
+    private final MethodHandle vkMapMemory;
+
     /**
      * {@code slots} pictures of {@code width x height} and their staging, made once. With {@code picture}, sRGB with a
      * mip chain the landing makes; without, plain RGBA8 at one level.
      */
     public FeedSlots(VulkanDevice device, int width, int height, int slots, boolean picture) {
-        this(device, width, height, slots, picture, null, null, null);
+        this(device, width, height, slots, picture, null, null, null, false);
+    }
+
+    /** As the planar ring, with each slot's staging of its own: written packed, through {@link #staging}. */
+    public FeedSlots(VulkanDevice device, int width, int height, int slots, boolean picture, PlaneLayout planes,
+                     byte[] vertexSpirv, byte[] fragmentSpirv) {
+        this(device, width, height, slots, picture, planes, vertexSpirv, fragmentSpirv, false);
     }
 
     /**
      * As the RGBA8 ring, staged as {@code planes} instead: each slot's staging holds a decoder's planes, packed
      * ({@link PlaneLayout}), and the landing copies them into plane images and converts them into the slot's picture
      * with a full-screen pass, {@code vertexSpirv} and {@code fragmentSpirv} (vexelray-canvas's {@code PlaneShader}),
-     * before its mips. This module takes shaders as SPIR-V and never composes one.
+     * before its mips. This module takes shaders as SPIR-V and never composes one. {@code lent}: the slots have no
+     * staging, and each is landed from chunks this lends a decoder instead ({@link #lend}).
      */
     public FeedSlots(VulkanDevice device, int width, int height, int slots, boolean picture, PlaneLayout planes,
-                     byte[] vertexSpirv, byte[] fragmentSpirv) {
+                     byte[] vertexSpirv, byte[] fragmentSpirv, boolean lent) {
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("a feed's slots need a positive size: " + width + "x" + height);
         }
@@ -253,6 +286,10 @@ public final class FeedSlots implements AutoCloseable {
         if (planes != null && (vertexSpirv == null || fragmentSpirv == null)) {
             throw new IllegalArgumentException("a planar feed needs the conversion's shaders");
         }
+        if (lent && planes == null) {
+            throw new IllegalArgumentException("a ring landed from lent memory is planar: a decoder's frames");
+        }
+        this.lent = lent;
         this.planes = planes;
         this.slotBytes = planes == null ? (long) width * height * 4 : planes.frameBytes(width, height);
         int format = picture ? Vk.FORMAT_R8G8B8A8_SRGB : Vk.FORMAT_R8G8B8A8_UNORM;
@@ -264,6 +301,11 @@ public final class FeedSlots implements AutoCloseable {
         MethodHandle vkBindBufferMemory = device.command("vkBindBufferMemory", BIND);
         MethodHandle vkMapMemory = device.command("vkMapMemory",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, ADDRESS));
+        this.vkCreateBuffer = vkCreateBuffer;
+        this.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
+        this.vkAllocateMemory = vkAllocateMemory;
+        this.vkBindBufferMemory = vkBindBufferMemory;
+        this.vkMapMemory = vkMapMemory;
         MethodHandle vkCreateImage = device.command("vkCreateImage", C4);
         MethodHandle vkGetImageMemoryRequirements = device.command("vkGetImageMemoryRequirements", MEMREQ);
         MethodHandle vkBindImageMemory = device.command("vkBindImageMemory", BIND);
@@ -293,25 +335,18 @@ public final class FeedSlots implements AutoCloseable {
                         JAVA_INT));
 
         try (Arena arena = Arena.ofConfined()) {
-            // --- one staging buffer for every slot's level 0, mapped for as long as the ring lives ---
-            long stagingBytes = slotBytes * slots;
-            MemorySegment bufInfo = arena.allocate(BUFFER_CREATE_INFO);
-            si(bufInfo, BUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-            sl(bufInfo, BUFFER_CREATE_INFO, "size", stagingBytes);
-            si(bufInfo, BUFFER_CREATE_INFO, "usage", Vk.BUFFER_USAGE_TRANSFER_SRC_BIT);
-            si(bufInfo, BUFFER_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
-            MemorySegment pBuffer = arena.allocate(JAVA_LONG);
-            check(invoke(vkCreateBuffer, dev, bufInfo, MemorySegment.NULL, pBuffer), "vkCreateBuffer");
-            this.staging = pBuffer.get(JAVA_LONG, 0);
-            MemorySegment bufReq = arena.allocate(MEMORY_REQUIREMENTS);
-            invokeVoid(vkGetBufferMemoryRequirements, dev, staging, bufReq);
-            this.stagingMemory = allocate(arena, vkAllocateMemory, dev, gl(bufReq, MEMORY_REQUIREMENTS, "size"),
-                    device.findMemoryType(gi(bufReq, MEMORY_REQUIREMENTS, "memoryTypeBits"),
-                            Vk.MEMORY_PROPERTY_HOST_VISIBLE_BIT | Vk.MEMORY_PROPERTY_HOST_COHERENT_BIT));
-            check(invoke(vkBindBufferMemory, dev, staging, stagingMemory, 0L), "vkBindBufferMemory");
-            MemorySegment ppData = arena.allocate(ADDRESS);
-            check(invoke(vkMapMemory, dev, stagingMemory, 0L, stagingBytes, 0, ppData), "vkMapMemory");
-            this.mapped = ppData.get(ADDRESS, 0).reinterpret(stagingBytes);
+            // --- one staging buffer for every slot's level 0, mapped for as long as the ring lives; none when lent ---
+            if (lent) {
+                this.staging = 0L;
+                this.stagingMemory = 0L;
+                this.mapped = null;
+            } else {
+                long stagingBytes = slotBytes * slots;
+                long[] made = mappedBuffer(arena, dev, stagingBytes, false);
+                this.staging = made[0];
+                this.stagingMemory = made[1];
+                this.mapped = MemorySegment.ofAddress(made[2]).reinterpret(stagingBytes);
+            }
 
             // --- one sampler and one layout, shared by every slot ---
             MemorySegment sampInfo = arena.allocate(SAMPLER_CREATE_INFO);
@@ -422,8 +457,8 @@ public final class FeedSlots implements AutoCloseable {
                 sa(write, WRITE_DESCRIPTOR_SET, "pImageInfo", imageInfo);
                 invokeVoid(vkUpdateDescriptorSets, dev, 1, write, 0, MemorySegment.NULL);
 
-                this.slots[s] = new Slot(s, image, memory, view, set, mapped.asSlice(slotBytes * s, slotBytes),
-                        slotBytes * s);
+                this.slots[s] = new Slot(s, image, memory, view, set,
+                        lent ? null : mapped.asSlice(slotBytes * s, slotBytes), slotBytes * s);
             }
         }
         this.conversion = planes == null ? null : new Conversion(vertexSpirv, fragmentSpirv);
@@ -462,10 +497,90 @@ public final class FeedSlots implements AutoCloseable {
 
     /**
      * Slot {@code slot}'s staging: {@code width x height} RGBA8 texels, row after row, to write. Any thread, by whoever
-     * the feed has given the slot to, and only between the feed giving it and handing it over.
+     * the feed has given the slot to, and only between the feed giving it and handing it over. A lent ring's slots
+     * have none.
      */
     public MemorySegment staging(int slot) {
+        if (lent) {
+            throw new IllegalStateException(this + " is landed from the memory it lends, not from staging of its own");
+        }
         return slot(slot).stagingRegion;
+    }
+
+    /** Whether the slots are landed from chunks this lends ({@link #lend}) rather than staging of their own. */
+    public boolean lent() {
+        return lent;
+    }
+
+    /**
+     * A new chunk of {@code bytes} of host-visible memory of the device, mapped for the ring's life, for a decoder to
+     * decode into: its index, or {@code -1} once {@link #MAX_CHUNKS} are lent. Host-cached where the device has such
+     * memory, since a decoder reads its reference frames back. Any thread: allocating is not a queue's business.
+     */
+    public synchronized int lend(long bytes) {
+        if (!lent) {
+            throw new IllegalStateException(this + " has staging of its own and lends nothing");
+        }
+        if (closed) {
+            throw new IllegalStateException(this + " is closed");
+        }
+        if (bytes <= 0) {
+            throw new IllegalArgumentException("a chunk of " + bytes + " bytes");
+        }
+        int i = chunks;
+        if (i == MAX_CHUNKS) {
+            return -1;
+        }
+        try (Arena arena = Arena.ofConfined()) {
+            long[] made = mappedBuffer(arena, device.handle(), bytes, true);
+            chunkBuffers[i] = made[0];
+            chunkMemory[i] = made[1];
+            chunkMapped[i] = MemorySegment.ofAddress(made[2]).reinterpret(bytes);
+        }
+        chunks = i + 1;
+        return i;
+    }
+
+    /** Chunk {@code index}, as {@link #lend} made it: mapped, to decode into. */
+    public MemorySegment chunk(int index) {
+        if (index < 0 || index >= chunks) {
+            throw new IndexOutOfBoundsException("no chunk " + index + " of " + chunks + " lent by " + this);
+        }
+        return chunkMapped[index];
+    }
+
+    /** How many chunks are lent. */
+    public int chunks() {
+        return chunks;
+    }
+
+    /**
+     * A transfer-source buffer of {@code bytes}, bound to host-visible coherent memory and mapped: its handle, its
+     * memory's and the mapping's address. {@code cached}: host-cached memory where the device has it, for memory the
+     * host reads back as well as writes.
+     */
+    private long[] mappedBuffer(Arena arena, MemorySegment dev, long bytes, boolean cached) {
+        MemorySegment bufInfo = arena.allocate(BUFFER_CREATE_INFO);
+        si(bufInfo, BUFFER_CREATE_INFO, "sType", Vk.STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+        sl(bufInfo, BUFFER_CREATE_INFO, "size", bytes);
+        si(bufInfo, BUFFER_CREATE_INFO, "usage", Vk.BUFFER_USAGE_TRANSFER_SRC_BIT);
+        si(bufInfo, BUFFER_CREATE_INFO, "sharingMode", Vk.SHARING_MODE_EXCLUSIVE);
+        MemorySegment pBuffer = arena.allocate(JAVA_LONG);
+        check(invoke(vkCreateBuffer, dev, bufInfo, MemorySegment.NULL, pBuffer), "vkCreateBuffer");
+        long buffer = pBuffer.get(JAVA_LONG, 0);
+        MemorySegment bufReq = arena.allocate(MEMORY_REQUIREMENTS);
+        invokeVoid(vkGetBufferMemoryRequirements, dev, buffer, bufReq);
+        int bits = gi(bufReq, MEMORY_REQUIREMENTS, "memoryTypeBits");
+        int coherent = Vk.MEMORY_PROPERTY_HOST_VISIBLE_BIT | Vk.MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        int type = cached ? device.tryFindMemoryType(bits, coherent | MEMORY_PROPERTY_HOST_CACHED) : -1;
+        if (type < 0) {
+            type = device.findMemoryType(bits, coherent);
+        }
+        long memory = allocate(arena, vkAllocateMemory, dev, gl(bufReq, MEMORY_REQUIREMENTS, "size"), type);
+        check(invoke(vkBindBufferMemory, dev, buffer, memory, 0L), "vkBindBufferMemory");
+        MemorySegment ppData = arena.allocate(ADDRESS);
+        check(invoke(vkMapMemory, dev, memory, 0L, bytes, 0, ppData), "vkMapMemory");
+        return new long[] {buffer, memory, ppData.get(ADDRESS, 0).address()};
     }
 
     /** Slot {@code slot}'s picture, as a node's run binds it: valid to sample once the slot has been {@link #land}ed. */
@@ -490,6 +605,36 @@ public final class FeedSlots implements AutoCloseable {
      * every later sample sees the new texels. The thread that records frames.
      */
     public void land(MemorySegment commandBuffer, int slot) {
+        if (lent) {
+            throw new IllegalStateException(this + " lands a slot from where its planes are in the memory it lent");
+        }
+        land(commandBuffer, slot, staging, null, null);
+    }
+
+    /**
+     * As {@link #land(MemorySegment, int)}, for a lent ring: slot {@code slot}'s planes copied in from chunk
+     * {@code chunk}, plane {@code p} starting {@code offsets[p]} bytes into it with rows {@code strides[p]} bytes
+     * apart (a decoder's own layout, padding and all), then converted and given its mips. The memory is read by the
+     * GPU when the frame being recorded runs, so it must not be written again until that frame has finished.
+     */
+    public void land(MemorySegment commandBuffer, int slot, int chunk, long[] offsets, int[] strides) {
+        if (!lent) {
+            throw new IllegalStateException(this + " lands a slot from its own staging");
+        }
+        if (chunk < 0 || chunk >= chunks) {
+            throw new IndexOutOfBoundsException("no chunk " + chunk + " of " + chunks + " lent by " + this);
+        }
+        for (int p = 0; p < planes.planes(); p++) {
+            if (strides[p] % planes.sampleBytes(p) != 0 || strides[p] < planes.rowBytes(p, width)) {
+                throw new IllegalArgumentException("plane " + p + "'s rows are " + strides[p] + " bytes apart, for "
+                        + planes.rowBytes(p, width) + " bytes of samples of " + planes.sampleBytes(p));
+            }
+        }
+        land(commandBuffer, slot, chunkBuffers[chunk], offsets, strides);
+    }
+
+    /** The landing, from {@code buffer}: at the slot's own staging, packed, when {@code offsets} is null. */
+    private void land(MemorySegment commandBuffer, int slot, long buffer, long[] offsets, int[] strides) {
         Slot s = slot(slot);
         if (closed) {
             throw new IllegalStateException(this + " is closed");
@@ -497,7 +642,7 @@ public final class FeedSlots implements AutoCloseable {
         try (Arena arena = Arena.ofConfined()) {
             if (conversion != null) {
                 // Level 0 drawn from the planes, left as a transfer's destination as a copy would leave it.
-                conversion.convert(arena, commandBuffer, s);
+                conversion.convert(arena, commandBuffer, s, buffer, offsets, strides);
             } else {
                 // Whatever the image held is not kept: level 0 is about to be copied whole and the rest made from it.
                 barrier(arena, commandBuffer, s.image, 0, levels, Vk.IMAGE_LAYOUT_UNDEFINED,
@@ -582,9 +727,19 @@ public final class FeedSlots implements AutoCloseable {
         invokeVoid(vkDestroyDescriptorPool, dev, descriptorPool, MemorySegment.NULL);
         invokeVoid(vkDestroyDescriptorSetLayout, dev, descriptorSetLayout, MemorySegment.NULL);
         invokeVoid(vkDestroySampler, dev, sampler, MemorySegment.NULL);
-        invokeVoid(vkUnmapMemory, dev, stagingMemory);
-        invokeVoid(vkDestroyBuffer, dev, staging, MemorySegment.NULL);
-        invokeVoid(vkFreeMemory, dev, stagingMemory, MemorySegment.NULL);
+        if (!lent) {
+            invokeVoid(vkUnmapMemory, dev, stagingMemory);
+            invokeVoid(vkDestroyBuffer, dev, staging, MemorySegment.NULL);
+            invokeVoid(vkFreeMemory, dev, stagingMemory, MemorySegment.NULL);
+        }
+        synchronized (this) {
+            for (int i = 0; i < chunks; i++) {
+                invokeVoid(vkUnmapMemory, dev, chunkMemory[i]);
+                invokeVoid(vkDestroyBuffer, dev, chunkBuffers[i], MemorySegment.NULL);
+                invokeVoid(vkFreeMemory, dev, chunkMemory[i], MemorySegment.NULL);
+            }
+            chunks = 0;
+        }
     }
 
     public boolean isClosed() {
@@ -892,7 +1047,7 @@ public final class FeedSlots implements AutoCloseable {
          * with the draw's writes visible to transfers, as the RGBA path's copy leaves it; levels below are made ready
          * for the blits. Every earlier read of the slot's image, in submission order, finishes first.
          */
-        void convert(Arena arena, MemorySegment cmd, Slot s) {
+        void convert(Arena arena, MemorySegment cmd, Slot s, long buffer, long[] offsets, int[] strides) {
             int index = s.index;
             int count = planes.planes();
             for (int p = 0; p < count; p++) {
@@ -900,13 +1055,20 @@ public final class FeedSlots implements AutoCloseable {
                         Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, Vk.ACCESS_TRANSFER_WRITE_BIT,
                         Vk.PIPELINE_STAGE_FRAGMENT_SHADER_BIT, Vk.PIPELINE_STAGE_TRANSFER_BIT);
                 MemorySegment region = arena.allocate(BUFFER_IMAGE_COPY);
-                sl(region, BUFFER_IMAGE_COPY, "bufferOffset", s.stagingOffset + planes.planeOffset(p, width, height));
+                if (offsets == null) {
+                    sl(region, BUFFER_IMAGE_COPY, "bufferOffset",
+                            s.stagingOffset + planes.planeOffset(p, width, height));
+                } else {
+                    // Where the decoder put it, rows its stride apart: the row length is in texels of the plane's format.
+                    sl(region, BUFFER_IMAGE_COPY, "bufferOffset", offsets[p]);
+                    si(region, BUFFER_IMAGE_COPY, "bufferRowLength", strides[p] / planes.sampleBytes(p));
+                }
                 si(region, BUFFER_IMAGE_COPY, "is_aspectMask", Vk.IMAGE_ASPECT_COLOR_BIT);
                 si(region, BUFFER_IMAGE_COPY, "is_layerCount", 1);
                 si(region, BUFFER_IMAGE_COPY, "ext_width", planes.planeWidth(p, width));
                 si(region, BUFFER_IMAGE_COPY, "ext_height", planes.planeHeight(p, height));
                 si(region, BUFFER_IMAGE_COPY, "ext_depth", 1);
-                invokeVoid(vkCmdCopyBufferToImage, cmd, staging, planeImages[index][p],
+                invokeVoid(vkCmdCopyBufferToImage, cmd, buffer, planeImages[index][p],
                         Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, region);
                 imageBarrier(arena, cmd, planeImages[index][p], 0, 1, Vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         Vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, Vk.ACCESS_TRANSFER_WRITE_BIT,
