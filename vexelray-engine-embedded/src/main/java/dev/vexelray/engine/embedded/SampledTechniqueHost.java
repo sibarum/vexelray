@@ -147,6 +147,28 @@ public final class SampledTechniqueHost implements AutoCloseable {
     }
 
     /**
+     * Record one frame into {@code commandBuffer}, a frame somebody else is recording and will submit, outside any render
+     * pass: every technique in order, into one pass over {@code into}, cleared first. Nothing is submitted and nothing
+     * waited for, so a GUI thread records a technique view this way inside its own frame (vexelray-gui's
+     * {@code docs/plans/device-feed.md}, E), where {@link #render} would wait for its fence.
+     *
+     * <p>{@code into} is any target compatible with the one this host was built on (the same format, depth or not), at
+     * any size: a technique built its pipeline against the first target's render pass, which every compatible one may
+     * use, and reads the size from each frame. So a host draws a ring of targets in turn, and a frame in flight keeps
+     * sampling the one it was given while the next is drawn.
+     */
+    public void record(java.lang.foreign.MemorySegment commandBuffer, SampledColorTarget into, float cr, float cg,
+                       float cb, float ca) {
+        if (into.hasDepth() != target.hasDepth()) {
+            throw new IllegalArgumentException("a target with" + (into.hasDepth() ? "" : "out")
+                    + " depth is not compatible with the one this host was built on");
+        }
+        realize();
+        into.record(commandBuffer, recorder, cr, cg, cb, ca);
+        frameIndex++;
+    }
+
+    /**
      * Close every realised technique. The target, the device and anything else handed in are untouched.
      *
      * <p>Register it with the host application's disposer <em>after</em> whatever owns the device, so it runs
