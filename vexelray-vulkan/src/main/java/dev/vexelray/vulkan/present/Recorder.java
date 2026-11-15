@@ -45,4 +45,13 @@ public interface Recorder {
      * @param height        this frame's extent
      */
     void record(MemorySegment commandBuffer, int width, int height);
+
+    /**
+     * For a recorder given as a frame's pre-pass ({@link WindowPresenter#prePass}): add to {@code into} the timeline
+     * values the frame's submission must wait for, because what this records reads what another queue wrote (a
+     * device-written feed's slot, {@link FrameWaits}). Asked once per frame, after {@link #record}, by whoever submits
+     * the frame. A recorder that reads nothing another queue wrote, which is every one but those, adds nothing.
+     */
+    default void waits(FrameWaits into) {
+    }
 }

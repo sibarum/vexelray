@@ -243,8 +243,10 @@ public final class OffscreenDraw {
             if (timer != null) {
                 timer.begin(cmd);
             }
+            FrameWaits waits = new FrameWaits();
             if (prePass != null) {
                 prePass.record(cmd, width, height);
+                prePass.waits(waits);   // what it reads that another queue wrote, waited for at submit
             }
 
             MemorySegment clearValue = arena.allocate(JAVA_FLOAT, 4);
@@ -291,6 +293,7 @@ public final class OffscreenDraw {
             si(submit, VkStructs.SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
             si(submit, VkStructs.SUBMIT_INFO, "commandBufferCount", 1);
             sa(submit, VkStructs.SUBMIT_INFO, "pCommandBuffers", pCmdArray);
+            waits.applyTo(arena, submit);
             check(invoke(vkQueueSubmit, device.queue(), 1, submit, 0L), "vkQueueSubmit");
             device.waitIdle();
 

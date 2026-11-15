@@ -703,6 +703,7 @@ public final class WindowedPresenter implements WindowPresenter {
         if (pre != null) {
             pre.record(cmd, extentW, extentH);   // passes into targets this frame samples, before its own
         }
+        s.waits(pre);   // and what they read that another queue wrote, waited for at submit
         si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_width", extentW);
         si(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "area_extent_height", extentH);
         sl(s.rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "framebuffer", framebuffers.framebuffer(imageIndex));
@@ -860,9 +861,16 @@ public final class WindowedPresenter implements WindowPresenter {
         final MemorySegment pFence = a.allocate(JAVA_LONG);
         /** The fence of whoever last used this frame's image, when there is one to wait for. */
         final MemorySegment pImageFence = a.allocate(JAVA_LONG);
-        final MemorySegment waitSems = a.allocate(JAVA_LONG);
+        /** The image's semaphore first, then the pre-pass's timeline waits ({@link #waits}); grown when they are. */
+        MemorySegment waitSems = a.allocate(JAVA_LONG, 4);
         final MemorySegment signalSems = a.allocate(JAVA_LONG);
-        final MemorySegment waitStages = a.allocate(JAVA_INT);
+        MemorySegment waitStages = a.allocate(JAVA_INT, 4);
+        /** Each wait's value: ignored for the image's binary semaphore, the timeline's value for the rest. */
+        MemorySegment waitValues = a.allocate(JAVA_LONG, 4);
+        int waitCapacity = 4;
+        final MemorySegment timelineInfo = a.allocate(FrameWaits.TIMELINE_SUBMIT_INFO);
+        /** What the pre-pass reads that another queue wrote, this frame. */
+        final FrameWaits frameWaits = new FrameWaits();
         final MemorySegment pCmd = a.allocate(ADDRESS);
         final MemorySegment pSwapchains = a.allocate(JAVA_LONG);
         final MemorySegment submit = a.allocate(VkStructs.SUBMIT_INFO);
@@ -900,6 +908,9 @@ public final class WindowedPresenter implements WindowPresenter {
             si(submit, VkStructs.SUBMIT_INFO, "signalSemaphoreCount", 1);
             sa(submit, VkStructs.SUBMIT_INFO, "pSignalSemaphores", signalSems);
 
+            si(timelineInfo, FrameWaits.TIMELINE_SUBMIT_INFO, "sType",
+                    FrameWaits.STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO);
+
             si(presentInfo, PRESENT, "sType", Vk.STRUCTURE_TYPE_PRESENT_INFO_KHR);
             si(presentInfo, PRESENT, "waitSemaphoreCount", 1);
             sa(presentInfo, PRESENT, "pWaitSemaphores", signalSems);
@@ -919,6 +930,40 @@ public final class WindowedPresenter implements WindowPresenter {
                 si(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "clearValueCount", 1);
             }
             sa(rpBegin, VkStructs.RENDER_PASS_BEGIN_INFO, "pClearValues", clear);
+        }
+
+        /**
+         * Point this frame's submit at the image's semaphore and the pre-pass's timeline waits ({@link FrameWaits}):
+         * the image's alone, with no timeline chained, when the pre-pass names none, which is every frame but one that
+         * reads a device-written feed. The image's semaphore must already be in slot 0 of {@link #waitSems}.
+         */
+        void waits(Recorder pre) {
+            frameWaits.clear();
+            if (pre != null) {
+                pre.waits(frameWaits);
+            }
+            int n = 1 + frameWaits.count();
+            if (n > waitCapacity) {
+                long image = waitSems.get(JAVA_LONG, 0);
+                waitCapacity = Math.max(n, waitCapacity * 2);
+                waitSems = a.allocate(JAVA_LONG, waitCapacity);
+                waitStages = a.allocate(JAVA_INT, waitCapacity);
+                waitValues = a.allocate(JAVA_LONG, waitCapacity);
+                waitSems.set(JAVA_LONG, 0, image);
+                waitStages.set(JAVA_INT, 0, Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                sa(submit, VkStructs.SUBMIT_INFO, "pWaitSemaphores", waitSems);
+                sa(submit, VkStructs.SUBMIT_INFO, "pWaitDstStageMask", waitStages);
+            }
+            frameWaits.fill(waitSems, waitStages, waitValues, 1);
+            si(submit, VkStructs.SUBMIT_INFO, "waitSemaphoreCount", n);
+            if (n == 1) {
+                sa(submit, VkStructs.SUBMIT_INFO, "pNext", MemorySegment.NULL);
+                return;
+            }
+            waitValues.set(JAVA_LONG, 0, 0L);   // the image's semaphore is binary: its value is ignored
+            si(timelineInfo, FrameWaits.TIMELINE_SUBMIT_INFO, "waitSemaphoreValueCount", n);
+            sa(timelineInfo, FrameWaits.TIMELINE_SUBMIT_INFO, "pWaitSemaphoreValues", waitValues);
+            sa(submit, VkStructs.SUBMIT_INFO, "pNext", timelineInfo);
         }
     }
 

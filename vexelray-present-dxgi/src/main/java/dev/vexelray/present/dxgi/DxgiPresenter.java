@@ -213,6 +213,8 @@ final class DxgiPresenter implements WindowPresenter {
     }
 
     private volatile dev.vexelray.vulkan.present.Recorder prePass;
+    /** What this frame's pre-pass reads that another queue wrote: waited for at submit, beside the last copy out. */
+    private final dev.vexelray.vulkan.present.FrameWaits frameWaits = new dev.vexelray.vulkan.present.FrameWaits();
 
     @Override
     public void prePass(dev.vexelray.vulkan.present.Recorder recorder) {
@@ -366,8 +368,10 @@ final class DxgiPresenter implements WindowPresenter {
             si(begin, VkStructs.COMMAND_BUFFER_BEGIN_INFO, "sType", Vk.STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
             check(invoke(beginCmd, cmd, begin), "vkBeginCommandBuffer");
             dev.vexelray.vulkan.present.Recorder pre = prePass;
+            frameWaits.clear();
             if (pre != null) {
                 pre.record(cmd, w, h);   // passes into targets this frame samples, before its own
+                pre.waits(frameWaits);   // and what they read that another queue wrote, waited for at submit
             }
 
             MemorySegment clear = temp.allocate(JAVA_FLOAT, 4);   // transparent black, as the swapchain path clears
@@ -418,28 +422,31 @@ final class DxgiPresenter implements WindowPresenter {
     /** Submit, waiting on the last copy out of the image and signalling {@code rendered} on the shared timeline. */
     private void submit(long rendered) {
         try (Arena temp = Arena.ofConfined()) {
-            MemorySegment waitValues = temp.allocate(JAVA_LONG);
+            // The last copy out of the image, then whatever the pre-pass reads that another queue wrote.
+            int waits = 1 + frameWaits.count();
+            MemorySegment waitValues = temp.allocate(JAVA_LONG, waits);
             waitValues.set(JAVA_LONG, 0, swapchain.lastCopyValue());
             MemorySegment signalValues = temp.allocate(JAVA_LONG);
             signalValues.set(JAVA_LONG, 0, rendered);
             MemorySegment timeline = temp.allocate(VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO);
             si(timeline, VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO, "sType",
                     VkInterop.STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO);
-            si(timeline, VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO, "waitSemaphoreValueCount", 1);
+            si(timeline, VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO, "waitSemaphoreValueCount", waits);
             sa(timeline, VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO, "pWaitSemaphoreValues", waitValues);
             si(timeline, VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO, "signalSemaphoreValueCount", 1);
             sa(timeline, VkInterop.TIMELINE_SEMAPHORE_SUBMIT_INFO, "pSignalSemaphoreValues", signalValues);
 
-            MemorySegment semaphores = temp.allocate(JAVA_LONG);
+            MemorySegment semaphores = temp.allocate(JAVA_LONG, waits);
             semaphores.set(JAVA_LONG, 0, context.timelineSemaphore());
-            MemorySegment stages = temp.allocate(JAVA_INT);
+            MemorySegment stages = temp.allocate(JAVA_INT, waits);
             stages.set(JAVA_INT, 0, Vk.PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            frameWaits.fill(semaphores, stages, waitValues, 1);
             MemorySegment cmds = temp.allocate(ADDRESS);
             cmds.set(ADDRESS, 0, cmd);
             MemorySegment info = temp.allocate(VkStructs.SUBMIT_INFO);
             si(info, VkStructs.SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
             sa(info, VkStructs.SUBMIT_INFO, "pNext", timeline);
-            si(info, VkStructs.SUBMIT_INFO, "waitSemaphoreCount", 1);
+            si(info, VkStructs.SUBMIT_INFO, "waitSemaphoreCount", waits);
             sa(info, VkStructs.SUBMIT_INFO, "pWaitSemaphores", semaphores);
             sa(info, VkStructs.SUBMIT_INFO, "pWaitDstStageMask", stages);
             si(info, VkStructs.SUBMIT_INFO, "commandBufferCount", 1);

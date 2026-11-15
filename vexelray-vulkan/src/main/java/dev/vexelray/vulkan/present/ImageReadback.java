@@ -160,6 +160,24 @@ public final class ImageReadback {
 
     /** Record {@code body} into a command buffer of its own, submit it and wait for the queue. */
     public static void oneShot(VulkanDevice device, Consumer<MemorySegment> body) {
+        oneShot(device, null, body);
+    }
+
+    /**
+     * A frame's pre-pass ({@link WindowPresenter#prePass}) submitted on its own at {@code width x height}, waiting for
+     * what it reads that another queue wrote ({@link Recorder#waits}), as a presenter submits it; then wait for the queue.
+     * For a test, or a capture of what a pre-pass draws.
+     */
+    public static void oneShot(VulkanDevice device, Recorder pre, int width, int height) {
+        FrameWaits waits = new FrameWaits();
+        oneShot(device, waits, cmd -> {
+            pre.record(cmd, width, height);
+            pre.waits(waits);
+        });
+    }
+
+    /** As {@link #oneShot(VulkanDevice, Consumer)}, the submission also waiting for {@code waits} once {@code body} has run. */
+    private static void oneShot(VulkanDevice device, FrameWaits waits, Consumer<MemorySegment> body) {
         MemorySegment dev = device.handle();
         MethodHandle vkCreateCommandPool = device.command("vkCreateCommandPool", C4);
         MethodHandle vkAllocateCommandBuffers = device.command("vkAllocateCommandBuffers",
@@ -197,6 +215,9 @@ public final class ImageReadback {
                 si(submit, SUBMIT_INFO, "sType", Vk.STRUCTURE_TYPE_SUBMIT_INFO);
                 si(submit, SUBMIT_INFO, "commandBufferCount", 1);
                 sa(submit, SUBMIT_INFO, "pCommandBuffers", pCmd);
+                if (waits != null) {
+                    waits.applyTo(arena, submit);
+                }
                 check(invoke(vkQueueSubmit, device.queue(), 1, submit, 0L), "vkQueueSubmit");
                 check(invoke(vkQueueWaitIdle, device.queue()), "vkQueueWaitIdle");
             } finally {
