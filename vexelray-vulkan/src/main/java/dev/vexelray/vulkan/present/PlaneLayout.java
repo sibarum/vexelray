@@ -100,6 +100,54 @@ public record PlaneLayout(Format format, int matrix, boolean fullRange) {
     }
 
     /**
+     * The frame staged in {@code planes}, converted to RGBA8 on the CPU with the same constants as the GPU's pass: for a
+     * device feed drawn on a device not its own, which is a headless capture's and slow. Chroma is taken from the
+     * sample covering each texel, not interpolated.
+     */
+    public byte[] toRgba(java.lang.foreign.MemorySegment planes, int width, int height) {
+        float[] k = constants();
+        byte[] out = new byte[width * height * 4];
+        long cbAt = planeOffset(1, width, height);
+        long crAt = format.interleaved ? cbAt : planeOffset(2, width, height);
+        int cw = planeWidth(1, width);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int c = (y / 2) * cw + x / 2;
+                float yy = (sample(planes, (long) y * width + x, 0) * k[0] - k[1]) * k[2];
+                float pb;
+                float pr;
+                if (format.interleaved) {
+                    pb = (sample(planes, cbAt / format.bytesPerSample + 2L * c, 1) * k[0] - k[3]) * k[4];
+                    pr = (sample(planes, cbAt / format.bytesPerSample + 2L * c + 1, 1) * k[0] - k[3]) * k[4];
+                } else {
+                    pb = (sample(planes, cbAt / format.bytesPerSample + c, 1) * k[0] - k[3]) * k[4];
+                    pr = (sample(planes, crAt / format.bytesPerSample + c, 1) * k[0] - k[3]) * k[4];
+                }
+                int i = (y * width + x) * 4;
+                out[i] = unit(yy + k[5] * pr);
+                out[i + 1] = unit(yy - k[7] * pb - k[8] * pr);
+                out[i + 2] = unit(yy + k[6] * pb);
+                out[i + 3] = (byte) 255;
+            }
+        }
+        return out;
+    }
+
+    /** Sample {@code index} (in samples from the staging's start) as the GPU reads it: a UNORM of its width. */
+    private float sample(java.lang.foreign.MemorySegment planes, long index, int plane) {
+        if (format.bytesPerSample == 1) {
+            return (planes.get(java.lang.foreign.ValueLayout.JAVA_BYTE, index) & 0xFF) / 255f;
+        }
+        short s = planes.get(java.lang.foreign.ValueLayout.JAVA_SHORT_UNALIGNED
+                .withOrder(java.nio.ByteOrder.LITTLE_ENDIAN), index * 2);
+        return (s & 0xFFFF) / 65535f;
+    }
+
+    private static byte unit(float v) {
+        return (byte) Math.round(Math.max(0f, Math.min(1f, v)) * 255f);
+    }
+
+    /**
      * The conversion's constants, as the shader reads them: the scale that brings a sample to {@code value / max}, the
      * luma offset and gain, the chroma centre and gain, the matrix's four coefficients, and whether chroma interleaves.
      */
